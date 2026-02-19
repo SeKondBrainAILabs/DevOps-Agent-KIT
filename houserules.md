@@ -185,6 +185,10 @@ All contracts are in `House_Rules_Contracts/`:
 | `THIRD_PARTY_INTEGRATIONS.md` | External service integrations | Integrating third-party services |
 | `FEATURES_CONTRACT.md` | All features and specifications | Implementing any feature |
 | `INFRA_CONTRACT.md` | Environment variables and infrastructure | Adding configuration/env vars |
+| `EVENTS_CONTRACT.md` | Events, pub-sub, analytics events | Creating/modifying events |
+| `CSS_DESIGN_TOKENS_CONTRACT.md` | Styles, themes, design tokens | Adding styles or tokens |
+| `PROMPTS_CONTRACT.md` | Prompt templates, AI modes, skills | Creating/modifying AI prompts |
+| `TESTS_CONTRACT.md` | Test suites, fixtures, helpers | Writing tests or fixtures |
 | `DEVOPS_AGENT_INSTRUCTIONS.md` | Instructions for contract maintenance | Generating/updating contracts |
 
 **Backend contracts** are in `ai-backend/House_Rules_Contracts/` and include:

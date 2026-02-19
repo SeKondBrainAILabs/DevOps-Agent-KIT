@@ -38,6 +38,10 @@ Contracts provide a single source of truth that all agents must check before cod
 | **[FEATURES_CONTRACT.md](./FEATURES_CONTRACT.md)** | All features with specifications and dependencies | Before implementing any feature |
 | **[INFRA_CONTRACT.md](./INFRA_CONTRACT.md)** | Environment variables and infrastructure config | Before adding configuration/env vars |
 | **[DEVOPS_AGENT_INSTRUCTIONS.md](./DEVOPS_AGENT_INSTRUCTIONS.md)** | Instructions for generating and maintaining contracts | For DevOps Agent to populate contracts |
+| **[EVENTS_CONTRACT.md](./EVENTS_CONTRACT.md)** | Events, messages, pub-sub patterns, and analytics events | Before creating/modifying events or event handlers |
+| **[CSS_DESIGN_TOKENS_CONTRACT.md](./CSS_DESIGN_TOKENS_CONTRACT.md)** | Styles, themes, design tokens, CSS conventions | Before adding styles, colors, or design tokens |
+| **[PROMPTS_CONTRACT.md](./PROMPTS_CONTRACT.md)** | Prompt templates, AI mode configs, skill definitions | Before creating/modifying AI prompts or modes |
+| **[TESTS_CONTRACT.md](./TESTS_CONTRACT.md)** | Test suites, fixtures, helpers, and testing patterns | Before writing tests or creating test fixtures |
 
 ---
 
@@ -51,6 +55,10 @@ Contracts provide a single source of truth that all agents must check before cod
 - 📝 "Does this SQL query already exist?" → Check `SQL_CONTRACT.json`
 - 🌐 "Is this service already integrated?" → Check `THIRD_PARTY_INTEGRATIONS.md`
 - ⚙️ "Does this env variable already exist?" → Check `INFRA_CONTRACT.md`
+- 📨 "Does this event already exist?" → Check `EVENTS_CONTRACT.md`
+- 🎨 "Does this design token exist?" → Check `CSS_DESIGN_TOKENS_CONTRACT.md`
+- 🤖 "Does this prompt template exist?" → Check `PROMPTS_CONTRACT.md`
+- 🧪 "Does this test fixture exist?" → Check `TESTS_CONTRACT.md`
 
 **If YES → REUSE IT**  
 **If NO → CREATE IT and DOCUMENT IT**
@@ -650,6 +658,10 @@ Users benefit from higher quality as contracts stay in sync with code, faster de
 | THIRD_PARTY_INTEGRATIONS.md | Template | 0% | 2024-12-16 |
 | FEATURES_CONTRACT.md | Template | 0% | 2024-12-16 |
 | INFRA_CONTRACT.md | Template | 0% | 2024-12-16 |
+| EVENTS_CONTRACT.md | Template | 0% | 2026-02-19 |
+| CSS_DESIGN_TOKENS_CONTRACT.md | Template | 0% | 2026-02-19 |
+| PROMPTS_CONTRACT.md | Template | 0% | 2026-02-19 |
+| TESTS_CONTRACT.md | Template | 0% | 2026-02-19 |
 
 **Next Steps:**
 

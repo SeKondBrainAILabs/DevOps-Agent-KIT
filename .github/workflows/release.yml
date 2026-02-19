@@ -29,8 +29,23 @@ jobs:
         with:
           node-version: '20'
 
+      # Linux needs GCC 13+ for C++20 (required by Electron 33+ native modules)
+      - name: Install C++20 compiler (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+        env:
+          CC: gcc-13
+          CXX: g++-13
+
       - name: Install Dependencies
         run: npm ci
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc-13' || '' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++-13' || '' }}
 
       - name: Build App
         run: npm run build

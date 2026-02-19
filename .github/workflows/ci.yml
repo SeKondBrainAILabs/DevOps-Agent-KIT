@@ -24,7 +24,9 @@ jobs:
           node-version: '20'
 
       - name: Install Dependencies
-        run: npm ci
+        # --ignore-scripts skips postinstall (electron-builder install-app-deps)
+        # CI tests run in Node.js, not Electron — no native rebuild needed
+        run: npm ci --ignore-scripts
 
       - name: Run Tests
         run: npm test
