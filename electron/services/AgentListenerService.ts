@@ -5,7 +5,8 @@
  * and activity reports. Kanvas is a DASHBOARD - agents report INTO it.
  */
 
-import { watch, FSWatcher } from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
+const { watch } = chokidar;
 import { readFile, readdir, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';

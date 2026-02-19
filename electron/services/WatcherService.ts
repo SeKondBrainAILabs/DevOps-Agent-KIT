@@ -22,7 +22,7 @@ import type { RepositoryAnalysisService } from './analysis/RepositoryAnalysisSer
 import type { CommitAnalysisService } from './CommitAnalysisService';
 import { databaseService } from './DatabaseService';
 import type { AgentType } from '../../shared/types';
-import chokidar, { FSWatcher } from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';

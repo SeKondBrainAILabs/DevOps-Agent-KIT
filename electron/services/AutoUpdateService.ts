@@ -4,7 +4,8 @@
  */
 
 import { BrowserWindow, app } from 'electron';
-import { autoUpdater, type UpdateInfo, type ProgressInfo } from 'electron-updater';
+import electronUpdater, { type UpdateInfo, type ProgressInfo } from 'electron-updater';
+const { autoUpdater } = electronUpdater;
 import { IPC } from '../../shared/ipc-channels';
 import type { AppUpdateInfo } from '../../shared/types';
 

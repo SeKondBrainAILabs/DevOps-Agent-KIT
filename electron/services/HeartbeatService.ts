@@ -6,7 +6,8 @@
 import { BaseService } from './BaseService';
 import { IPC } from '../../shared/ipc-channels';
 import type { IpcResult, HeartbeatStatus } from '../../shared/types';
-import { watch, FSWatcher } from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
+const { watch } = chokidar;
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
