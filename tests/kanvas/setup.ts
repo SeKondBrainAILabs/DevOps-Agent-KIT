@@ -76,6 +76,17 @@ const mockApi = {
     getVersion: createMockFn('1.2.0'),
     quit: jest.fn() as MockFn,
   },
+  worker: {
+    status: createMockFn({
+      workerAlive: true,
+      workerReady: true,
+      workerPid: 12345,
+      restartCount: 0,
+      activeMonitors: 3,
+      uptimeMs: 60000,
+    }),
+    restart: createMockFn({ success: true }),
+  },
   recentRepos: {
     list: createMockFn({ success: true, data: [] }),
     add: createMockFn({ success: true }),

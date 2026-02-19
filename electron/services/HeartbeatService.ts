@@ -6,6 +6,7 @@
 import { BaseService } from './BaseService';
 import { IPC } from '../../shared/ipc-channels';
 import type { IpcResult, HeartbeatStatus } from '../../shared/types';
+import type { WorkerBridgeService } from './WorkerBridgeService';
 import chokidar, { type FSWatcher } from 'chokidar';
 const { watch } = chokidar;
 import { promises as fs } from 'fs';
@@ -26,7 +27,76 @@ export class HeartbeatService extends BaseService {
   private heartbeats: Map<string, HeartbeatStatus> = new Map();
   private watchers: Map<string, FSWatcher> = new Map();
   private checkInterval: NodeJS.Timeout | null = null;
-  private firstHeartbeat: Map<string, string> = new Map(); // Track first heartbeat time
+  private firstHeartbeat: Map<string, string> = new Map();
+  private workerBridge: WorkerBridgeService | null = null;
+  private workerMonitoredSessions: Set<string> = new Set();
+
+  /**
+   * Set worker bridge for utility process monitoring.
+   */
+  setWorkerBridge(bridge: WorkerBridgeService): void {
+    this.workerBridge = bridge;
+    console.log('[HeartbeatService] Worker bridge configured');
+  }
+
+  /**
+   * Handle heartbeat data from the utility process worker.
+   */
+  handleExternalHeartbeat(
+    sessionId: string,
+    data: { sessionId: string; agentId?: string; timestamp: string; status?: string }
+  ): void {
+    // Track first heartbeat time
+    if (!this.firstHeartbeat.has(sessionId)) {
+      this.firstHeartbeat.set(sessionId, data.timestamp);
+    }
+
+    const firstHeartbeatTime = new Date(this.firstHeartbeat.get(sessionId)!).getTime();
+    const now = Date.now();
+    const connectionDuration = Math.round((now - firstHeartbeatTime) / 1000);
+
+    const status: HeartbeatStatus = {
+      sessionId,
+      agentId: data.agentId,
+      lastHeartbeat: data.timestamp,
+      isConnected: true,
+      connectionDuration,
+      missedHeartbeats: 0,
+    };
+
+    this.heartbeats.set(sessionId, status);
+
+    this.emitToRenderer(IPC.AGENT_HEARTBEAT, {
+      sessionId,
+      agentId: data.agentId,
+      timestamp: data.timestamp,
+      isConnected: true,
+    });
+  }
+
+  /**
+   * Handle heartbeat timeout from the utility process worker.
+   */
+  handleExternalHeartbeatTimeout(sessionId: string): void {
+    const status = this.heartbeats.get(sessionId);
+    if (!status || !status.isConnected) return;
+
+    const updatedStatus: HeartbeatStatus = {
+      ...status,
+      isConnected: false,
+      missedHeartbeats: (status.missedHeartbeats || 0) + 1,
+    };
+
+    this.heartbeats.set(sessionId, updatedStatus);
+
+    this.emitToRenderer(IPC.AGENT_STATUS_CHANGED, {
+      sessionId,
+      agentId: status.agentId,
+      isConnected: false,
+      lastHeartbeat: status.lastHeartbeat,
+      missedHeartbeats: updatedStatus.missedHeartbeats,
+    });
+  }
 
   /**
    * Start monitoring heartbeats for a session
@@ -37,8 +107,6 @@ export class HeartbeatService extends BaseService {
   ): Promise<IpcResult<void>> {
     return this.wrap(async () => {
       const heartbeatsDir = path.join(kanvasDir, 'heartbeats');
-
-      // Ensure directory exists
       await fs.mkdir(heartbeatsDir, { recursive: true });
 
       // Initialize heartbeat status
@@ -49,15 +117,21 @@ export class HeartbeatService extends BaseService {
         missedHeartbeats: 0,
       });
 
-      // Watch for heartbeat files
       const heartbeatFile = path.join(heartbeatsDir, `${sessionId}.json`);
 
-      // Check if heartbeat file already exists
+      // When worker bridge is available, delegate to utility process
+      if (this.workerBridge) {
+        this.workerMonitoredSessions.add(sessionId);
+        this.workerBridge.startHeartbeatMonitor(sessionId, heartbeatFile);
+        console.log(`[HeartbeatService] Delegated monitoring to worker for ${sessionId}`);
+        return;
+      }
+
+      // Fallback: in-process monitoring
       if (existsSync(heartbeatFile)) {
         await this.processHeartbeatFile(sessionId, heartbeatFile);
       }
 
-      // Set up file watcher
       const watcher = watch(heartbeatFile, {
         persistent: true,
         ignoreInitial: false,
@@ -68,7 +142,6 @@ export class HeartbeatService extends BaseService {
 
       this.watchers.set(sessionId, watcher);
 
-      // Start periodic check if not already running
       if (!this.checkInterval) {
         this.checkInterval = setInterval(() => this.checkAllHeartbeats(), CHECK_INTERVAL_MS);
       }
@@ -84,12 +157,15 @@ export class HeartbeatService extends BaseService {
       if (watcher) {
         await watcher.close();
         this.watchers.delete(sessionId);
+      } else if (this.workerBridge && this.workerMonitoredSessions.has(sessionId)) {
+        this.workerBridge.stopHeartbeatMonitor(sessionId);
+        this.workerMonitoredSessions.delete(sessionId);
       }
+
       this.heartbeats.delete(sessionId);
       this.firstHeartbeat.delete(sessionId);
 
-      // Stop check interval if no more watchers
-      if (this.watchers.size === 0 && this.checkInterval) {
+      if (this.watchers.size === 0 && this.workerMonitoredSessions.size === 0 && this.checkInterval) {
         clearInterval(this.checkInterval);
         this.checkInterval = null;
       }
@@ -97,14 +173,13 @@ export class HeartbeatService extends BaseService {
   }
 
   /**
-   * Process a heartbeat file
+   * Process a heartbeat file (in-process fallback)
    */
   private async processHeartbeatFile(sessionId: string, filePath: string): Promise<void> {
     try {
       const content = await fs.readFile(filePath, 'utf8');
       const data: HeartbeatData = JSON.parse(content);
 
-      // Track first heartbeat time
       if (!this.firstHeartbeat.has(sessionId)) {
         this.firstHeartbeat.set(sessionId, data.timestamp);
       }
@@ -124,7 +199,6 @@ export class HeartbeatService extends BaseService {
 
       this.heartbeats.set(sessionId, status);
 
-      // Emit to renderer
       this.emitToRenderer(IPC.AGENT_HEARTBEAT, {
         sessionId,
         agentId: data.agentId,
@@ -137,7 +211,7 @@ export class HeartbeatService extends BaseService {
   }
 
   /**
-   * Check all heartbeats for timeouts
+   * Check all heartbeats for timeouts (in-process fallback)
    */
   private checkAllHeartbeats(): void {
     const now = Date.now();
@@ -148,7 +222,6 @@ export class HeartbeatService extends BaseService {
         const timeSinceLastHeartbeat = now - lastHeartbeatTime;
 
         if (timeSinceLastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
-          // Connection timed out
           if (status.isConnected) {
             const missedHeartbeats = Math.floor(timeSinceLastHeartbeat / HEARTBEAT_TIMEOUT_MS);
             const updatedStatus: HeartbeatStatus = {
@@ -159,7 +232,6 @@ export class HeartbeatService extends BaseService {
 
             this.heartbeats.set(sessionId, updatedStatus);
 
-            // Emit status change
             this.emitToRenderer(IPC.AGENT_STATUS_CHANGED, {
               sessionId,
               agentId: status.agentId,
@@ -173,24 +245,15 @@ export class HeartbeatService extends BaseService {
     }
   }
 
-  /**
-   * Get heartbeat status for a session
-   */
   getStatus(sessionId: string): IpcResult<HeartbeatStatus | null> {
     const status = this.heartbeats.get(sessionId);
     return this.success(status || null);
   }
 
-  /**
-   * Get all heartbeat statuses
-   */
   getAllStatuses(): IpcResult<HeartbeatStatus[]> {
     return this.success(Array.from(this.heartbeats.values()));
   }
 
-  /**
-   * Write a heartbeat file (for agents that don't have their own heartbeat mechanism)
-   */
   async writeHeartbeat(sessionId: string, kanvasDir: string): Promise<IpcResult<void>> {
     return this.wrap(async () => {
       const heartbeatsDir = path.join(kanvasDir, 'heartbeats');
@@ -207,9 +270,6 @@ export class HeartbeatService extends BaseService {
     }, 'HEARTBEAT_WRITE_FAILED');
   }
 
-  /**
-   * Clean up on dispose
-   */
   async dispose(): Promise<void> {
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
@@ -222,5 +282,6 @@ export class HeartbeatService extends BaseService {
     this.watchers.clear();
     this.heartbeats.clear();
     this.firstHeartbeat.clear();
+    this.workerMonitoredSessions.clear();
   }
 }

@@ -27,6 +27,7 @@ import { CommitAnalysisService } from './CommitAnalysisService';
 import { DebugLogService } from './DebugLogService';
 import { VersionService } from './VersionService';
 import { AutoUpdateService } from './AutoUpdateService';
+import { WorkerBridgeService } from './WorkerBridgeService';
 import { databaseService } from './DatabaseService';
 import {
   initializeAnalysisServices,
@@ -64,6 +65,7 @@ export interface Services {
   debugLog: DebugLogService;
   version: VersionService;
   autoUpdate: AutoUpdateService;
+  workerBridge: WorkerBridgeService;
   // Analysis services (Phase 1)
   astParser: ASTParserService;
   repositoryAnalysis: RepositoryAnalysisService;
@@ -195,6 +197,46 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   autoUpdate.setMainWindow(mainWindow);
   autoUpdate.initialize();
 
+  // Initialize Worker Bridge service
+  // Spawns a utility process for file monitoring, rebase polling, heartbeat tracking
+  const workerBridge = new WorkerBridgeService();
+
+  // Wire worker bridge events to existing services
+  workerBridge.onFileChanged = (sessionId, filePath, changeType) => {
+    watcher.handleExternalFileChange(sessionId, filePath, changeType as 'add' | 'change' | 'unlink');
+  };
+  workerBridge.onCommitMsgDetected = (sessionId, commitMsgFilePath) => {
+    watcher.handleExternalCommitMsg(sessionId, commitMsgFilePath);
+  };
+  workerBridge.onRebaseRemoteStatus = (sessionId, behind, ahead, remoteBranch, localBranch) => {
+    rebaseWatcher.handleExternalRemoteStatus(sessionId, behind, ahead, remoteBranch, localBranch);
+  };
+  workerBridge.onHeartbeatUpdate = (sessionId, data) => {
+    heartbeat.handleExternalHeartbeat(sessionId, data);
+  };
+  workerBridge.onHeartbeatTimeout = (sessionId) => {
+    heartbeat.handleExternalHeartbeatTimeout(sessionId);
+  };
+  workerBridge.onAgentFileEvent = (subtype, action, filePath) => {
+    agentListener.handleExternalFileEvent(subtype, action, filePath);
+  };
+  workerBridge.onWorkerReady = (pid) => {
+    terminalLog.logSystem(`Worker process ready (pid: ${pid})`);
+  };
+  workerBridge.onWorkerError = (source, message) => {
+    terminalLog.warn(`Worker error (${source}): ${message}`, undefined, 'Worker');
+  };
+
+  // Connect worker bridge to monitoring services
+  watcher.setWorkerBridge(workerBridge);
+  rebaseWatcher.setWorkerBridge(workerBridge);
+  heartbeat.setWorkerBridge(workerBridge);
+  agentListener.setWorkerBridge(workerBridge);
+
+  // Spawn the utility process
+  await workerBridge.initialize();
+  console.log('[Services] Worker bridge initialized');
+
   // Initialize Analysis services
   // For AST parsing, repository analysis, and API extraction
   const analysisServices = await initializeAnalysisServices();
@@ -241,6 +283,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     debugLog,
     version,
     autoUpdate,
+    workerBridge,
     // Analysis services (Phase 1)
     astParser: analysisServices.astParser,
     repositoryAnalysis: analysisServices.repositoryAnalysis,
@@ -265,6 +308,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
  */
 export async function disposeServices(): Promise<void> {
   if (!services) return;
+
+  // Stop worker bridge (stops utility process and all monitors)
+  await services.workerBridge.dispose();
 
   // Stop all watchers
   await services.watcher.dispose();
@@ -317,6 +363,7 @@ export { CommitAnalysisService } from './CommitAnalysisService';
 export { DebugLogService } from './DebugLogService';
 export { VersionService } from './VersionService';
 export { AutoUpdateService } from './AutoUpdateService';
+export { WorkerBridgeService } from './WorkerBridgeService';
 export { databaseService } from './DatabaseService';
 // Analysis services (Phase 1 + Phase 2 + Phase 3)
 export {

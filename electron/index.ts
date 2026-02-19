@@ -93,6 +93,31 @@ async function createWindow(): Promise<void> {
     console.error('Page load failed:', errorCode, errorDescription);
   });
 
+  // Handle renderer process crash — auto-recover
+  mainWindow.webContents.on('render-process-gone', async (_event, details) => {
+    console.error('[Main] Renderer process gone:', details.reason, details.exitCode);
+    services?.terminalLog?.logSystem(`Renderer crashed: ${details.reason}`);
+
+    if (details.reason !== 'clean-exit') {
+      setTimeout(async () => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          await createWindow();
+        } else {
+          mainWindow.reload();
+        }
+      }, 1000);
+    }
+  });
+
+  // Handle unresponsive renderer
+  mainWindow.webContents.on('unresponsive', () => {
+    console.warn('[Main] Renderer unresponsive');
+  });
+
+  mainWindow.webContents.on('responsive', () => {
+    console.log('[Main] Renderer responsive again');
+  });
+
   mainWindow.webContents.on('did-finish-load', async () => {
     console.log('Page loaded successfully');
     // Emit stored sessions after a short delay to ensure React has mounted

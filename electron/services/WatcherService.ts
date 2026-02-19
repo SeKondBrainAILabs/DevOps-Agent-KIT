@@ -20,6 +20,7 @@ import type { LockService } from './LockService';
 import type { ASTParserService } from './analysis/ASTParserService';
 import type { RepositoryAnalysisService } from './analysis/RepositoryAnalysisService';
 import type { CommitAnalysisService } from './CommitAnalysisService';
+import type { WorkerBridgeService } from './WorkerBridgeService';
 import { databaseService } from './DatabaseService';
 import type { AgentType } from '../../shared/types';
 import chokidar, { type FSWatcher } from 'chokidar';
@@ -30,7 +31,7 @@ import path from 'path';
 interface WatcherInstance {
   sessionId: string;
   worktreePath: string;
-  watcher: FSWatcher;
+  watcher: FSWatcher | null;  // null when monitored by utility process
   commitMsgFile: string;
   claudeCommitMsgFile: string; // Fallback: .claude-commit-msg
   repoPath: string;           // Main repo path (for locking)
@@ -59,6 +60,9 @@ export class WatcherService extends BaseService {
   // Commit Analysis: AI-enhanced commit message generation
   private commitAnalysisService: CommitAnalysisService | null = null;
   private enhancedCommitsEnabled = false;
+
+  // Worker bridge: when set, file monitoring runs in utility process
+  private workerBridge: WorkerBridgeService | null = null;
 
   constructor(git: GitService, activity: ActivityService) {
     super();
@@ -134,6 +138,36 @@ export class WatcherService extends BaseService {
     console.log(`[WatcherService] Enhanced commit messages ${enabled ? 'enabled' : 'disabled'}`);
   }
 
+  /**
+   * Set worker bridge for utility process monitoring.
+   * When set, file watching runs in a separate process.
+   */
+  setWorkerBridge(bridge: WorkerBridgeService): void {
+    this.workerBridge = bridge;
+    console.log('[WatcherService] Worker bridge configured — file monitoring delegated to utility process');
+  }
+
+  /**
+   * Handle a file change event from the utility process worker.
+   * Called by WorkerBridgeService when the worker detects file changes.
+   */
+  handleExternalFileChange(sessionId: string, filePath: string, changeType: 'add' | 'change' | 'unlink'): void {
+    const instance = this.watchers.get(sessionId);
+    if (!instance) return;
+    this.handleFileChange(instance, filePath, changeType);
+  }
+
+  /**
+   * Handle a commit message file detection from the utility process worker.
+   * Called by WorkerBridgeService when the worker detects a commit msg file.
+   */
+  handleExternalCommitMsg(sessionId: string, commitMsgFilePath: string): void {
+    const instance = this.watchers.get(sessionId);
+    if (!instance) return;
+    console.log(`[WatcherService] External commit msg detected for ${sessionId}: ${commitMsgFilePath}`);
+    this.triggerCommit(instance, commitMsgFilePath);
+  }
+
   async start(sessionId: string): Promise<IpcResult<void>> {
     return this.wrap(async () => {
       if (this.watchers.has(sessionId)) {
@@ -182,7 +216,28 @@ export class WatcherService extends BaseService {
       // Also watch for common Claude commit msg file
       const claudeCommitMsgFile = path.join(worktreePath, '.claude-commit-msg');
 
-      // Create watcher - custom ignore function to allow commit msg files
+      // When worker bridge is available, delegate file monitoring to utility process
+      if (this.workerBridge) {
+        const instance: WatcherInstance = {
+          sessionId,
+          worktreePath,
+          watcher: null, // Monitored by utility process
+          commitMsgFile,
+          claudeCommitMsgFile,
+          repoPath,
+          agentType,
+          branchName,
+        };
+
+        this.watchers.set(sessionId, instance);
+        this.workerBridge.startFileMonitor(sessionId, worktreePath, commitMsgFile, claudeCommitMsgFile);
+        console.log(`[WatcherService] Delegated file monitoring to worker for ${sessionId}`);
+        this.activityService.log(sessionId, 'success', `File watcher started (worker process) for ${worktreePath}`);
+        this.terminalLogService?.logSystem(`Watcher started (worker): ${worktreePath}`, sessionId);
+        return;
+      }
+
+      // Fallback: in-process chokidar watcher
       const watcher = chokidar.watch(worktreePath, {
         ignored: (filePath: string) => {
           const basename = path.basename(filePath);
@@ -204,8 +259,8 @@ export class WatcherService extends BaseService {
         persistent: true,
         ignoreInitial: true,
         awaitWriteFinish: {
-          stabilityThreshold: 1000,  // Increased from 500ms for performance
-          pollInterval: 500,         // Increased from 100ms for performance
+          stabilityThreshold: 1000,
+          pollInterval: 500,
         },
       });
 
@@ -241,7 +296,11 @@ export class WatcherService extends BaseService {
       const instance = this.watchers.get(sessionId);
       if (!instance) return;
 
-      await instance.watcher.close();
+      if (instance.watcher) {
+        await instance.watcher.close();
+      } else if (this.workerBridge) {
+        this.workerBridge.stopFileMonitor(sessionId);
+      }
       this.watchers.delete(sessionId);
 
       // Clear debounce timer

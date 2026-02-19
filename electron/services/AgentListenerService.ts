@@ -12,6 +12,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { BrowserWindow } from 'electron';
 import { BaseService } from './BaseService';
+import type { WorkerBridgeService } from './WorkerBridgeService';
 import {
   KANVAS_PATHS,
   AgentInfo,
@@ -35,9 +36,56 @@ export class AgentListenerService extends BaseService {
   private baseDir: string = '';
   private heartbeatCheckInterval?: NodeJS.Timeout;
   private readonly HEARTBEAT_TIMEOUT_MS = 30000; // 30 seconds
+  private workerBridge: WorkerBridgeService | null = null;
+  private usingWorkerBridge = false;
 
   constructor() {
     super();
+  }
+
+  /**
+   * Set worker bridge for utility process monitoring.
+   */
+  setWorkerBridge(bridge: WorkerBridgeService): void {
+    this.workerBridge = bridge;
+    console.log('[AgentListenerService] Worker bridge configured');
+  }
+
+  /**
+   * Handle file event from the utility process worker.
+   * Routes to the appropriate handler based on subtype.
+   */
+  handleExternalFileEvent(
+    subtype: string,
+    action: string,
+    filePath: string
+  ): void {
+    switch (subtype) {
+      case 'agent':
+        if (action === 'unlink') {
+          this.handleAgentRemoved(filePath);
+        } else {
+          this.handleAgentFile(filePath);
+        }
+        break;
+      case 'session':
+        if (action === 'unlink') {
+          this.handleSessionRemoved(filePath);
+        } else {
+          this.handleSessionFile(filePath);
+        }
+        break;
+      case 'heartbeat':
+        if (action !== 'unlink') {
+          this.handleHeartbeat(filePath);
+        }
+        break;
+      case 'activity':
+        if (action !== 'unlink') {
+          this.handleActivityFile(filePath);
+        }
+        break;
+    }
   }
 
   /**
@@ -91,6 +139,15 @@ export class AgentListenerService extends BaseService {
   }
 
   private async startWatching(): Promise<void> {
+    // When worker bridge is available, delegate directory watching to utility process
+    if (this.workerBridge) {
+      this.usingWorkerBridge = true;
+      this.workerBridge.startAgentMonitor(this.baseDir);
+      this.log('info', 'Delegated directory monitoring to worker process');
+      return;
+    }
+
+    // Fallback: in-process watching
     // Watch for agent registrations
     const agentsPath = join(this.baseDir, KANVAS_PATHS.agents);
     const agentsWatcher = watch(agentsPath, {
@@ -322,6 +379,11 @@ export class AgentListenerService extends BaseService {
   async destroy(): Promise<void> {
     if (this.heartbeatCheckInterval) {
       clearInterval(this.heartbeatCheckInterval);
+    }
+
+    if (this.usingWorkerBridge && this.workerBridge) {
+      this.workerBridge.stopAgentMonitor();
+      this.usingWorkerBridge = false;
     }
 
     for (const [name, watcher] of this.watchers) {

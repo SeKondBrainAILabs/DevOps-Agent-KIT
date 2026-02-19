@@ -22,8 +22,13 @@ export abstract class BaseService extends EventEmitter {
    * Safely checks if window exists and is not destroyed before sending
    */
   protected emitToRenderer(channel: string, data: unknown): void {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.webContents.send(channel, data);
+    try {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send(channel, data);
+      }
+    } catch (error) {
+      // Window may have been destroyed between the check and the send
+      console.warn(`[BaseService] Failed to emit to renderer on ${channel}:`, (error as Error).message);
     }
   }
 

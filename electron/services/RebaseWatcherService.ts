@@ -7,6 +7,7 @@
 import { BaseService } from './BaseService';
 import { IPC } from '../../shared/ipc-channels';
 import type { GitService } from './GitService';
+import type { WorkerBridgeService } from './WorkerBridgeService';
 import type { IpcResult, RebaseFrequency } from '../../shared/types';
 
 // Watch configuration for a session
@@ -73,10 +74,56 @@ const DEFAULT_POLL_INTERVAL_MS = 60 * 1000;
 export class RebaseWatcherService extends BaseService {
   private gitService: GitService;
   private watchedSessions: Map<string, WatchState> = new Map();
+  private workerBridge: WorkerBridgeService | null = null;
 
   constructor(gitService: GitService) {
     super();
     this.gitService = gitService;
+  }
+
+  /**
+   * Set worker bridge for utility process polling.
+   * When set, git fetch polling runs in a separate process.
+   */
+  setWorkerBridge(bridge: WorkerBridgeService): void {
+    this.workerBridge = bridge;
+    console.log('[RebaseWatcher] Worker bridge configured — polling delegated to utility process');
+  }
+
+  /**
+   * Handle remote status update from the utility process worker.
+   * Called by WorkerBridgeService when the worker completes a poll cycle.
+   */
+  handleExternalRemoteStatus(
+    sessionId: string,
+    behind: number,
+    ahead: number,
+    remoteBranch: string,
+    localBranch: string
+  ): void {
+    const state = this.watchedSessions.get(sessionId);
+    if (!state || state.isPaused || state.isRebasing) return;
+
+    state.lastChecked = new Date();
+    const previousBehind = state.behindCount;
+    state.behindCount = behind;
+    state.aheadCount = ahead;
+
+    // Emit updated status to renderer
+    this.emitStatus(sessionId);
+
+    // Detect new commits
+    const hasNewCommits = behind > 0 && behind > previousBehind;
+    if (hasNewCommits) {
+      console.log(`[RebaseWatcher] Worker detected ${behind} commits behind for ${sessionId}`);
+      this.emitToRenderer(IPC.REBASE_REMOTE_CHANGES, {
+        sessionId,
+        repoPath: state.config.repoPath,
+        baseBranch: state.config.baseBranch,
+        behindCount: behind,
+        newCommits: behind - previousBehind,
+      });
+    }
   }
 
   /**
@@ -99,6 +146,27 @@ export class RebaseWatcherService extends BaseService {
 
       const pollInterval = config.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS;
 
+      // When worker bridge is available, delegate polling to utility process
+      if (this.workerBridge) {
+        const state: WatchState = {
+          config: { ...config, pollIntervalMs: pollInterval },
+          intervalId: null,
+          lastChecked: null,
+          lastRemoteCommit: null,
+          isRebasing: false,
+          isPaused: false,
+          behindCount: 0,
+          aheadCount: 0,
+          lastRebaseResult: null,
+        };
+        this.watchedSessions.set(sessionId, state);
+        this.workerBridge.startRebaseMonitor(sessionId, config.repoPath, config.baseBranch, 'origin', pollInterval);
+        console.log(`[RebaseWatcher] Delegated polling to worker for ${sessionId}`);
+        this.emitStatus(sessionId);
+        return;
+      }
+
+      // Fallback: in-process polling
       // Get initial remote state
       const initialStatus = await this.checkRemoteStatus(config.repoPath, config.baseBranch);
 
@@ -140,6 +208,8 @@ export class RebaseWatcherService extends BaseService {
 
       if (state.intervalId) {
         clearInterval(state.intervalId);
+      } else if (this.workerBridge) {
+        this.workerBridge.stopRebaseMonitor(sessionId);
       }
 
       this.watchedSessions.delete(sessionId);

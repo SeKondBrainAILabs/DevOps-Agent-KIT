@@ -47,8 +47,14 @@ export default defineConfig(async () => {
       plugins: [externalizeDepsPlugin(), copyConfigPlugin()],
       build: {
         outDir: 'dist/electron',
-        lib: {
-          entry: 'electron/index.ts',
+        rollupOptions: {
+          input: {
+            index: resolve(__dirname, 'electron/index.ts'),
+            'monitor-worker': resolve(__dirname, 'electron/worker/monitor-worker.ts'),
+          },
+          output: {
+            entryFileNames: '[name].js',
+          },
         },
       },
       resolve: {
