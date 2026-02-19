@@ -16,6 +16,7 @@
     "cli:cleanup": "./cleanup-sessions.sh",
     "test": "jest",
     "test:kanvas": "jest --config jest.kanvas.config.cjs",
+    "test:contracts": "jest tests/unit/generate-contracts.test.js tests/integration/contract-workflow.test.js",
     "test:e2e": "playwright test",
     "lint": "eslint . --ext .ts,.tsx"
   },
