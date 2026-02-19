@@ -201,7 +201,7 @@ describe('generate-contracts.js', () => {
           dependencies: {
             stripe: '^12.0.0',
             '@sendgrid/mail': '^7.7.0',
-            aws-sdk: '^2.1400.0'
+            'aws-sdk': '^2.1400.0'
           }
         })
       );
