@@ -367,6 +367,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.agentInstance.clearAllInstances();
   });
 
+  ipcMain.handle(IPC.INSTANCE_UPDATE_BASE_BRANCH, async (_, sessionId: string, newBaseBranch: string) => {
+    return services.agentInstance.updateBaseBranch(sessionId, newBaseBranch);
+  });
+
   ipcMain.handle(IPC.RECENT_REPOS_LIST, async () => {
     return services.agentInstance.getRecentRepos();
   });
@@ -1181,6 +1185,11 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // ==========================================================================
   ipcMain.handle(IPC.APP_GET_VERSION, () => {
     return app.getVersion();
+  });
+
+  ipcMain.handle(IPC.APP_RELOAD, () => {
+    mainWindow.reload();
+    return { success: true };
   });
 
   ipcMain.on(IPC.APP_QUIT, () => {

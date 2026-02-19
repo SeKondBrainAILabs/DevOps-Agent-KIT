@@ -13,6 +13,7 @@ import { join, basename } from 'path';
 import { BrowserWindow } from 'electron';
 import Store from 'electron-store';
 import { BaseService } from './BaseService';
+import { databaseService } from './DatabaseService';
 
 // Dynamic import helper for execa (ESM-only module)
 // Handles various bundling scenarios with fallback patterns
@@ -1029,6 +1030,16 @@ ${DEVOPS_KIT_DIR}/
         const newInstance = await this.createInstance(config);
 
         if (newInstance.success && newInstance.data) {
+          // Transfer database records (commits, activity logs) from old session to new
+          if (newInstance.data.sessionId) {
+            const transferred = databaseService.transferSessionData(sessionId, newInstance.data.sessionId);
+            this.terminalLogService?.info(
+              `Transferred ${transferred.transferred.commits} commits and ${transferred.transferred.activity} activity entries`,
+              newInstance.data.sessionId,
+              'Restart'
+            );
+          }
+
           const windows = BrowserWindow.getAllWindows();
           for (const win of windows) {
             win.webContents.send('session:closed', sessionId);
@@ -1092,6 +1103,16 @@ ${DEVOPS_KIT_DIR}/
       const newInstance = await this.createInstance(config);
 
       if (newInstance.success && newInstance.data) {
+        // Transfer database records (commits, activity logs) from old session to new
+        if (newInstance.data.sessionId) {
+          const transferred = databaseService.transferSessionData(sessionId, newInstance.data.sessionId);
+          this.terminalLogService?.info(
+            `Transferred ${transferred.transferred.commits} commits and ${transferred.transferred.activity} activity entries`,
+            newInstance.data.sessionId,
+            'Restart'
+          );
+        }
+
         // Notify renderer of the restart (old session removed, new one added)
         const windows = BrowserWindow.getAllWindows();
         for (const win of windows) {
@@ -1240,6 +1261,103 @@ ${DEVOPS_KIT_DIR}/
 
     console.log(`[AgentInstanceService] Cleared ${count} instances`);
     return { success: true, data: { count } };
+  }
+
+  /**
+   * Update the base branch for a session
+   * Allows changing which branch the session rebases from
+   */
+  async updateBaseBranch(sessionId: string, newBaseBranch: string): Promise<IpcResult<void>> {
+    try {
+      // Find instance by sessionId
+      let targetInstance: AgentInstance | undefined;
+      for (const instance of this.instances.values()) {
+        if (instance.sessionId === sessionId) {
+          targetInstance = instance;
+          break;
+        }
+      }
+
+      if (!targetInstance) {
+        return {
+          success: false,
+          error: { code: 'NOT_FOUND', message: `No instance found for session ${sessionId}` },
+        };
+      }
+
+      const repoPath = targetInstance.config.repoPath;
+
+      // Validate the branch exists (check local and remote branches)
+      const branchResult = await execaCmd(
+        'git',
+        ['branch', '-a', '--list', `*${newBaseBranch}`],
+        { cwd: repoPath }
+      );
+
+      const matchingBranches = branchResult.stdout.trim().split('\n').filter(Boolean);
+      if (matchingBranches.length === 0) {
+        return {
+          success: false,
+          error: { code: 'BRANCH_NOT_FOUND', message: `Branch "${newBaseBranch}" not found in repository` },
+        };
+      }
+
+      // Update the config
+      targetInstance.config.baseBranch = newBaseBranch;
+      this.instances.set(targetInstance.id, targetInstance);
+      this.saveInstances();
+
+      // Update the session file on disk
+      const sessionFilePath = join(repoPath, KANVAS_PATHS.sessions, `${sessionId}.json`);
+      if (existsSync(sessionFilePath)) {
+        try {
+          const content = await readFile(sessionFilePath, 'utf-8');
+          const sessionData = JSON.parse(content);
+          sessionData.baseBranch = newBaseBranch;
+          sessionData.updated = new Date().toISOString();
+          await writeFile(sessionFilePath, JSON.stringify(sessionData, null, 2));
+        } catch {
+          // Non-fatal: session file update failed
+          console.warn(`[AgentInstanceService] Could not update session file for ${sessionId}`);
+        }
+      }
+
+      // Re-emit session report to renderer with updated baseBranch
+      const shortSessionId = sessionId.replace('sess_', '').slice(0, 8);
+      const agentId = `kanvas-${targetInstance.config.agentType}-${shortSessionId}`;
+      const now = new Date().toISOString();
+
+      const sessionReport = {
+        sessionId,
+        agentId,
+        agentType: targetInstance.config.agentType,
+        task: targetInstance.config.taskDescription || targetInstance.config.branchName || `${targetInstance.config.agentType} session`,
+        branchName: targetInstance.config.branchName,
+        baseBranch: newBaseBranch,
+        worktreePath: targetInstance.worktreePath || repoPath,
+        repoPath,
+        status: targetInstance.status === 'running' ? 'active' as const : 'idle' as const,
+        created: targetInstance.createdAt,
+        updated: now,
+        commitCount: 0,
+      };
+
+      const windows = BrowserWindow.getAllWindows();
+      for (const win of windows) {
+        win.webContents.send('session:reported', sessionReport);
+      }
+
+      console.log(`[AgentInstanceService] Updated baseBranch for session ${sessionId} to ${newBaseBranch}`);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'UPDATE_ERROR',
+          message: error instanceof Error ? error.message : 'Failed to update base branch',
+        },
+      };
+    }
   }
 
   /**

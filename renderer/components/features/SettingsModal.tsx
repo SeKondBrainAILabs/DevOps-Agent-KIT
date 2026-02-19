@@ -817,6 +817,22 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                   Quick cleanup will prune stale worktrees and remove old session files.
                 </p>
               </div>
+
+              <div className="border-t border-border my-4" />
+
+              {/* Reload App */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-200">Reload App</h3>
+                <p className="text-xs text-gray-400">
+                  Reload the application to reset all UI state. Sessions and data are preserved.
+                </p>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="btn-secondary w-full"
+                >
+                  Reload App
+                </button>
+              </div>
             </>
           )}
 

@@ -105,6 +105,9 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showErrorPopup, setShowErrorPopup] = useState(false);
+  const [editingBaseBranch, setEditingBaseBranch] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(false);
 
   // Load instance data to get the prompt
   useEffect(() => {
@@ -233,6 +236,45 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     }
   };
 
+  const handleEditBaseBranch = async () => {
+    if (editingBaseBranch) {
+      setEditingBaseBranch(false);
+      return;
+    }
+    setLoadingBranches(true);
+    try {
+      const repoPath = session.repoPath || session.worktreePath;
+      if (repoPath) {
+        const result = await window.api?.instance?.validateRepo?.(repoPath);
+        if (result?.success && result.data?.branches) {
+          setBranches(result.data.branches);
+        }
+      }
+    } catch (err) {
+      console.error('[SessionDetail] Failed to load branches:', err);
+    } finally {
+      setLoadingBranches(false);
+      setEditingBaseBranch(true);
+    }
+  };
+
+  const handleBaseBranchChange = async (newBranch: string) => {
+    setEditingBaseBranch(false);
+    if (newBranch === (session.baseBranch || 'main')) return;
+    try {
+      const result = await window.api?.instance?.updateBaseBranch?.(session.sessionId, newBranch);
+      if (result?.success) {
+        useAgentStore.getState().updateReportedSession(session.sessionId, { baseBranch: newBranch });
+        setSyncResult({ success: true, message: `Base branch changed to ${newBranch}` });
+        setTimeout(() => setSyncResult(null), 3000);
+      } else {
+        setSyncResult({ success: false, message: result?.error?.message || 'Failed to change base branch' });
+      }
+    } catch (err) {
+      setSyncResult({ success: false, message: 'Failed to change base branch' });
+    }
+  };
+
   const statusColors = {
     active: 'text-green-500',
     idle: 'text-yellow-500',
@@ -335,23 +377,50 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
               </span>
             )}
 
-            {/* Sync Button - Rebase from base branch */}
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                ${syncing
-                  ? 'bg-blue-500 text-white cursor-wait'
-                  : 'bg-surface-secondary text-text-primary hover:bg-blue-50 hover:text-blue-600'
-                }`}
-              title={syncing ? 'Syncing...' : `Sync with ${session.baseBranch || 'main'} (fetch & rebase)`}
-            >
-              <svg className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-              </svg>
-              {syncing ? 'Syncing...' : 'Sync'}
-            </button>
+            {/* Base Branch Selector + Sync Button */}
+            <div className="flex items-center gap-1">
+              {editingBaseBranch ? (
+                <select
+                  value={session.baseBranch || 'main'}
+                  onChange={(e) => handleBaseBranchChange(e.target.value)}
+                  onBlur={() => setEditingBaseBranch(false)}
+                  autoFocus
+                  className="px-2 py-1.5 rounded-lg text-xs font-mono bg-surface-tertiary border border-border text-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
+                >
+                  {branches.map((branch) => (
+                    <option key={branch} value={branch}>{branch}</option>
+                  ))}
+                </select>
+              ) : (
+                <button
+                  onClick={handleEditBaseBranch}
+                  disabled={loadingBranches}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-mono text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors"
+                  title="Click to change base branch for rebasing"
+                >
+                  {loadingBranches ? '...' : (session.baseBranch || 'main')}
+                  <svg className="w-3 h-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                </button>
+              )}
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+                  ${syncing
+                    ? 'bg-blue-500 text-white cursor-wait'
+                    : 'bg-surface-secondary text-text-primary hover:bg-blue-50 hover:text-blue-600'
+                  }`}
+                title={syncing ? 'Syncing...' : `Sync with ${session.baseBranch || 'main'} (fetch & rebase)`}
+              >
+                <svg className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                </svg>
+                {syncing ? 'Syncing...' : 'Sync'}
+              </button>
+            </div>
 
             {onRestart && (
               <button

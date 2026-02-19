@@ -65,9 +65,16 @@ const mockApi = {
     list: createMockFn({ success: true, data: [] }),
     get: createMockFn({ success: true, data: null }),
     delete: createMockFn({ success: true }),
+    restart: createMockFn({ success: true, data: {} }),
+    updateBaseBranch: createMockFn({ success: true }),
     getRecentRepos: createMockFn({ success: true, data: [] }),
     removeRecentRepo: createMockFn({ success: true }),
     onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
+  },
+  app: {
+    reload: createMockFn({ success: true }),
+    getVersion: createMockFn('1.2.0'),
+    quit: jest.fn() as MockFn,
   },
   recentRepos: {
     list: createMockFn({ success: true, data: [] }),

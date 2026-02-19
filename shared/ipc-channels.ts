@@ -130,6 +130,7 @@ export const IPC = {
   INSTANCE_DELETE_SESSION: 'instance:delete-session', // Delete by sessionId
   INSTANCE_RESTART: 'instance:restart',
   INSTANCE_CLEAR_ALL: 'instance:clear-all',
+  INSTANCE_UPDATE_BASE_BRANCH: 'instance:update-base-branch',
   RECENT_REPOS_LIST: 'recent-repos:list',
   RECENT_REPOS_ADD: 'recent-repos:add',
   RECENT_REPOS_REMOVE: 'recent-repos:remove',
@@ -395,6 +396,7 @@ export const IPC = {
   // APP CHANNELS
   // ==========================================================================
   APP_GET_VERSION: 'app:getVersion',
+  APP_RELOAD: 'app:reload',
   APP_QUIT: 'app:quit',
 } as const;
 
@@ -454,7 +456,9 @@ export const REQUEST_CHANNELS = [
   IPC.RECENT_REPOS_LIST,
   IPC.RECENT_REPOS_ADD,
   IPC.RECENT_REPOS_REMOVE,
+  IPC.INSTANCE_UPDATE_BASE_BRANCH,
   IPC.APP_GET_VERSION,
+  IPC.APP_RELOAD,
   // Version management channels
   IPC.VERSION_GET,
   IPC.VERSION_BUMP,

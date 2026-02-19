@@ -517,6 +517,9 @@ const api = {
     clearAll: (): Promise<IpcResult<{ count: number }>> =>
       ipcRenderer.invoke(IPC.INSTANCE_CLEAR_ALL),
 
+    updateBaseBranch: (sessionId: string, newBaseBranch: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_UPDATE_BASE_BRANCH, sessionId, newBaseBranch),
+
     getRecentRepos: (): Promise<IpcResult<RecentRepo[]>> =>
       ipcRenderer.invoke(IPC.RECENT_REPOS_LIST),
 
@@ -562,6 +565,9 @@ const api = {
   app: {
     getVersion: (): Promise<string> =>
       ipcRenderer.invoke(IPC.APP_GET_VERSION),
+
+    reload: (): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.APP_RELOAD),
 
     quit: (): void => {
       ipcRenderer.send(IPC.APP_QUIT);

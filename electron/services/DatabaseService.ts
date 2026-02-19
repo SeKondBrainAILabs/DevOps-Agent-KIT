@@ -900,6 +900,43 @@ export class DatabaseService extends BaseService {
   }
 
   /**
+   * Transfer all session data from one sessionId to another
+   * Used during session restart to preserve commit history and activity logs
+   */
+  transferSessionData(oldSessionId: string, newSessionId: string): { transferred: { commits: number; activity: number; terminal: number; history: number } } {
+    const result = { commits: 0, activity: 0, terminal: 0, history: 0 };
+    if (!this.db) return { transferred: result };
+
+    try {
+      // Transfer commits
+      const commitStmt = this.db.prepare('UPDATE commits SET session_id = ? WHERE session_id = ?');
+      const commitResult = commitStmt.run(newSessionId, oldSessionId);
+      result.commits = commitResult.changes;
+
+      // Transfer activity logs
+      const activityStmt = this.db.prepare('UPDATE activity_logs SET session_id = ? WHERE session_id = ?');
+      const activityResult = activityStmt.run(newSessionId, oldSessionId);
+      result.activity = activityResult.changes;
+
+      // Transfer terminal logs
+      const terminalStmt = this.db.prepare('UPDATE terminal_logs SET session_id = ? WHERE session_id = ?');
+      const terminalResult = terminalStmt.run(newSessionId, oldSessionId);
+      result.terminal = terminalResult.changes;
+
+      // Transfer session history
+      const historyStmt = this.db.prepare('UPDATE session_history SET session_id = ? WHERE session_id = ?');
+      const historyResult = historyStmt.run(newSessionId, oldSessionId);
+      result.history = historyResult.changes;
+
+      console.log(`[DatabaseService] Transferred session data from ${oldSessionId} to ${newSessionId}: ${JSON.stringify(result)}`);
+      return { transferred: result };
+    } catch (error) {
+      console.error(`[DatabaseService] Failed to transfer session data:`, error);
+      return { transferred: result };
+    }
+  }
+
+  /**
    * Close the database connection
    */
   async dispose(): Promise<void> {

@@ -114,3 +114,4 @@ release/
 # Test fixtures - cloned repos
 tests/kanvas/fixtures/SA-Piggy-Bank/
 tests/kanvas/fixtures/sample-repo/
+release-test*/
