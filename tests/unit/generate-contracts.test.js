@@ -3,6 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// Helper: write file, creating parent directories as needed
+function writeFileWithDirs(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content);
+}
+
 describe('generate-contracts.js', () => {
   const testDir = path.join(__dirname, '../fixtures/test-repo');
   const outputFile = path.join(testDir, 'House_Rules_Contracts/contract-scan-results.json');
@@ -16,6 +22,8 @@ describe('generate-contracts.js', () => {
     fs.mkdirSync(path.join(testDir, 'House_Rules_Contracts'), { recursive: true });
     fs.mkdirSync(path.join(testDir, 'src/features'), { recursive: true });
     fs.mkdirSync(path.join(testDir, 'src/api'), { recursive: true });
+    fs.mkdirSync(path.join(testDir, 'src/services'), { recursive: true });
+    fs.mkdirSync(path.join(testDir, 'src/queries'), { recursive: true });
     fs.mkdirSync(path.join(testDir, 'migrations'), { recursive: true });
   });
 
@@ -29,11 +37,11 @@ describe('generate-contracts.js', () => {
   describe('Feature Scanning', () => {
     test('should discover features in src/features directory', () => {
       // Create mock feature files
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/features/user-auth/index.js'),
         '// User authentication feature\nexport default function authenticate() {}'
       );
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/features/payment/index.js'),
         '// Payment processing feature\nexport default function processPayment() {}'
       );
@@ -55,7 +63,7 @@ describe('generate-contracts.js', () => {
 
   describe('API Endpoint Scanning', () => {
     test('should discover Express.js API endpoints', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/api/users.js'),
         `
         app.get('/api/v1/users', (req, res) => {});
@@ -78,7 +86,7 @@ describe('generate-contracts.js', () => {
     });
 
     test('should discover FastAPI endpoints', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/api/items.py'),
         `
         @router.get("/api/v1/items")
@@ -103,7 +111,7 @@ describe('generate-contracts.js', () => {
 
   describe('Database Schema Scanning', () => {
     test('should discover SQL CREATE TABLE statements', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'migrations/001_create_users.sql'),
         `
         CREATE TABLE users (
@@ -132,7 +140,7 @@ describe('generate-contracts.js', () => {
     });
 
     test('should discover Prisma schema models', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'schema.prisma'),
         `
         model User {
@@ -161,7 +169,7 @@ describe('generate-contracts.js', () => {
 
   describe('SQL Query Scanning', () => {
     test('should discover SQL queries in code files', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/services/UserService.js'),
         `
         const getUserByEmail = "SELECT * FROM users WHERE email = $1";
@@ -171,12 +179,12 @@ describe('generate-contracts.js', () => {
 
       const queries = scanSQLQueries(testDir);
 
-      expect(queries.length).toBeGreaterThan(0);
-      expect(Object.keys(queries)).toContain(expect.stringMatching(/getUserByEmail|updateUser/));
+      expect(Object.keys(queries).length).toBeGreaterThan(0);
+      expect(Object.keys(queries)).toContainEqual(expect.stringMatching(/getUserByEmail|updateUser/));
     });
 
     test('should discover queries in .sql files', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/queries/users.sql'),
         `
         -- name: get_user_by_id
@@ -195,7 +203,7 @@ describe('generate-contracts.js', () => {
 
   describe('Third-Party Integration Scanning', () => {
     test('should discover integrations from package.json', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'package.json'),
         JSON.stringify({
           dependencies: {
@@ -221,7 +229,7 @@ describe('generate-contracts.js', () => {
 
   describe('Environment Variable Scanning', () => {
     test('should discover env variables from code', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/config.js'),
         `
         const dbUrl = process.env.DATABASE_URL;
@@ -244,13 +252,11 @@ describe('generate-contracts.js', () => {
     });
 
     test('should discover env variables from .env.example', () => {
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, '.env.example'),
-        `
-        DATABASE_URL=postgresql://localhost:5432/mydb
-        REDIS_URL=redis://localhost:6379
-        API_KEY=your_api_key_here
-        `
+        `DATABASE_URL=postgresql://localhost:5432/mydb
+REDIS_URL=redis://localhost:6379
+API_KEY=your_api_key_here`
       );
 
       const envVars = scanEnvironmentVariables(testDir);
@@ -265,7 +271,7 @@ describe('generate-contracts.js', () => {
   describe('Output Generation', () => {
     test('should generate valid JSON output', () => {
       // Create minimal test data
-      fs.writeFileSync(
+      writeFileWithDirs(
         path.join(testDir, 'src/features/test/index.js'),
         '// Test feature'
       );
