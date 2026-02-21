@@ -26,6 +26,7 @@ export class KanvasHeartbeatWriter {
       this.writeHeartbeat().catch(() => {});
     }, WRITE_INTERVAL_MS);
 
+    // Log via console since KanvasHeartbeatWriter doesn't have an emit callback
     console.log(`[KanvasHeartbeatWriter] Started writing heartbeats to ${heartbeatDir}`);
   }
 
