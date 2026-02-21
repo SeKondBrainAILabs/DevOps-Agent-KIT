@@ -25,12 +25,15 @@ describe('WorkerBridgeService - Worker Status via IPC', () => {
     const result = await mockApi.worker.status();
 
     expect(result).toEqual({
-      workerAlive: true,
-      workerReady: true,
-      workerPid: 12345,
-      restartCount: 0,
-      activeMonitors: 3,
-      uptimeMs: 60000,
+      success: true,
+      data: {
+        workerAlive: true,
+        workerReady: true,
+        workerPid: 12345,
+        restartCount: 0,
+        activeMonitors: 3,
+        uptimeMs: 60000,
+      },
     });
   });
 
@@ -42,18 +45,21 @@ describe('WorkerBridgeService - Worker Status via IPC', () => {
 
   it('should handle worker being down', async () => {
     (mockApi.worker.status as jest.Mock).mockResolvedValueOnce({
-      workerAlive: false,
-      workerReady: false,
-      workerPid: null,
-      restartCount: 3,
-      activeMonitors: 0,
-      uptimeMs: 0,
+      success: true,
+      data: {
+        workerAlive: false,
+        workerReady: false,
+        workerPid: null,
+        restartCount: 3,
+        activeMonitors: 0,
+        uptimeMs: 0,
+      },
     } as never);
 
     const result = await mockApi.worker.status();
-    expect(result.workerAlive).toBe(false);
-    expect(result.workerReady).toBe(false);
-    expect(result.restartCount).toBe(3);
+    expect(result.data.workerAlive).toBe(false);
+    expect(result.data.workerReady).toBe(false);
+    expect(result.data.restartCount).toBe(3);
   });
 });
 
