@@ -4,7 +4,7 @@
  * Follows SeKondBrain design aesthetics
  */
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { useAgentStore } from '../../store/agentStore';
 import type { AgentInfo } from '../../../shared/agent-protocol';
 
@@ -12,6 +12,15 @@ interface RegisteredAgent extends AgentInfo {
   isAlive: boolean;
   sessions: string[];
   lastHeartbeat?: string;
+}
+
+interface WorkerStatus {
+  workerAlive: boolean;
+  workerReady: boolean;
+  workerPid: number | null;
+  restartCount: number;
+  activeMonitors: number;
+  uptimeMs: number;
 }
 
 interface StatusBarProps {
@@ -27,6 +36,34 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
   const [appVersion, setAppVersion] = useState('');
   useEffect(() => {
     window.api?.app?.getVersion?.().then((v: string) => setAppVersion(v)).catch(() => {});
+  }, []);
+
+  // Worker process status
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
+  const [isRestarting, setIsRestarting] = useState(false);
+
+  useEffect(() => {
+    // Fetch initial status
+    window.api?.worker?.status?.().then((result) => {
+      if (result?.success && result.data) setWorkerStatus(result.data);
+    }).catch(() => {});
+
+    // Listen for status changes
+    const unsubscribe = window.api?.worker?.onStatusChanged?.((status) => {
+      setWorkerStatus(status);
+      setIsRestarting(false);
+    });
+
+    return () => unsubscribe?.();
+  }, []);
+
+  const handleWorkerRestart = useCallback(async () => {
+    setIsRestarting(true);
+    try {
+      await window.api?.worker?.restart?.();
+    } catch {
+      setIsRestarting(false);
+    }
   }, []);
 
   // Agent counts from the agents map
@@ -81,6 +118,46 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
             <span className="text-text-primary font-medium">{agent.agentName}</span>
             <span className="text-text-secondary">
               ({agent.sessions.length} sessions)
+            </span>
+          </span>
+        </>
+      )}
+
+      {/* Worker process status */}
+      {workerStatus && (
+        <>
+          <span className="text-border">|</span>
+          <span
+            className="flex items-center gap-1.5 cursor-pointer hover:text-text-primary transition-colors"
+            onClick={handleWorkerRestart}
+            title={
+              isRestarting
+                ? 'Restarting worker...'
+                : workerStatus.workerReady
+                  ? `Worker PID ${workerStatus.workerPid} · ${workerStatus.activeMonitors} monitors · Click to restart`
+                  : `Worker down (${workerStatus.restartCount} restarts) · Click to restart`
+            }
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isRestarting
+                  ? 'bg-yellow-500 animate-pulse'
+                  : workerStatus.workerReady
+                    ? 'bg-green-500'
+                    : workerStatus.workerAlive
+                      ? 'bg-yellow-500'
+                      : 'bg-red-500'
+              }`}
+            />
+            <svg className="w-3.5 h-3.5 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728M9.172 15.828a4 4 0 010-5.656m5.656 0a4 4 0 010 5.656M12 12h.008v.008H12V12z" />
+            </svg>
+            <span className="text-text-secondary">
+              {isRestarting
+                ? 'Restarting...'
+                : workerStatus.workerReady
+                  ? `${workerStatus.activeMonitors} monitors`
+                  : 'Worker down'}
             </span>
           </span>
         </>
