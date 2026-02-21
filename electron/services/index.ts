@@ -226,6 +226,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   workerBridge.onWorkerError = (source, message) => {
     terminalLog.warn(`Worker error (${source}): ${message}`, undefined, 'Worker');
   };
+  workerBridge.onWorkerLog = (level, source, message) => {
+    terminalLog.log(level === 'debug' ? 'debug' : level, message, { source: `Worker:${source}` });
+  };
 
   // Connect worker bridge to monitoring services
   watcher.setWorkerBridge(workerBridge);

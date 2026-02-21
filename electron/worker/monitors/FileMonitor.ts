@@ -99,17 +99,17 @@ export class FileMonitor {
       watcher,
     });
 
-    console.log(`[FileMonitor] Started watching ${worktreePath} for session ${sessionId}`);
+    this.emit({ type: 'log', level: 'info', source: 'FileMonitor', message: `Started watching ${worktreePath} for session ${sessionId}` });
   }
 
   stop(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.watcher.close().catch((err) => {
-        console.error(`[FileMonitor] Error closing watcher for ${sessionId}:`, err);
+        this.emit({ type: 'log', level: 'error', source: 'FileMonitor', message: `Error closing watcher for ${sessionId}: ${err}` });
       });
       this.sessions.delete(sessionId);
-      console.log(`[FileMonitor] Stopped watching session ${sessionId}`);
+      this.emit({ type: 'log', level: 'info', source: 'FileMonitor', message: `Stopped watching session ${sessionId}` });
     }
   }
 

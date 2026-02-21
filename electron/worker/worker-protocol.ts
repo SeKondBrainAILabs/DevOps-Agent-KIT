@@ -92,7 +92,8 @@ export type WorkerEvent =
   | AgentFileEvent
   | PongEvent
   | WorkerErrorEvent
-  | WorkerReadyEvent;
+  | WorkerReadyEvent
+  | WorkerLogEvent;
 
 export interface FileChangedEvent {
   type: 'file-changed';
@@ -155,4 +156,11 @@ export interface WorkerErrorEvent {
 export interface WorkerReadyEvent {
   type: 'ready';
   pid: number;
+}
+
+export interface WorkerLogEvent {
+  type: 'log';
+  level: 'debug' | 'info' | 'warn' | 'error';
+  source: string;
+  message: string;
 }

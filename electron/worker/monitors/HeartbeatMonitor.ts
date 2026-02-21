@@ -50,17 +50,17 @@ export class HeartbeatMonitor {
       this.checkInterval = setInterval(() => this.checkTimeouts(), CHECK_INTERVAL_MS);
     }
 
-    console.log(`[HeartbeatMonitor] Started monitoring ${sessionId}`);
+    this.emit({ type: 'log', level: 'info', source: 'HeartbeatMonitor', message: `Started monitoring ${sessionId}` });
   }
 
   stop(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.watcher.close().catch((err) => {
-        console.error(`[HeartbeatMonitor] Error closing watcher for ${sessionId}:`, err);
+        this.emit({ type: 'log', level: 'error', source: 'HeartbeatMonitor', message: `Error closing watcher for ${sessionId}: ${err}` });
       });
       this.sessions.delete(sessionId);
-      console.log(`[HeartbeatMonitor] Stopped monitoring ${sessionId}`);
+      this.emit({ type: 'log', level: 'info', source: 'HeartbeatMonitor', message: `Stopped monitoring ${sessionId}` });
     }
 
     // Stop check interval if no more sessions

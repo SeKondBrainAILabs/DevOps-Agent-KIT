@@ -157,9 +157,12 @@ describe('FileMonitor', () => {
   it('should NOT emit commit-msg-detected on unlink of commit msg file', () => {
     const monitor = new FileMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo/worktree', '/repo/.commit-msg', '/repo/.claude-commit-msg');
+    emitFn.mockClear(); // Clear log events from start()
 
     currentMockWatcher.simulate('unlink', '/repo/.commit-msg');
-    expect(emitFn).not.toHaveBeenCalled();
+    expect(emitFn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'commit-msg-detected' })
+    );
   });
 
   it('should stop previous watcher when starting same session', () => {
@@ -374,9 +377,12 @@ describe('AgentMonitor', () => {
   it('should not emit events for non-JSON files', () => {
     const monitor = new AgentMonitor(emitFn as EmitFn);
     monitor.start('/home/user');
+    emitFn.mockClear(); // Clear log events from start()
 
     allCreatedWatchers[0].simulate('add', '/home/user/.S9N_KIT_DevOpsAgent/agents/readme.txt');
-    expect(emitFn).not.toHaveBeenCalled();
+    expect(emitFn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'agent-file-event' })
+    );
   });
 
   it('should close previous watchers on re-start', () => {

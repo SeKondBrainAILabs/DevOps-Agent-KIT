@@ -23,6 +23,19 @@ function emit(event: WorkerEvent): void {
   process.parentPort.postMessage(event);
 }
 
+// ─── Structured logging (routed to main process) ─────────────────
+
+function log(level: 'debug' | 'info' | 'warn' | 'error', source: string, message: string): void {
+  emit({ type: 'log', level, source, message });
+}
+
+const workerLog = {
+  debug: (source: string, msg: string) => log('debug', source, msg),
+  info: (source: string, msg: string) => log('info', source, msg),
+  warn: (source: string, msg: string) => log('warn', source, msg),
+  error: (source: string, msg: string) => log('error', source, msg),
+};
+
 // ─── Instantiate monitors ─────────────────────────────────────────
 
 const fileMonitor = new FileMonitor(emit);
@@ -103,7 +116,7 @@ function handleCommand(command: WorkerCommand): void {
         break;
 
       default:
-        console.warn('[MonitorWorker] Unknown command type:', (command as { type: string }).type);
+        workerLog.warn('MonitorWorker', `Unknown command type: ${(command as { type: string }).type}`);
     }
   } catch (err) {
     emit({
@@ -124,7 +137,7 @@ process.parentPort.on('message', (messageEvent) => {
 // ─── Error handlers ───────────────────────────────────────────────
 
 process.on('uncaughtException', (error) => {
-  console.error('[MonitorWorker] Uncaught exception:', error);
+  workerLog.error('MonitorWorker', `Uncaught exception: ${error.message}`);
   emit({
     type: 'error',
     source: 'MonitorWorker:uncaughtException',
@@ -134,7 +147,7 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[MonitorWorker] Unhandled rejection:', reason);
+  workerLog.error('MonitorWorker', `Unhandled rejection: ${String(reason)}`);
   emit({
     type: 'error',
     source: 'MonitorWorker:unhandledRejection',
@@ -159,4 +172,4 @@ emit({
   pid: process.pid,
 });
 
-console.log(`[MonitorWorker] Ready (pid: ${process.pid})`);
+workerLog.info('MonitorWorker', `Ready (pid: ${process.pid})`);

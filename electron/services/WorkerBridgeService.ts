@@ -49,6 +49,7 @@ export class WorkerBridgeService extends BaseService {
   onAgentFileEvent?: (subtype: string, action: string, filePath: string) => void;
   onWorkerReady?: (pid: number) => void;
   onWorkerError?: (source: string, message: string) => void;
+  onWorkerLog?: (level: 'debug' | 'info' | 'warn' | 'error', source: string, message: string) => void;
 
   // ─── Lifecycle ────────────────────────────────────────────────
 
@@ -200,6 +201,10 @@ export class WorkerBridgeService extends BaseService {
       case 'error':
         console.error(`[WorkerBridge] Worker error (${event.source}): ${event.message}`);
         this.onWorkerError?.(event.source, event.message);
+        break;
+
+      case 'log':
+        this.onWorkerLog?.(event.level, event.source, event.message);
         break;
     }
   }

@@ -57,7 +57,7 @@ export class RebaseMonitor {
     // Do an immediate first poll
     this.poll(sessionId).catch(() => {});
 
-    console.log(`[RebaseMonitor] Started polling ${repoPath} for ${sessionId} every ${pollIntervalMs / 1000}s`);
+    this.emit({ type: 'log', level: 'info', source: 'RebaseMonitor', message: `Started polling ${repoPath} for ${sessionId} every ${pollIntervalMs / 1000}s` });
   }
 
   stop(sessionId: string): void {
@@ -65,7 +65,7 @@ export class RebaseMonitor {
     if (session) {
       clearInterval(session.intervalId);
       this.sessions.delete(sessionId);
-      console.log(`[RebaseMonitor] Stopped polling ${sessionId}`);
+      this.emit({ type: 'log', level: 'info', source: 'RebaseMonitor', message: `Stopped polling ${sessionId}` });
     }
   }
 

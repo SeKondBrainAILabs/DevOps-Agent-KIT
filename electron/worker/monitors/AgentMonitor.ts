@@ -69,18 +69,18 @@ export class AgentMonitor {
       this.watchers.set(subdir, watcher);
     }
 
-    console.log(`[AgentMonitor] Started watching ${baseDir}`);
+    this.emit({ type: 'log', level: 'info', source: 'AgentMonitor', message: `Started watching ${baseDir}` });
   }
 
   stop(): void {
     for (const [name, watcher] of this.watchers) {
       watcher.close().catch((err) => {
-        console.error(`[AgentMonitor] Error closing ${name} watcher:`, err);
+        this.emit({ type: 'log', level: 'error', source: 'AgentMonitor', message: `Error closing ${name} watcher: ${err}` });
       });
     }
     this.watchers.clear();
     this.baseDir = null;
-    console.log('[AgentMonitor] Stopped all watchers');
+    this.emit({ type: 'log', level: 'info', source: 'AgentMonitor', message: 'Stopped all watchers' });
   }
 
   get activeCount(): number {
