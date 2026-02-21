@@ -33,6 +33,10 @@ describe('WorkerBridgeService - Worker Status via IPC', () => {
         restartCount: 0,
         activeMonitors: 3,
         uptimeMs: 60000,
+        workerUptimeSec: 60,
+        lastPingLatencyMs: 5,
+        restartHistory: [],
+        spawnedAt: '2026-02-21T19:00:00.000Z',
       },
     });
   });
@@ -53,6 +57,14 @@ describe('WorkerBridgeService - Worker Status via IPC', () => {
         restartCount: 3,
         activeMonitors: 0,
         uptimeMs: 0,
+        workerUptimeSec: 0,
+        lastPingLatencyMs: 0,
+        restartHistory: [
+          { timestamp: '2026-02-21T19:05:00.000Z', exitCode: 1, reason: 'crash' },
+          { timestamp: '2026-02-21T19:06:00.000Z', exitCode: 1, reason: 'crash' },
+          { timestamp: '2026-02-21T19:07:00.000Z', exitCode: -1, reason: 'unresponsive' },
+        ],
+        spawnedAt: null,
       },
     } as never);
 
@@ -60,6 +72,17 @@ describe('WorkerBridgeService - Worker Status via IPC', () => {
     expect(result.data.workerAlive).toBe(false);
     expect(result.data.workerReady).toBe(false);
     expect(result.data.restartCount).toBe(3);
+    expect(result.data.restartHistory).toHaveLength(3);
+    expect(result.data.restartHistory[2].reason).toBe('unresponsive');
+  });
+
+  it('should include metrics fields in status', async () => {
+    const result = await mockApi.worker.status();
+    expect(result.data).toHaveProperty('workerUptimeSec');
+    expect(result.data).toHaveProperty('lastPingLatencyMs');
+    expect(result.data).toHaveProperty('restartHistory');
+    expect(result.data).toHaveProperty('spawnedAt');
+    expect(Array.isArray(result.data.restartHistory)).toBe(true);
   });
 });
 
@@ -95,6 +118,7 @@ describe('Worker Protocol Types', () => {
       'pong',
       'error',
       'ready',
+      'log',
     ];
 
     for (const evt of events) {

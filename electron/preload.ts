@@ -1931,6 +1931,10 @@ const api = {
       restartCount: number;
       activeMonitors: number;
       uptimeMs: number;
+      workerUptimeSec: number;
+      lastPingLatencyMs: number;
+      restartHistory: { timestamp: string; exitCode: number; reason: string }[];
+      spawnedAt: string | null;
     }>> =>
       ipcRenderer.invoke(IPC.WORKER_STATUS),
 
@@ -1944,15 +1948,12 @@ const api = {
       restartCount: number;
       activeMonitors: number;
       uptimeMs: number;
+      workerUptimeSec: number;
+      lastPingLatencyMs: number;
+      restartHistory: { timestamp: string; exitCode: number; reason: string }[];
+      spawnedAt: string | null;
     }) => void): (() => void) => {
-      const handler = (_event: IpcRendererEvent, status: {
-        workerAlive: boolean;
-        workerReady: boolean;
-        workerPid: number | null;
-        restartCount: number;
-        activeMonitors: number;
-        uptimeMs: number;
-      }) => callback(status);
+      const handler = (_event: IpcRendererEvent, status: Parameters<typeof callback>[0]) => callback(status);
       ipcRenderer.on(IPC.WORKER_STATUS_CHANGED, handler);
       return () => ipcRenderer.removeListener(IPC.WORKER_STATUS_CHANGED, handler);
     },

@@ -14,6 +14,12 @@ interface RegisteredAgent extends AgentInfo {
   lastHeartbeat?: string;
 }
 
+interface RestartRecord {
+  timestamp: string;
+  exitCode: number;
+  reason: 'crash' | 'unresponsive' | 'manual';
+}
+
 interface WorkerStatus {
   workerAlive: boolean;
   workerReady: boolean;
@@ -21,10 +27,40 @@ interface WorkerStatus {
   restartCount: number;
   activeMonitors: number;
   uptimeMs: number;
+  workerUptimeSec: number;
+  lastPingLatencyMs: number;
+  restartHistory: RestartRecord[];
+  spawnedAt: string | null;
 }
 
 interface StatusBarProps {
   agent: RegisteredAgent | null | undefined;
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function buildWorkerTooltip(status: WorkerStatus, isRestarting: boolean): string {
+  if (isRestarting) return 'Restarting worker...';
+  if (!status.workerReady) {
+    return `Worker down (${status.restartCount} restarts) · Click to restart`;
+  }
+
+  const lines = [
+    `PID ${status.workerPid} · ${status.activeMonitors} monitors`,
+    `Uptime: ${formatUptime(status.workerUptimeSec)}`,
+    status.lastPingLatencyMs > 0 ? `Latency: ${status.lastPingLatencyMs}ms` : null,
+    status.restartHistory.length > 0
+      ? `Restarts: ${status.restartHistory.length} (last: ${status.restartHistory[status.restartHistory.length - 1].reason})`
+      : null,
+    'Click to restart',
+  ].filter(Boolean);
+  return lines.join(' · ');
 }
 
 export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
@@ -130,13 +166,7 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
           <span
             className="flex items-center gap-1.5 cursor-pointer hover:text-text-primary transition-colors"
             onClick={handleWorkerRestart}
-            title={
-              isRestarting
-                ? 'Restarting worker...'
-                : workerStatus.workerReady
-                  ? `Worker PID ${workerStatus.workerPid} · ${workerStatus.activeMonitors} monitors · Click to restart`
-                  : `Worker down (${workerStatus.restartCount} restarts) · Click to restart`
-            }
+            title={buildWorkerTooltip(workerStatus, isRestarting)}
           >
             <span
               className={`w-2 h-2 rounded-full ${

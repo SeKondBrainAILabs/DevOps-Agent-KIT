@@ -23,6 +23,26 @@ const PING_INTERVAL_MS = 15_000;   // 15 seconds
 const PONG_TIMEOUT_MS = 10_000;    // 10 seconds
 const MIN_RESTART_DELAY_MS = 1_000;
 const MAX_RESTART_DELAY_MS = 30_000;
+const MAX_RESTART_HISTORY = 20;
+
+export interface RestartRecord {
+  timestamp: string;
+  exitCode: number;
+  reason: 'crash' | 'unresponsive' | 'manual';
+}
+
+export interface WorkerMetrics {
+  workerAlive: boolean;
+  workerReady: boolean;
+  workerPid: number | null;
+  restartCount: number;
+  activeMonitors: number;
+  uptimeMs: number;
+  workerUptimeSec: number;
+  lastPingLatencyMs: number;
+  restartHistory: RestartRecord[];
+  spawnedAt: string | null;
+}
 
 export class WorkerBridgeService extends BaseService {
   private worker: UtilityProcess | null = null;
@@ -32,6 +52,13 @@ export class WorkerBridgeService extends BaseService {
   private lastPongTs: number = Date.now();
   private isDisposed = false;
   private workerReady = false;
+
+  // Metrics
+  private spawnedAt: number | null = null;
+  private lastPingTs: number = 0;
+  private lastPingLatencyMs: number = 0;
+  private workerUptimeSec: number = 0;
+  private restartHistory: RestartRecord[] = [];
 
   // Active monitor configs — replayed on restart
   private activeCommands: Map<string, WorkerCommand> = new Map();
@@ -84,6 +111,7 @@ export class WorkerBridgeService extends BaseService {
     try {
       this.worker = utilityProcess.fork(workerPath);
       this.workerReady = false;
+      this.spawnedAt = Date.now();
 
       this.worker.on('message', (event: WorkerEvent) => {
         this.handleWorkerEvent(event);
@@ -114,6 +142,7 @@ export class WorkerBridgeService extends BaseService {
 
   restart(): void {
     console.log('[WorkerBridge] Manual restart requested');
+    this.addRestartRecord(0, 'manual');
     this.restartCount = 0; // Reset counter on manual restart
     this.killWorker();
     this.spawn();
@@ -131,12 +160,14 @@ export class WorkerBridgeService extends BaseService {
       // Check if last pong is too old
       if (Date.now() - this.lastPongTs > PONG_TIMEOUT_MS + PING_INTERVAL_MS) {
         console.warn('[WorkerBridge] Worker unresponsive — killing and restarting');
+        this.addRestartRecord(-1, 'unresponsive');
         this.killWorker();
         // handleWorkerExit will trigger restart
         return;
       }
 
-      this.sendCommand({ type: 'ping', ts: Date.now() });
+      this.lastPingTs = Date.now();
+      this.sendCommand({ type: 'ping', ts: this.lastPingTs });
     }, PING_INTERVAL_MS);
   }
 
@@ -196,6 +227,10 @@ export class WorkerBridgeService extends BaseService {
 
       case 'pong':
         this.lastPongTs = Date.now();
+        if (this.lastPingTs > 0) {
+          this.lastPingLatencyMs = this.lastPongTs - this.lastPingTs;
+        }
+        this.workerUptimeSec = event.workerUptime;
         break;
 
       case 'error':
@@ -209,10 +244,22 @@ export class WorkerBridgeService extends BaseService {
     }
   }
 
+  private addRestartRecord(exitCode: number, reason: RestartRecord['reason']): void {
+    this.restartHistory.push({
+      timestamp: new Date().toISOString(),
+      exitCode,
+      reason,
+    });
+    if (this.restartHistory.length > MAX_RESTART_HISTORY) {
+      this.restartHistory = this.restartHistory.slice(-MAX_RESTART_HISTORY);
+    }
+  }
+
   private handleWorkerExit(code: number): void {
     console.warn(`[WorkerBridge] Worker exited with code ${code}`);
     this.worker = null;
     this.workerReady = false;
+    this.spawnedAt = null;
     this.stopHealthCheck();
     this.emitStatusToRenderer();
 
@@ -228,6 +275,7 @@ export class WorkerBridgeService extends BaseService {
       MAX_RESTART_DELAY_MS
     );
 
+    this.addRestartRecord(code, 'crash');
     console.log(`[WorkerBridge] Restarting in ${delay}ms (attempt ${this.restartCount + 1}/${MAX_RESTARTS})`);
     this.restartCount++;
 
@@ -377,21 +425,18 @@ export class WorkerBridgeService extends BaseService {
     this.emitToRenderer(IPC.WORKER_STATUS_CHANGED, this.getStatus());
   }
 
-  getStatus(): {
-    workerAlive: boolean;
-    workerReady: boolean;
-    workerPid: number | null;
-    restartCount: number;
-    activeMonitors: number;
-    uptimeMs: number;
-  } {
+  getStatus(): WorkerMetrics {
     return {
       workerAlive: this.worker !== null,
       workerReady: this.workerReady,
       workerPid: this.worker?.pid ?? null,
       restartCount: this.restartCount,
       activeMonitors: this.activeCommands.size,
-      uptimeMs: this.lastPongTs ? Date.now() - this.lastPongTs : 0,
+      uptimeMs: this.spawnedAt ? Date.now() - this.spawnedAt : 0,
+      workerUptimeSec: this.workerUptimeSec,
+      lastPingLatencyMs: this.lastPingLatencyMs,
+      restartHistory: [...this.restartHistory],
+      spawnedAt: this.spawnedAt ? new Date(this.spawnedAt).toISOString() : null,
     };
   }
 }
