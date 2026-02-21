@@ -393,6 +393,15 @@ export const IPC = {
   UPDATE_ERROR: 'update:error',
 
   // ==========================================================================
+  // WORKER PROCESS CHANNELS
+  // Monitor utility process status and control
+  // ==========================================================================
+  WORKER_STATUS: 'worker:status',
+  WORKER_RESTART: 'worker:restart',
+  // Events (main → renderer)
+  WORKER_STATUS_CHANGED: 'worker:status-changed',
+
+  // ==========================================================================
   // APP CHANNELS
   // ==========================================================================
   APP_GET_VERSION: 'app:getVersion',
@@ -510,6 +519,9 @@ export const REQUEST_CHANNELS = [
   IPC.UPDATE_DOWNLOAD,
   IPC.UPDATE_INSTALL,
   IPC.UPDATE_GET_STATUS,
+  // Worker process channels
+  IPC.WORKER_STATUS,
+  IPC.WORKER_RESTART,
 ] as const;
 
 export const EVENT_CHANNELS = [
@@ -548,4 +560,6 @@ export const EVENT_CHANNELS = [
   IPC.UPDATE_PROGRESS,
   IPC.UPDATE_DOWNLOADED,
   IPC.UPDATE_ERROR,
+  // Worker process events
+  IPC.WORKER_STATUS_CHANGED,
 ] as const;

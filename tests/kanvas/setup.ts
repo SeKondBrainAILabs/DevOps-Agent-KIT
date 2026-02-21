@@ -78,14 +78,18 @@ const mockApi = {
   },
   worker: {
     status: createMockFn({
-      workerAlive: true,
-      workerReady: true,
-      workerPid: 12345,
-      restartCount: 0,
-      activeMonitors: 3,
-      uptimeMs: 60000,
+      success: true,
+      data: {
+        workerAlive: true,
+        workerReady: true,
+        workerPid: 12345,
+        restartCount: 0,
+        activeMonitors: 3,
+        uptimeMs: 60000,
+      },
     }),
     restart: createMockFn({ success: true }),
+    onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
   recentRepos: {
     list: createMockFn({ success: true, data: [] }),

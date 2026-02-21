@@ -1920,6 +1920,45 @@ const api = {
   },
 
   // ==========================================================================
+  // WORKER PROCESS API
+  // Monitor utility process status and control
+  // ==========================================================================
+  worker: {
+    status: (): Promise<IpcResult<{
+      workerAlive: boolean;
+      workerReady: boolean;
+      workerPid: number | null;
+      restartCount: number;
+      activeMonitors: number;
+      uptimeMs: number;
+    }>> =>
+      ipcRenderer.invoke(IPC.WORKER_STATUS),
+
+    restart: (): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKER_RESTART),
+
+    onStatusChanged: (callback: (status: {
+      workerAlive: boolean;
+      workerReady: boolean;
+      workerPid: number | null;
+      restartCount: number;
+      activeMonitors: number;
+      uptimeMs: number;
+    }) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, status: {
+        workerAlive: boolean;
+        workerReady: boolean;
+        workerPid: number | null;
+        restartCount: number;
+        activeMonitors: number;
+        uptimeMs: number;
+      }) => callback(status);
+      ipcRenderer.on(IPC.WORKER_STATUS_CHANGED, handler);
+      return () => ipcRenderer.removeListener(IPC.WORKER_STATUS_CHANGED, handler);
+    },
+  },
+
+  // ==========================================================================
   // AUTO-UPDATE API
   // ==========================================================================
   update: {

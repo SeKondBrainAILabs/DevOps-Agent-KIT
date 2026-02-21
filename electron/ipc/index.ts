@@ -1181,6 +1181,18 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   });
 
   // ==========================================================================
+  // WORKER PROCESS HANDLERS
+  // ==========================================================================
+  ipcMain.handle(IPC.WORKER_STATUS, () => {
+    return { success: true, data: services.workerBridge.getStatus() };
+  });
+
+  ipcMain.handle(IPC.WORKER_RESTART, () => {
+    services.workerBridge.restart();
+    return { success: true };
+  });
+
+  // ==========================================================================
   // APP HANDLERS
   // ==========================================================================
   ipcMain.handle(IPC.APP_GET_VERSION, () => {

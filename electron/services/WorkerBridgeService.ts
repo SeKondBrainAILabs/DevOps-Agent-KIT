@@ -15,6 +15,7 @@
 import { utilityProcess, type UtilityProcess } from 'electron';
 import { join } from 'path';
 import { BaseService } from './BaseService';
+import { IPC } from '../../shared/ipc-channels';
 import type { WorkerCommand, WorkerEvent } from '../worker/worker-protocol';
 
 const MAX_RESTARTS = 10;
@@ -165,6 +166,7 @@ export class WorkerBridgeService extends BaseService {
         this.pendingCommands = [];
 
         this.onWorkerReady?.(event.pid);
+        this.emitStatusToRenderer();
         break;
 
       case 'file-changed':
@@ -207,6 +209,7 @@ export class WorkerBridgeService extends BaseService {
     this.worker = null;
     this.workerReady = false;
     this.stopHealthCheck();
+    this.emitStatusToRenderer();
 
     if (this.isDisposed) return;
 
@@ -361,6 +364,13 @@ export class WorkerBridgeService extends BaseService {
   }
 
   // ─── Status ───────────────────────────────────────────────────
+
+  /**
+   * Emit current status to renderer for reactive UI updates
+   */
+  private emitStatusToRenderer(): void {
+    this.emitToRenderer(IPC.WORKER_STATUS_CHANGED, this.getStatus());
+  }
 
   getStatus(): {
     workerAlive: boolean;
