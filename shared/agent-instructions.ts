@@ -3,7 +3,7 @@
  * Generated instructions for each agent type
  */
 
-import type { AgentType, AgentInstanceConfig } from './types';
+import type { AgentType, AgentInstanceConfig, RepoEntry } from './types';
 
 export interface InstructionVars {
   repoPath: string;
@@ -14,6 +14,10 @@ export interface InstructionVars {
   systemPrompt: string;
   contextPreservation: string;
   rebaseFrequency: string;
+  mcpUrl?: string;
+  // Multi-repo fields
+  multiRepoEntries?: RepoEntry[];
+  commitScope?: 'all' | 'per-repo';
 }
 
 /**
@@ -69,10 +73,22 @@ pwd  # Verify correct location before any changes
 
 # ⚠️ CRITICAL: Read house rules BEFORE making any changes!
 cat houserules.md 2>/dev/null || echo "No houserules.md - create one as you learn the codebase"
+
+# Read folder structure (separate from houserules)
+cat FOLDER_STRUCTURE.md 2>/dev/null || echo "No FOLDER_STRUCTURE.md found"
+
+# Check for House Rules Contracts (project documentation)
+ls House_Rules_Contracts/ 2>/dev/null && echo "Found contract docs - read relevant ones before making changes"
 \`\`\`
 
-📋 **HOUSE RULES** contain project-specific patterns, conventions, testing requirements, and gotchas.
+📋 **HOUSE RULES** (\`houserules.md\`) contain project-specific patterns, conventions, testing requirements, and gotchas.
 If houserules.md exists, you MUST follow its rules. If it doesn't exist, create one as you work.
+
+📁 **FOLDER STRUCTURE** (\`FOLDER_STRUCTURE.md\`) documents the project layout and where files should be placed.
+Read it before creating new files or directories. Update it when you add new top-level directories.
+
+📄 **HOUSE RULES CONTRACTS** in \`House_Rules_Contracts/\` contain detailed API, schema, infrastructure,
+and integration documentation. Read relevant contracts before modifying related code.
 
 ## 2. CONTEXT FILE (critical - survives context compaction)
 Create immediately so you can recover after compaction:
@@ -86,7 +102,8 @@ Task: ${task}
 ## Files to Re-read After Compaction
 1. This file: .claude-session-${shortSessionId}.md
 2. House rules: houserules.md
-3. File locks: .file-coordination/active-edits/
+3. Folder structure: FOLDER_STRUCTURE.md
+4. File locks: .file-coordination/active-edits/
 
 ## Progress (update as you work)
 - [ ] Task started
@@ -108,7 +125,8 @@ If you see "context compacted", IMMEDIATELY:
 1. cd "${vars.repoPath}"
 2. cat .claude-session-${shortSessionId}.md
 3. cat houserules.md
-4. ls .file-coordination/active-edits/
+4. cat FOLDER_STRUCTURE.md
+5. ls .file-coordination/active-edits/
 
 ## 4. FILE LOCKS (before editing any file)
 \`\`\`bash
@@ -130,9 +148,24 @@ cat >> houserules.md << 'EOF'
 EOF
 \`\`\`
 
-## 6. COMMITS
+## 6. COMMITS${vars.mcpUrl ? `
+🔧 **USE MCP TOOL: \`kanvas_commit\`** to commit changes. This is the preferred method.
+- DO NOT write .devops-commit files. DO NOT run \`git commit\` directly.
+- The MCP tool handles staging, committing, recording, and optionally pushing.
+- Example: \`kanvas_commit({ session_id: "${vars.sessionId}", message: "feat: add auth", push: false })\`
+
+### Available MCP Tools
+| Tool | Description |
+|------|-------------|
+| \`kanvas_commit\` | Stage + commit + record + push |
+| \`kanvas_get_session_info\` | Session config and metadata |
+| \`kanvas_log_activity\` | Log to Kanvas dashboard timeline |
+| \`kanvas_lock_file\` | Declare file edit intent (replaces manual file locks) |
+| \`kanvas_unlock_file\` | Release file locks |
+| \`kanvas_get_commit_history\` | Recent commits for session branch |
+| \`kanvas_request_review\` | Signal work ready for review |` : `
 📝 **Write commit messages to: \`.devops-commit-${shortSessionId}.msg\`** (this session's file)
-⚠️ DO NOT use .claude-commit-msg - use the session-specific file above!
+⚠️ DO NOT use .claude-commit-msg - use the session-specific file above!`}
 **One story = one commit.** If given multiple stories, complete and commit each separately.
 
 ### ⚠️ IMPORTANT: Git Attribution
@@ -142,7 +175,25 @@ Commits should be attributed to the USER, not to Claude/AI:
 - The user's existing git identity will be used automatically
 - NEVER add "Co-Authored-By: Claude" footers - commits are USER's work assisted by AI
 
----
+${vars.multiRepoEntries && vars.multiRepoEntries.length > 1 ? `
+## MULTI-REPO SESSION
+This session spans multiple repositories. Your primary repo is listed above.
+
+| Repo | Role | Branch | Path |
+|------|------|--------|------|
+${vars.multiRepoEntries.map(r => `| ${r.repoName} | ${r.role} | ${r.branchName} | ${r.worktreePath} |`).join('\n')}
+
+**Commit scope**: ${vars.commitScope === 'per-repo' ? 'Commit each repo independently' : 'Commit all repos together using `kanvas_commit_all`'}
+
+### Multi-Repo MCP Tools
+- \`kanvas_commit({ session_id, message, repo: "repoName" })\` — commit in a specific repo
+- \`kanvas_commit_all({ session_id, message })\` — commit across ALL repos at once
+- \`kanvas_lock_file({ session_id, files, repo: "repoName" })\` — lock files in a specific repo
+- \`kanvas_get_commit_history({ session_id, repo: "repoName" })\` — history for a specific repo
+
+When no \`repo\` parameter is specified, operations target the **primary** repo.
+Secondary repo branches use the naming convention: \`From_{PrimaryRepoName}_{DDMMYY}\`.
+` : ''}---
 ⛔ STOP: Run setup commands, read houserules.md, then await instructions.`;
 }
 

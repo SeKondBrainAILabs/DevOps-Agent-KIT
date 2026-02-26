@@ -22,12 +22,14 @@ import { RebaseWatcherService } from './RebaseWatcherService';
 import { TerminalLogService } from './TerminalLogService';
 import { QuickActionService } from './QuickActionService';
 import { MergeService } from './MergeService';
+import { MergeConflictService } from './MergeConflictService';
 import { HeartbeatService } from './HeartbeatService';
 import { CommitAnalysisService } from './CommitAnalysisService';
 import { DebugLogService } from './DebugLogService';
 import { VersionService } from './VersionService';
 import { AutoUpdateService } from './AutoUpdateService';
 import { WorkerBridgeService } from './WorkerBridgeService';
+import { McpServerService } from './McpServerService';
 import { databaseService } from './DatabaseService';
 import {
   initializeAnalysisServices,
@@ -60,12 +62,14 @@ export interface Services {
   terminalLog: TerminalLogService;
   quickAction: QuickActionService;
   merge: MergeService;
+  mergeConflict: MergeConflictService;
   heartbeat: HeartbeatService;
   commitAnalysis: CommitAnalysisService;
   debugLog: DebugLogService;
   version: VersionService;
   autoUpdate: AutoUpdateService;
   workerBridge: WorkerBridgeService;
+  mcpServer: McpServerService;
   // Analysis services (Phase 1)
   astParser: ASTParserService;
   repositoryAnalysis: RepositoryAnalysisService;
@@ -177,6 +181,10 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // For merge preview and execution workflow
   const merge = new MergeService();
 
+  // Initialize Merge Conflict service
+  // For AI-powered conflict resolution using LLM (llama, qwen, etc.)
+  const mergeConflict = new MergeConflictService(ai);
+
   // Initialize Heartbeat service
   // For monitoring agent connection status
   const heartbeat = new HeartbeatService();
@@ -240,6 +248,26 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   await workerBridge.initialize();
   console.log('[Services] Worker bridge initialized');
 
+  // Initialize MCP Server service
+  // Provides MCP protocol interface for coding agents (Claude Code, Cursor, etc.)
+  const mcpServer = new McpServerService();
+  mcpServer.setGitService(git);
+  mcpServer.setActivityService(activity);
+  mcpServer.setLockService(lock);
+  mcpServer.setAgentInstanceService(agentInstance);
+  mcpServer.setDatabaseService(databaseService);
+  await mcpServer.initialize();
+  console.log('[Services] MCP server initialized on port', mcpServer.getPort());
+
+  // Pass MCP URL to AgentInstanceService for .mcp.json generation
+  agentInstance.setMcpServerUrl(mcpServer.getUrl());
+
+  // Wire multi-repo callback: register all repos with MCP session binder
+  agentInstance.onMultiRepoSessionCreated = (sessionId, repos) => {
+    mcpServer.sessionBinder.registerMultiRepoSession(sessionId, repos);
+    console.log(`[Services] Multi-repo session ${sessionId} registered with MCP binder (${repos.length} repos)`);
+  };
+
   // Initialize Analysis services
   // For AST parsing, repository analysis, and API extraction
   const analysisServices = await initializeAnalysisServices();
@@ -281,12 +309,14 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     terminalLog,
     quickAction,
     merge,
+    mergeConflict,
     heartbeat,
     commitAnalysis,
     debugLog,
     version,
     autoUpdate,
     workerBridge,
+    mcpServer,
     // Analysis services (Phase 1)
     astParser: analysisServices.astParser,
     repositoryAnalysis: analysisServices.repositoryAnalysis,
@@ -311,6 +341,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
  */
 export async function disposeServices(): Promise<void> {
   if (!services) return;
+
+  // Stop MCP server (close HTTP server and transports)
+  await services.mcpServer.dispose();
 
   // Stop worker bridge (stops utility process and all monitors)
   await services.workerBridge.dispose();
@@ -361,12 +394,14 @@ export { RebaseWatcherService } from './RebaseWatcherService';
 export { TerminalLogService } from './TerminalLogService';
 export { QuickActionService } from './QuickActionService';
 export { MergeService } from './MergeService';
+export { MergeConflictService } from './MergeConflictService';
 export { HeartbeatService } from './HeartbeatService';
 export { CommitAnalysisService } from './CommitAnalysisService';
 export { DebugLogService } from './DebugLogService';
 export { VersionService } from './VersionService';
 export { AutoUpdateService } from './AutoUpdateService';
 export { WorkerBridgeService } from './WorkerBridgeService';
+export { McpServerService } from './McpServerService';
 export { databaseService } from './DatabaseService';
 // Analysis services (Phase 1 + Phase 2 + Phase 3)
 export {

@@ -50,8 +50,12 @@ import type {
   RecentRepo,
   KanvasConfig,
   IpcResult,
+  RepoEntry,
+  RepoRole,
 } from '../../shared/types';
+import { generateSecondaryBranchName } from '../../shared/types';
 import type { TerminalLogService } from './TerminalLogService';
+import { MCP_CONFIG_FILE, CONTRACTS_PATHS } from '../../shared/agent-protocol';
 
 interface SessionState {
   sessionId: string;
@@ -71,12 +75,29 @@ export class AgentInstanceService extends BaseService {
   private store: Store<StoreSchema>;
   private instances: Map<string, AgentInstance> = new Map();
   private terminalLogService: TerminalLogService | null = null;
+  private mcpServerUrl: string | null = null;
+
+  /**
+   * Callback invoked after multi-repo session is created.
+   * Used by index.ts to register repos with MCP session binder.
+   */
+  onMultiRepoSessionCreated?: (
+    sessionId: string,
+    repos: Array<{ repoName: string; worktreePath: string; role: RepoRole }>
+  ) => void;
 
   /**
    * Set the terminal log service for logging restart operations
    */
   setTerminalLogService(terminalLog: TerminalLogService): void {
     this.terminalLogService = terminalLog;
+  }
+
+  /**
+   * Set the MCP server URL so agents can be configured to use it
+   */
+  setMcpServerUrl(url: string | null): void {
+    this.mcpServerUrl = url;
   }
 
   constructor() {
@@ -251,8 +272,8 @@ export class AgentInstanceService extends BaseService {
       const configPath = join(devopsKitDir, 'config.json');
       await writeFile(configPath, JSON.stringify(config, null, 2));
 
-      // Create placeholder houserules.md (teams can commit this)
-      const houserulesPath = join(devopsKitDir, 'houserules.md');
+      // Create houserules.md at repo root (single source of truth — teams can commit this)
+      const houserulesPath = join(repoPath, 'houserules.md');
       if (!existsSync(houserulesPath)) {
         const houserulesContent = `# House Rules for DevOps Agent
 
@@ -277,7 +298,61 @@ You can commit this file to share rules with your team.
         await writeFile(houserulesPath, houserulesContent);
       }
 
-      // Add .S9N_KIT_DevOpsAgent to .gitignore (except houserules.md)
+      // Create FOLDER_STRUCTURE.md at repo root (separate from houserules)
+      const folderStructurePath = join(repoPath, 'FOLDER_STRUCTURE.md');
+      if (!existsSync(folderStructurePath)) {
+        const folderStructureContent = `# Folder Structure
+
+This document outlines the standard folder structure for this project.
+All files **MUST** be placed in their respective folders as described below.
+You may create new module and feature subfolders following the established patterns,
+but **MUST** update this document when doing so.
+
+## Project Layout
+\`\`\`
+├── houserules.md                  # Team coding rules and conventions
+├── FOLDER_STRUCTURE.md            # This file — folder layout reference
+├── House_Rules_Contracts/         # Contract documentation
+│   ├── API_CONTRACT.md            # API endpoints and interfaces
+│   ├── DATABASE_SCHEMA_CONTRACT.md # Database schema definitions
+│   ├── EVENTS_CONTRACT.md         # Event system documentation
+│   ├── FEATURES_CONTRACT.md       # Feature specifications
+│   ├── INFRA_CONTRACT.md          # Infrastructure documentation
+│   ├── THIRD_PARTY_INTEGRATIONS.md # External service integrations
+│   ├── ADMIN_CONTRACT.md          # Admin panel contracts
+│   ├── SQL_CONTRACT.md            # SQL queries and migrations
+│   ├── CSS_CONTRACT.md            # Styling conventions
+│   ├── PROMPTS_CONTRACT.md        # AI prompt templates
+│   ├── E2E_TESTS_CONTRACT.md      # End-to-end test contracts
+│   ├── UNIT_TESTS_CONTRACT.md     # Unit test contracts
+│   ├── INTEGRATION_TESTS_CONTRACT.md # Integration test contracts
+│   └── FIXTURES_CONTRACT.md       # Test fixtures contracts
+├── .S9N_KIT_DevOpsAgent/          # DevOps agent runtime data (gitignored)
+│   ├── agents/                    # Agent registration files
+│   ├── sessions/                  # Session status files
+│   ├── activity/                  # Activity logs
+│   ├── commands/                  # Kanvas → Agent commands
+│   ├── heartbeats/                # Agent heartbeat files
+│   ├── coordination/              # File locking/coordination
+│   │   ├── active-edits/
+│   │   └── completed-edits/
+│   └── config.json                # Repo-specific config
+├── .mcp.json                      # MCP server config (auto-generated)
+└── .agent-config                  # Agent session config (auto-generated)
+\`\`\`
+
+## Rules
+- Do not create new top-level directories without updating this file
+- Follow existing module/feature sub-folder patterns
+- Keep runtime/generated files gitignored
+
+---
+*This file was auto-generated. Feel free to customize it for your project.*
+`;
+        await writeFile(folderStructurePath, folderStructureContent);
+      }
+
+      // Add .S9N_KIT_DevOpsAgent to .gitignore
       const gitignorePath = join(repoPath, '.gitignore');
       try {
         let gitignore = '';
@@ -285,12 +360,11 @@ You can commit this file to share rules with your team.
           gitignore = await readFile(gitignorePath, 'utf-8');
         }
 
-        // Add DevOps Kit directory but exclude houserules.md so it can be committed
+        // Add DevOps Kit directory (all runtime data — gitignored)
         if (!gitignore.includes(DEVOPS_KIT_DIR)) {
           gitignore += `
-# DevOps Agent Kit (local data - do not commit)
+# DevOps Agent Kit (local runtime data - do not commit)
 ${DEVOPS_KIT_DIR}/
-!${DEVOPS_KIT_DIR}/houserules.md
 `;
         }
         if (!gitignore.includes('.devops-commit-')) {
@@ -301,6 +375,9 @@ ${DEVOPS_KIT_DIR}/
         }
         if (!gitignore.includes('.agent-config')) {
           gitignore += '\n# Agent session config (auto-generated per session)\n.agent-config\n';
+        }
+        if (!gitignore.includes(MCP_CONFIG_FILE)) {
+          gitignore += `\n# MCP server config (auto-generated per session)\n${MCP_CONFIG_FILE}\n`;
         }
         await writeFile(gitignorePath, gitignore);
       } catch {
@@ -427,6 +504,7 @@ ${DEVOPS_KIT_DIR}/
       const finalInstructionVars: InstructionVars = {
         ...instructionVars,
         repoPath: workingDirectory, // CRITICAL: Use worktree path, not main repo
+        mcpUrl: this.mcpServerUrl || undefined,
       };
       instance.instructions = getAgentInstructions(config.agentType, finalInstructionVars);
       if (config.agentType === 'claude') {
@@ -448,6 +526,44 @@ ${DEVOPS_KIT_DIR}/
 
       // Setup agent environment (.agent-config, .vscode/settings.json)
       await this.setupAgentEnvironment(id);
+
+      // Multi-repo: create secondary repo environments after primary is ready
+      if (config.multiRepo) {
+        try {
+          const repoEntries = await this.createMultiRepoEnvironment(config, sessionId, worktreePath);
+          instance.multiRepoEntries = repoEntries;
+
+          // Re-generate instructions with multi-repo context
+          const multiRepoVars: InstructionVars = {
+            ...finalInstructionVars,
+            multiRepoEntries: repoEntries,
+            commitScope: config.multiRepo.commitScope,
+          };
+          instance.instructions = getAgentInstructions(config.agentType, multiRepoVars);
+          if (config.agentType === 'claude') {
+            instance.prompt = generateClaudePrompt(multiRepoVars);
+          }
+
+          this.instances.set(id, instance);
+          this.saveInstances();
+
+          // Notify via callback so MCP session binder can register all repos
+          if (this.onMultiRepoSessionCreated) {
+            this.onMultiRepoSessionCreated(
+              sessionId,
+              repoEntries.map(r => ({
+                repoName: r.repoName,
+                worktreePath: r.worktreePath,
+                role: r.role,
+              }))
+            );
+          }
+
+          console.log(`[AgentInstanceService] Multi-repo environment created with ${repoEntries.length} repos`);
+        } catch (error) {
+          console.warn(`[AgentInstanceService] Multi-repo setup failed (primary still works): ${error}`);
+        }
+      }
 
       return { success: true, data: instance };
     } catch (error) {
@@ -603,7 +719,7 @@ ${DEVOPS_KIT_DIR}/
     instance: AgentInstance
   ): Promise<void> {
     try {
-      const agentConfig = {
+      const agentConfig: Record<string, unknown> = {
         version: '1.0.0',
         sessionId: instance.sessionId,
         instanceId: instance.id,
@@ -619,7 +735,9 @@ ${DEVOPS_KIT_DIR}/
           KANVAS_AGENT_TYPE: instance.config.agentType,
           KANVAS_WORKTREE_PATH: worktreePath,
           KANVAS_BRANCH_NAME: instance.config.branchName,
+          ...(this.mcpServerUrl ? { KANVAS_MCP_URL: this.mcpServerUrl } : {}),
         },
+        ...(this.mcpServerUrl ? { mcpServerUrl: this.mcpServerUrl } : {}),
       };
 
       const configPath = join(worktreePath, '.agent-config');
@@ -682,6 +800,240 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
+   * Create .mcp.json in worktree root for MCP-capable agents (claude, cline)
+   * Allows agents to auto-discover the Kanvas MCP server
+   */
+  private async createMcpConfigFile(worktreePath: string): Promise<void> {
+    if (!this.mcpServerUrl) return;
+
+    try {
+      const mcpConfig = {
+        mcpServers: {
+          kanvas: {
+            type: 'streamable-http',
+            url: this.mcpServerUrl,
+          },
+        },
+      };
+
+      const configPath = join(worktreePath, MCP_CONFIG_FILE);
+      await writeFile(configPath, JSON.stringify(mcpConfig, null, 2));
+      console.log(`[AgentInstanceService] Created ${MCP_CONFIG_FILE} at ${configPath}`);
+    } catch (error) {
+      console.warn(`[AgentInstanceService] Could not create ${MCP_CONFIG_FILE}: ${error}`);
+    }
+  }
+
+  /**
+   * Copy houserules.md and FOLDER_STRUCTURE.md from main repo to worktree root
+   * Single source of truth: these files live at repo root, not inside .S9N_KIT_DevOpsAgent/
+   */
+  private async copyHouserulesToWorktree(worktreePath: string, mainRepoPath: string): Promise<void> {
+    const filesToCopy = ['houserules.md', 'FOLDER_STRUCTURE.md'];
+    for (const fileName of filesToCopy) {
+      try {
+        const targetPath = join(worktreePath, fileName);
+        if (existsSync(targetPath)) continue;
+
+        const sourcePath = join(mainRepoPath, fileName);
+        if (existsSync(sourcePath)) {
+          const content = await readFile(sourcePath, 'utf-8');
+          await writeFile(targetPath, content);
+          console.log(`[AgentInstanceService] Copied ${fileName} to worktree root`);
+        }
+      } catch (error) {
+        console.warn(`[AgentInstanceService] Could not copy ${fileName}: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * Copy House_Rules_Contracts/ from main repo to worktree root
+   * So agents working in local_deploy/ can read contract docs
+   */
+  private async copyContractsToWorktree(worktreePath: string, mainRepoPath: string): Promise<void> {
+    try {
+      const sourceDir = join(mainRepoPath, CONTRACTS_PATHS.baseDir);
+      const targetDir = join(worktreePath, CONTRACTS_PATHS.baseDir);
+
+      // Skip if source doesn't exist or target already exists
+      if (!existsSync(sourceDir)) return;
+      if (existsSync(targetDir)) return;
+
+      await mkdir(targetDir, { recursive: true });
+
+      // Copy all files from source to target
+      const files = await readdir(sourceDir);
+      for (const file of files) {
+        const sourcePath = join(sourceDir, file);
+        const targetPath = join(targetDir, file);
+        const fileStat = await stat(sourcePath);
+        if (fileStat.isFile()) {
+          const content = await readFile(sourcePath, 'utf-8');
+          await writeFile(targetPath, content);
+        }
+      }
+
+      console.log(`[AgentInstanceService] Copied ${CONTRACTS_PATHS.baseDir}/ to worktree (${files.length} files)`);
+    } catch (error) {
+      console.warn(`[AgentInstanceService] Could not copy contracts: ${error}`);
+    }
+  }
+
+  /**
+   * Detect submodules in a repository (wrapper for UI use)
+   */
+  async detectSubmodules(repoPath: string): Promise<IpcResult<Array<{ name: string; path: string; url: string }>>> {
+    try {
+      const gitmodulesPath = join(repoPath, '.gitmodules');
+      if (!existsSync(gitmodulesPath)) {
+        return { success: true, data: [] };
+      }
+
+      const content = await readFile(gitmodulesPath, 'utf-8');
+      const submodules: Array<{ name: string; path: string; url: string }> = [];
+      let current: Partial<{ name: string; path: string; url: string }> = {};
+
+      for (const line of content.split('\n')) {
+        const nameMatch = line.match(/\[submodule\s+"(.+)"\]/);
+        if (nameMatch) {
+          if (current.name && current.path) {
+            submodules.push({ name: current.name, path: current.path, url: current.url || '' });
+          }
+          current = { name: nameMatch[1] };
+        }
+        const pathMatch = line.match(/\s*path\s*=\s*(.+)/);
+        if (pathMatch) current.path = pathMatch[1].trim();
+        const urlMatch = line.match(/\s*url\s*=\s*(.+)/);
+        if (urlMatch) current.url = urlMatch[1].trim();
+      }
+      if (current.name && current.path) {
+        submodules.push({ name: current.name, path: current.path, url: current.url || '' });
+      }
+
+      return { success: true, data: submodules };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DETECT_SUBMODULES_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to detect submodules',
+        },
+      };
+    }
+  }
+
+  /**
+   * Create multi-repo environment after primary worktree is ready.
+   * For submodule secondaries: create branch in-place inside the submodule dir.
+   * For external secondaries: create branch + worktree in that repo's local_deploy/.
+   */
+  private async createMultiRepoEnvironment(
+    config: AgentInstanceConfig,
+    sessionId: string,
+    primaryWorktreePath: string
+  ): Promise<RepoEntry[]> {
+    const multiRepo = config.multiRepo!;
+    const primaryRepoName = basename(config.repoPath);
+    const entries: RepoEntry[] = [];
+
+    // Primary repo entry
+    const primaryEntry: RepoEntry = {
+      ...multiRepo.primaryRepo,
+      worktreePath: primaryWorktreePath,
+      repoName: primaryRepoName,
+    };
+    entries.push(primaryEntry);
+
+    // Process each secondary repo
+    for (const secondary of multiRepo.secondaryRepos) {
+      try {
+        const branchName = secondary.branchName || generateSecondaryBranchName(primaryRepoName);
+
+        if (secondary.isSubmodule) {
+          // Submodule: branch in-place inside the primary worktree
+          const submodulePath = join(primaryWorktreePath, secondary.repoPath);
+
+          // Ensure submodule is initialized
+          try {
+            await execaCmd('git', ['submodule', 'update', '--init', secondary.repoPath], { cwd: primaryWorktreePath });
+          } catch {
+            // May already be initialized
+          }
+
+          // Create and checkout branch in submodule
+          try {
+            const base = secondary.baseBranch || 'HEAD';
+            await execaCmd('git', ['checkout', '-b', branchName, base], { cwd: submodulePath });
+            console.log(`[AgentInstanceService] Created branch ${branchName} in submodule ${secondary.repoName}`);
+          } catch {
+            // Branch might already exist — try just checking it out
+            try {
+              await execaCmd('git', ['checkout', branchName], { cwd: submodulePath });
+            } catch (e) {
+              console.warn(`[AgentInstanceService] Could not checkout submodule branch: ${e}`);
+            }
+          }
+
+          entries.push({
+            repoPath: secondary.repoPath,
+            repoName: secondary.repoName,
+            branchName,
+            baseBranch: secondary.baseBranch || 'main',
+            worktreePath: submodulePath,
+            role: 'secondary',
+            isSubmodule: true,
+          });
+        } else {
+          // External repo: create worktree in that repo's local_deploy/
+          const externalRepoPath = secondary.repoPath;
+          const worktreeDir = join(externalRepoPath, 'local_deploy', branchName);
+
+          if (!existsSync(worktreeDir)) {
+            // Create branch if needed
+            try {
+              const branchResult = await execaCmd('git', ['branch', '--list', branchName], { cwd: externalRepoPath });
+              if (!branchResult.stdout.trim()) {
+                const base = secondary.baseBranch || 'main';
+                await execaCmd('git', ['checkout', '-b', branchName, base], { cwd: externalRepoPath });
+                await execaCmd('git', ['checkout', '-'], { cwd: externalRepoPath });
+              }
+            } catch {
+              // Branch creation may fail, continue
+            }
+
+            // Create worktree
+            const localDeployDir = join(externalRepoPath, 'local_deploy');
+            if (!existsSync(localDeployDir)) {
+              await mkdir(localDeployDir, { recursive: true });
+            }
+            try {
+              await execaCmd('git', ['worktree', 'add', worktreeDir, branchName], { cwd: externalRepoPath });
+              console.log(`[AgentInstanceService] Created external repo worktree at ${worktreeDir}`);
+            } catch (e) {
+              console.warn(`[AgentInstanceService] Could not create external worktree: ${e}`);
+            }
+          }
+
+          entries.push({
+            repoPath: externalRepoPath,
+            repoName: secondary.repoName,
+            branchName,
+            baseBranch: secondary.baseBranch || 'main',
+            worktreePath: existsSync(worktreeDir) ? worktreeDir : externalRepoPath,
+            role: 'secondary',
+            isSubmodule: false,
+          });
+        }
+      } catch (error) {
+        console.warn(`[AgentInstanceService] Failed to setup secondary repo ${secondary.repoName}: ${error}`);
+      }
+    }
+
+    return entries;
+  }
+
+  /**
    * Setup agent environment in worktree
    * Called after instance creation to configure the workspace
    */
@@ -698,6 +1050,18 @@ ${DEVOPS_KIT_DIR}/
 
     await this.createAgentConfigFile(worktreePath, instance);
     await this.createVSCodeSettings(worktreePath, instance);
+
+    // Copy houserules.md, FOLDER_STRUCTURE.md, and House_Rules_Contracts/ to worktree
+    if (worktreePath !== instance.config.repoPath) {
+      await this.copyHouserulesToWorktree(worktreePath, instance.config.repoPath);
+      await this.copyContractsToWorktree(worktreePath, instance.config.repoPath);
+    }
+
+    // Create .mcp.json for MCP-capable agents
+    const mcpAgents = ['claude', 'cline'];
+    if (mcpAgents.includes(instance.config.agentType)) {
+      await this.createMcpConfigFile(worktreePath);
+    }
 
     return { success: true };
   }

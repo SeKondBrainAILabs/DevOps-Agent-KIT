@@ -70,6 +70,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.git.removeWorktree(sessionId);
   });
 
+  ipcMain.handle(IPC.GIT_DETECT_SUBMODULES, async (_, repoPath: string) => {
+    return services.git.detectSubmodules(repoPath);
+  });
+
   // ==========================================================================
   // WATCHER HANDLERS
   // ==========================================================================
@@ -1190,6 +1194,13 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   ipcMain.handle(IPC.WORKER_RESTART, () => {
     services.workerBridge.restart();
     return { success: true };
+  });
+
+  // ==========================================================================
+  // MCP SERVER HANDLERS
+  // ==========================================================================
+  ipcMain.handle(IPC.MCP_SERVER_STATUS, () => {
+    return { success: true, data: services.mcpServer.getStatus() };
   });
 
   // ==========================================================================

@@ -110,6 +110,14 @@ export interface SessionReport {
   updated: string;
   commitCount: number;
   lastCommit?: string;
+  // Multi-repo session support
+  repos?: Array<{
+    repoName: string;
+    repoPath: string;
+    worktreePath: string;
+    branchName: string;
+    role: 'primary' | 'secondary';
+  }>;
 }
 
 // =============================================================================
@@ -199,14 +207,29 @@ export const CONTRACTS_PATHS = {
   // Base directory for contracts
   baseDir: 'House_Rules_Contracts',
 
-  // Individual contract files
-  database: 'House_Rules_Contracts/DATABASE_SCHEMA_CONTRACT.md',
+  // Individual contract files (matches UI contract type tabs)
   api: 'House_Rules_Contracts/API_CONTRACT.md',
-  sql: 'House_Rules_Contracts/SQL_CONTRACT.json',
+  schema: 'House_Rules_Contracts/DATABASE_SCHEMA_CONTRACT.md',
+  events: 'House_Rules_Contracts/EVENTS_CONTRACT.md',
   features: 'House_Rules_Contracts/FEATURES_CONTRACT.md',
-  thirdParty: 'House_Rules_Contracts/THIRD_PARTY_INTEGRATIONS.md',
   infra: 'House_Rules_Contracts/INFRA_CONTRACT.md',
+  integrations: 'House_Rules_Contracts/THIRD_PARTY_INTEGRATIONS.md',
+  admin: 'House_Rules_Contracts/ADMIN_CONTRACT.md',
+  sql: 'House_Rules_Contracts/SQL_CONTRACT.md',
+  css: 'House_Rules_Contracts/CSS_CONTRACT.md',
+  prompts: 'House_Rules_Contracts/PROMPTS_CONTRACT.md',
+  // Test contracts (populated dynamically from feature analysis, not generated files)
+  e2e: 'House_Rules_Contracts/E2E_TESTS_CONTRACT.md',
+  unit: 'House_Rules_Contracts/UNIT_TESTS_CONTRACT.md',
+  integration: 'House_Rules_Contracts/INTEGRATION_TESTS_CONTRACT.md',
+  fixtures: 'House_Rules_Contracts/FIXTURES_CONTRACT.md',
 } as const;
+
+// MCP config file (auto-generated per session for MCP-capable agents)
+export const MCP_CONFIG_FILE = '.mcp.json';
+
+// Folder structure file (separate from houserules — lives at repo root)
+export const FOLDER_STRUCTURE_FILE = 'FOLDER_STRUCTURE.md';
 
 // =============================================================================
 // HELPER FUNCTIONS

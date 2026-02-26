@@ -39,6 +39,7 @@ export class DatabaseService extends BaseService {
       this.db.pragma('journal_mode = WAL'); // Better performance
 
       this.createTables();
+      this.runMigrations();
       console.log('[DatabaseService] Database initialized successfully');
     } catch (error) {
       console.error('[DatabaseService] Failed to initialize database:', error);
@@ -172,6 +173,34 @@ export class DatabaseService extends BaseService {
     `);
 
     console.log('[DatabaseService] Tables created/verified');
+  }
+
+  /**
+   * Run schema migrations (safe to call repeatedly — uses ALTER TABLE ADD COLUMN).
+   * SQLite will error if column already exists, so we catch and ignore.
+   */
+  private runMigrations(): void {
+    if (!this.db) return;
+
+    const migrations: Array<{ description: string; sql: string }> = [
+      {
+        description: 'Add repo_name to commits',
+        sql: 'ALTER TABLE commits ADD COLUMN repo_name TEXT',
+      },
+      {
+        description: 'Add repo_name to activity_logs',
+        sql: 'ALTER TABLE activity_logs ADD COLUMN repo_name TEXT',
+      },
+    ];
+
+    for (const migration of migrations) {
+      try {
+        this.db.exec(migration.sql);
+        console.log(`[DatabaseService] Migration applied: ${migration.description}`);
+      } catch {
+        // Column already exists — expected on subsequent startups
+      }
+    }
   }
 
   // ==========================================================================
@@ -497,13 +526,13 @@ export class DatabaseService extends BaseService {
     sessionId: string,
     message: string,
     timestamp: string,
-    stats?: { filesChanged?: number; additions?: number; deletions?: number; author?: string }
+    stats?: { filesChanged?: number; additions?: number; deletions?: number; author?: string; repoName?: string }
   ): void {
     if (!this.db) return;
 
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO commits (hash, session_id, message, timestamp, files_changed, additions, deletions, author)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO commits (hash, session_id, message, timestamp, files_changed, additions, deletions, author, repo_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -514,31 +543,38 @@ export class DatabaseService extends BaseService {
       stats?.filesChanged ?? 0,
       stats?.additions ?? 0,
       stats?.deletions ?? 0,
-      stats?.author || null
+      stats?.author || null,
+      stats?.repoName || null
     );
   }
 
   /**
    * Get commits for a session
    */
-  getCommitsForSession(sessionId: string, limit = 100): Array<{
+  getCommitsForSession(sessionId: string, limit = 100, repoName?: string): Array<{
     hash: string;
     message: string;
     timestamp: string;
     filesChanged: number;
     additions: number;
     deletions: number;
+    repoName?: string;
   }> {
     if (!this.db) return [];
 
-    const stmt = this.db.prepare(`
-      SELECT * FROM commits
-      WHERE session_id = ?
-      ORDER BY timestamp DESC
-      LIMIT ?
-    `);
+    let sql = 'SELECT * FROM commits WHERE session_id = ?';
+    const params: any[] = [sessionId];
 
-    const rows = stmt.all(sessionId, limit) as any[];
+    if (repoName) {
+      sql += ' AND repo_name = ?';
+      params.push(repoName);
+    }
+
+    sql += ' ORDER BY timestamp DESC LIMIT ?';
+    params.push(limit);
+
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params) as any[];
     return rows.map(row => ({
       hash: row.hash,
       message: row.message,
@@ -546,6 +582,7 @@ export class DatabaseService extends BaseService {
       filesChanged: row.files_changed,
       additions: row.additions,
       deletions: row.deletions,
+      repoName: row.repo_name || undefined,
     }));
   }
 

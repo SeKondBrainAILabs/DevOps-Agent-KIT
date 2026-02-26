@@ -41,6 +41,7 @@ import type {
   RecentRepo,
   AgentType,
 } from '../shared/types';
+import type { McpServerStatus } from '../shared/mcp-types';
 
 /**
  * Type-safe API exposed to renderer process
@@ -102,6 +103,9 @@ const api = {
 
     branches: (sessionId: string): Promise<IpcResult<BranchInfo[]>> =>
       ipcRenderer.invoke(IPC.GIT_BRANCHES, sessionId),
+
+    detectSubmodules: (repoPath: string): Promise<IpcResult<Array<{ name: string; path: string; url: string }>>> =>
+      ipcRenderer.invoke(IPC.GIT_DETECT_SUBMODULES, repoPath),
 
     getChangedFiles: (repoPath: string, baseBranch?: string): Promise<IpcResult<Array<{
       path: string;
@@ -1956,6 +1960,20 @@ const api = {
       const handler = (_event: IpcRendererEvent, status: Parameters<typeof callback>[0]) => callback(status);
       ipcRenderer.on(IPC.WORKER_STATUS_CHANGED, handler);
       return () => ipcRenderer.removeListener(IPC.WORKER_STATUS_CHANGED, handler);
+    },
+  },
+
+  // ==========================================================================
+  // MCP SERVER API
+  // ==========================================================================
+  mcp: {
+    status: (): Promise<IpcResult<McpServerStatus>> =>
+      ipcRenderer.invoke(IPC.MCP_SERVER_STATUS),
+
+    onServerStarted: (callback: (data: { port: number; url: string }) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, data: { port: number; url: string }) => callback(data);
+      ipcRenderer.on(IPC.MCP_SERVER_STARTED, handler);
+      return () => ipcRenderer.removeListener(IPC.MCP_SERVER_STARTED, handler);
     },
   },
 

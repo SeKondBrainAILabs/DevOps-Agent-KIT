@@ -16,11 +16,14 @@
     "cli:cleanup": "./cleanup-sessions.sh",
     "test": "jest",
     "test:kanvas": "jest --config jest.kanvas.config.cjs",
+    "test:mcp": "jest --config jest.kanvas.config.cjs --testPathPattern='(Mcp|McpAgent)'",
+    "test:multi-repo": "jest --config jest.kanvas.config.cjs --testPathPattern='MultiRepo'",
     "test:contracts": "jest tests/unit/generate-contracts.test.js tests/integration/contract-workflow.test.js",
     "test:e2e": "playwright test",
     "lint": "eslint . --ext .ts,.tsx"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "better-sqlite3": "^11.7.0",
     "chokidar": "^3.5.3",
     "detect-port": "^2.1.0",
@@ -33,6 +36,7 @@
     "react-markdown": "^10.1.0",
     "react-window": "^1.8.11",
     "remark-gfm": "^4.0.1",
+    "zod": "^3.25.76",
     "zustand": "^5.0.2"
   },
   "optionalDependencies": {

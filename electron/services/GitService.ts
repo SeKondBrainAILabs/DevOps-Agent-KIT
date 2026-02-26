@@ -62,12 +62,31 @@ export class GitService extends BaseService {
   }
 
   /**
-   * Get working directory for a session
+   * Register a specific repo's worktree path within a multi-repo session.
+   * Uses compound key: sessionId:repoName.
+   * Also registers under plain sessionId if it's the first (primary) repo.
    */
-  private getWorkingDir(sessionId: string): string {
+  registerRepoWorktree(sessionId: string, repoName: string, repoPath: string, worktreePath: string): void {
+    const key = `${sessionId}:${repoName}`;
+    worktreePaths.set(key, { repoPath, worktreePath });
+    // Also register under plain sessionId if not yet registered (first = primary)
+    if (!worktreePaths.has(sessionId)) {
+      worktreePaths.set(sessionId, { repoPath, worktreePath });
+    }
+  }
+
+  /**
+   * Get working directory for a session, optionally for a specific repo.
+   */
+  private getWorkingDir(sessionId: string, repoName?: string): string {
+    if (repoName) {
+      const compoundKey = `${sessionId}:${repoName}`;
+      const paths = worktreePaths.get(compoundKey);
+      if (paths) return paths.worktreePath;
+    }
     const paths = worktreePaths.get(sessionId);
     if (!paths) {
-      throw new Error(`No worktree registered for session: ${sessionId}`);
+      throw new Error(`No worktree registered for session: ${sessionId}${repoName ? `, repo: ${repoName}` : ''}`);
     }
     return paths.worktreePath;
   }
@@ -81,6 +100,88 @@ export class GitService extends BaseService {
       throw new Error(`No worktree registered for session: ${sessionId}`);
     }
     return paths.repoPath;
+  }
+
+  /**
+   * Detect git submodules in a repository by parsing .gitmodules.
+   */
+  async detectSubmodules(repoPath: string): Promise<IpcResult<Array<{ name: string; path: string; url: string }>>> {
+    return this.wrap(async () => {
+      const gitmodulesPath = path.join(repoPath, '.gitmodules');
+      if (!existsSync(gitmodulesPath)) return [];
+
+      const content = await fs.readFile(gitmodulesPath, 'utf-8');
+      const submodules: Array<{ name: string; path: string; url: string }> = [];
+      let current: Partial<{ name: string; path: string; url: string }> = {};
+
+      for (const line of content.split('\n')) {
+        const nameMatch = line.match(/\[submodule\s+"(.+)"\]/);
+        if (nameMatch) {
+          if (current.name && current.path) {
+            submodules.push({ name: current.name, path: current.path, url: current.url || '' });
+          }
+          current = { name: nameMatch[1] };
+        }
+        const pathMatch = line.match(/\s*path\s*=\s*(.+)/);
+        if (pathMatch) current.path = pathMatch[1].trim();
+        const urlMatch = line.match(/\s*url\s*=\s*(.+)/);
+        if (urlMatch) current.url = urlMatch[1].trim();
+      }
+      if (current.name && current.path) {
+        submodules.push({ name: current.name, path: current.path, url: current.url || '' });
+      }
+      return submodules;
+    }, 'GIT_DETECT_SUBMODULES_FAILED');
+  }
+
+  /**
+   * Create a branch in a submodule directory (branch-in-place mode).
+   * The submodule stays within the primary worktree.
+   */
+  async checkoutSubmoduleBranch(
+    submodulePath: string,
+    branchName: string,
+    baseBranch?: string
+  ): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      // Ensure submodule is initialized
+      const parentDir = path.dirname(submodulePath);
+      const subName = path.basename(submodulePath);
+      try {
+        await this.git(['submodule', 'update', '--init', subName], parentDir);
+      } catch {
+        // May already be initialized
+      }
+      // Create and checkout new branch from base
+      const base = baseBranch || 'HEAD';
+      await this.git(['checkout', '-b', branchName, base], submodulePath);
+    }, 'GIT_SUBMODULE_BRANCH_FAILED');
+  }
+
+  /**
+   * Remove all worktrees for a session (both primary and multi-repo compound keys).
+   */
+  async removeAllSessionWorktrees(sessionId: string): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      const keysToRemove: string[] = [];
+      for (const key of worktreePaths.keys()) {
+        if (key === sessionId || key.startsWith(`${sessionId}:`)) {
+          keysToRemove.push(key);
+        }
+      }
+      for (const key of keysToRemove) {
+        const paths = worktreePaths.get(key);
+        if (paths && existsSync(paths.worktreePath)) {
+          try {
+            // Only remove actual worktrees (not submodule directories)
+            await this.git(['worktree', 'remove', paths.worktreePath, '--force'], paths.repoPath);
+          } catch {
+            // May be a submodule path, not a worktree
+          }
+        }
+        worktreePaths.delete(key);
+      }
+    }, 'GIT_REMOVE_ALL_WORKTREES_FAILED');
   }
 
   async createWorktree(
@@ -176,9 +277,9 @@ export class GitService extends BaseService {
     }, 'GIT_STATUS_FAILED');
   }
 
-  async commit(sessionId: string, message: string): Promise<IpcResult<GitCommit>> {
+  async commit(sessionId: string, message: string, repoName?: string): Promise<IpcResult<GitCommit>> {
     return this.wrap(async () => {
-      const cwd = this.getWorkingDir(sessionId);
+      const cwd = this.getWorkingDir(sessionId, repoName);
 
       // Stage all changes
       await this.git(['add', '-A'], cwd);
@@ -204,9 +305,9 @@ export class GitService extends BaseService {
     }, 'GIT_COMMIT_FAILED');
   }
 
-  async push(sessionId: string): Promise<IpcResult<void>> {
+  async push(sessionId: string, repoName?: string): Promise<IpcResult<void>> {
     return this.wrap(async () => {
-      const cwd = this.getWorkingDir(sessionId);
+      const cwd = this.getWorkingDir(sessionId, repoName);
       const branch = await this.git(['branch', '--show-current'], cwd);
       await this.git(['push', '-u', 'origin', branch], cwd);
     }, 'GIT_PUSH_FAILED');

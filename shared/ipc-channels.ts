@@ -28,6 +28,7 @@ export const IPC = {
   GIT_BRANCHES: 'git:branches',
   GIT_CREATE_WORKTREE: 'git:createWorktree',
   GIT_REMOVE_WORKTREE: 'git:removeWorktree',
+  GIT_DETECT_SUBMODULES: 'git:detect-submodules',
   // Events (main → renderer)
   GIT_STATUS_CHANGED: 'git:statusChanged',
 
@@ -402,6 +403,13 @@ export const IPC = {
   WORKER_STATUS_CHANGED: 'worker:status-changed',
 
   // ==========================================================================
+  // MCP SERVER CHANNELS
+  // ==========================================================================
+  MCP_SERVER_STATUS: 'mcp:server-status',
+  // Events (main → renderer)
+  MCP_SERVER_STARTED: 'mcp:server-started',
+
+  // ==========================================================================
   // APP CHANNELS
   // ==========================================================================
   APP_GET_VERSION: 'app:getVersion',
@@ -425,6 +433,7 @@ export const REQUEST_CHANNELS = [
   IPC.GIT_BRANCHES,
   IPC.GIT_CREATE_WORKTREE,
   IPC.GIT_REMOVE_WORKTREE,
+  IPC.GIT_DETECT_SUBMODULES,
   IPC.WATCHER_START,
   IPC.WATCHER_STOP,
   IPC.WATCHER_STATUS,
@@ -522,6 +531,8 @@ export const REQUEST_CHANNELS = [
   // Worker process channels
   IPC.WORKER_STATUS,
   IPC.WORKER_RESTART,
+  // MCP server channels
+  IPC.MCP_SERVER_STATUS,
 ] as const;
 
 export const EVENT_CHANNELS = [
@@ -562,4 +573,6 @@ export const EVENT_CHANNELS = [
   IPC.UPDATE_ERROR,
   // Worker process events
   IPC.WORKER_STATUS_CHANGED,
+  // MCP server events
+  IPC.MCP_SERVER_STARTED,
 ] as const;

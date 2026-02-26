@@ -26,6 +26,7 @@ export interface Session {
   commitCount: number;
   lastCommit?: string;
   error?: string;
+  repos?: RepoEntry[]; // Populated in multi-repo mode
 }
 
 export interface CreateSessionRequest {
@@ -186,6 +187,7 @@ export interface FileChangeEvent {
   filePath: string;
   type: FileChangeType;
   timestamp: string;
+  repoName?: string; // Which repo this change belongs to (multi-repo mode)
 }
 
 export interface CommitTriggerEvent {
@@ -200,6 +202,7 @@ export interface CommitCompleteEvent {
   message: string;
   filesChanged: number;
   timestamp: string;
+  repoName?: string; // Which repo this commit belongs to (multi-repo mode)
 }
 
 // =============================================================================
@@ -319,6 +322,8 @@ export interface AgentInstanceConfig {
   rebaseFrequency: RebaseFrequency;
   systemPrompt: string;
   contextPreservation: string;
+  // Multi-repo mode (optional, advanced)
+  multiRepo?: MultiRepoConfig;
 }
 
 export interface AgentInstance {
@@ -331,6 +336,38 @@ export interface AgentInstance {
   sessionId?: string;
   worktreePath?: string; // Path to isolated worktree (local_deploy/{branchName})
   error?: string;
+  multiRepoEntries?: RepoEntry[]; // Populated repos with worktree paths (multi-repo mode)
+}
+
+// =============================================================================
+// MULTI-REPO SESSION TYPES
+// =============================================================================
+
+export type RepoRole = 'primary' | 'secondary';
+
+export interface RepoEntry {
+  repoPath: string;           // Absolute path to repo root
+  repoName: string;           // basename (e.g., "DevOpsAgent")
+  branchName: string;         // primary: user-specified, secondary: From_{PrimaryRepoName}_{DDMMYY}
+  baseBranch: string;         // Branch to merge back to
+  worktreePath: string;       // Primary: set after worktree creation. Secondary: submodule path within primary worktree
+  role: RepoRole;
+  isSubmodule: boolean;
+}
+
+export interface MultiRepoConfig {
+  primaryRepo: RepoEntry;
+  secondaryRepos: RepoEntry[];
+  commitScope: 'all' | 'per-repo'; // User preference from wizard
+}
+
+/** Generate secondary repo branch name: From_{PrimaryRepoName}_{DDMMYY} */
+export function generateSecondaryBranchName(primaryRepoName: string, date?: Date): string {
+  const d = date || new Date();
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  return `From_${primaryRepoName}_${dd}${mm}${yy}`;
 }
 
 export interface RepoValidation {

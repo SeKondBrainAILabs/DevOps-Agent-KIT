@@ -62,7 +62,7 @@ module.exports = {
   },
   // Transform node_modules that need it
   transformIgnorePatterns: [
-    'node_modules/(?!(zustand|@testing-library)/)',
+    'node_modules/(?!(zustand|@testing-library|zod)/)',
   ],
   // Clear mocks between tests
   clearMocks: true,

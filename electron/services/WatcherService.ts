@@ -29,7 +29,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 
 interface WatcherInstance {
-  sessionId: string;
+  sessionId: string;           // May be compound key sessionId:repoName in multi-repo mode
   worktreePath: string;
   watcher: FSWatcher | null;  // null when monitored by utility process
   commitMsgFile: string;
@@ -37,6 +37,7 @@ interface WatcherInstance {
   repoPath: string;           // Main repo path (for locking)
   agentType: AgentType;       // Agent type (for locking)
   branchName?: string;        // Branch name (for locking)
+  repoName?: string;          // Which repo this watcher monitors (multi-repo mode)
 }
 
 export class WatcherService extends BaseService {
@@ -322,6 +323,50 @@ export class WatcherService extends BaseService {
     }, 'WATCHER_STOP_FAILED');
   }
 
+  /**
+   * Start watching all repos for a multi-repo session.
+   * Each repo gets its own WatcherInstance keyed by sessionId:repoName.
+   */
+  async startMultiRepo(
+    sessionId: string,
+    repos: Array<{
+      repoName: string;
+      worktreePath: string;
+      repoPath: string;
+      agentType: AgentType;
+      branchName?: string;
+    }>
+  ): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      for (const repo of repos) {
+        const key = `${sessionId}:${repo.repoName}`;
+        await this.startWithPath(key, repo.worktreePath, repo.agentType, repo.branchName);
+        // Patch the instance with repoName
+        const instance = this.watchers.get(key);
+        if (instance) {
+          instance.repoName = repo.repoName;
+        }
+      }
+    }, 'WATCHER_START_MULTI_FAILED');
+  }
+
+  /**
+   * Stop all watchers for a session (both single and multi-repo compound keys).
+   */
+  async stopAll(sessionId: string, releaseLocks = true): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      const keysToStop: string[] = [];
+      for (const key of this.watchers.keys()) {
+        if (key === sessionId || key.startsWith(`${sessionId}:`)) {
+          keysToStop.push(key);
+        }
+      }
+      for (const key of keysToStop) {
+        await this.stop(key, releaseLocks);
+      }
+    }, 'WATCHER_STOP_ALL_FAILED');
+  }
+
   async isWatching(sessionId: string): Promise<IpcResult<boolean>> {
     return this.success(this.watchers.has(sessionId));
   }
@@ -331,7 +376,12 @@ export class WatcherService extends BaseService {
     filePath: string,
     type: 'add' | 'change' | 'unlink'
   ): void {
-    const { sessionId, commitMsgFile } = instance;
+    const { commitMsgFile } = instance;
+    // Extract real sessionId from compound key (sessionId:repoName → sessionId)
+    const realSessionId = instance.sessionId.includes(':')
+      ? instance.sessionId.split(':')[0]
+      : instance.sessionId;
+    const sessionId = realSessionId;
     const relativePath = path.relative(instance.worktreePath, filePath);
 
     // Emit file change event
@@ -340,8 +390,9 @@ export class WatcherService extends BaseService {
       filePath: relativePath,
       type,
       timestamp: new Date().toISOString(),
+      repoName: instance.repoName,
     };
-    console.log(`[WatcherService] File ${type}: ${relativePath} (session: ${sessionId})`);
+    console.log(`[WatcherService] File ${type}: ${relativePath} (session: ${sessionId}${instance.repoName ? `, repo: ${instance.repoName}` : ''})`);
     this.emitToRenderer(IPC.FILE_CHANGED, event);
 
     // Log file activity with path for commit linking
@@ -381,7 +432,10 @@ export class WatcherService extends BaseService {
   }
 
   private async triggerCommit(instance: WatcherInstance, commitMsgFilePath?: string): Promise<void> {
-    const { sessionId } = instance;
+    // Extract real sessionId from compound key (sessionId:repoName → sessionId)
+    const sessionId = instance.sessionId.includes(':')
+      ? instance.sessionId.split(':')[0]
+      : instance.sessionId;
     // Use the provided path or default to session-specific file
     const commitMsgFile = commitMsgFilePath || instance.commitMsgFile;
 
@@ -434,8 +488,8 @@ export class WatcherService extends BaseService {
         this.emitToRenderer(IPC.COMMIT_TRIGGERED, triggerEvent);
         this.activityService.log(sessionId, 'commit', `Commit triggered: ${message.substring(0, 50)}...`);
 
-        // Perform commit
-        const result = await this.gitService.commit(sessionId, message);
+        // Perform commit (pass repoName for multi-repo sessions)
+        const result = await this.gitService.commit(sessionId, message, instance.repoName);
         if (!result.success) {
           throw new Error(result.error?.message || 'Commit failed');
         }
@@ -457,6 +511,7 @@ export class WatcherService extends BaseService {
           message,
           filesChanged,
           timestamp,
+          repoName: instance.repoName,
         };
         this.emitToRenderer(IPC.COMMIT_COMPLETED, completeEvent);
         this.activityService.log(
@@ -490,7 +545,7 @@ export class WatcherService extends BaseService {
         }
 
         // Auto-push (could be configurable)
-        await this.gitService.push(sessionId);
+        await this.gitService.push(sessionId, instance.repoName);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         this.activityService.log(sessionId, 'error', `Commit failed: ${message}`);

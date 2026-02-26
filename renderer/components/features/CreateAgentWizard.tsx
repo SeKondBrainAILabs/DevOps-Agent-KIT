@@ -8,13 +8,14 @@ import { RepoSelector } from './RepoSelector';
 import { AgentTypeSelector } from './AgentTypeSelector';
 import { InstructionsModal } from './InstructionsModal';
 import { KanvasLogo } from '../ui/KanvasLogo';
-import type { AgentType, RepoValidation, AgentInstance, AgentInstanceConfig, RebaseFrequency } from '../../../shared/types';
+import type { AgentType, RepoValidation, AgentInstance, AgentInstanceConfig, RebaseFrequency, MultiRepoConfig, RepoEntry } from '../../../shared/types';
+import { generateSecondaryBranchName } from '../../../shared/types';
 
 interface CreateAgentWizardProps {
   onClose: () => void;
 }
 
-type WizardStep = 'repo' | 'setup' | 'agent' | 'workflow' | 'prompt' | 'complete';
+type WizardStep = 'repo' | 'setup' | 'agent' | 'multi-repo' | 'workflow' | 'prompt' | 'complete';
 
 type FeatureOrgStructure = 'feature-folders' | 'flat' | 'migrate';
 
@@ -68,12 +69,30 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [featureOrgChoice, setFeatureOrgChoice] = useState<FeatureOrgStructure>('feature-folders');
 
+  // Multi-repo settings
+  const [multiRepoEnabled, setMultiRepoEnabled] = useState(false);
+  const [detectedSubmodules, setDetectedSubmodules] = useState<Array<{ name: string; path: string; url: string }>>([]);
+  const [selectedSecondaryRepos, setSelectedSecondaryRepos] = useState<Array<{ repoPath: string; repoName: string; isSubmodule: boolean }>>([]);
+  const [commitScope, setCommitScope] = useState<'all' | 'per-repo'>('all');
+
   const handleRepoSelect = async (path: string, validation: RepoValidation) => {
     setRepoPath(path);
     setRepoValidation(validation);
     setError(null);
     if (validation.currentBranch) {
       setSettings(s => ({ ...s, baseBranch: validation.currentBranch || 'main' }));
+    }
+
+    // Detect submodules for multi-repo support
+    try {
+      const subResult = await window.api?.git?.detectSubmodules(path);
+      if (subResult?.success && subResult.data?.length > 0) {
+        setDetectedSubmodules(subResult.data);
+      } else {
+        setDetectedSubmodules([]);
+      }
+    } catch {
+      setDetectedSubmodules([]);
     }
 
     // Check if first-run setup is needed
@@ -140,7 +159,21 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
     const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const uniqueSuffix = Math.random().toString(36).substring(2, 6);
     setSettings(s => ({ ...s, branchName: `${type}-session-${timestamp}-${uniqueSuffix}` }));
-    setTimeout(() => setCurrentStep('workflow'), 300);
+    setTimeout(() => setCurrentStep('multi-repo'), 300);
+  };
+
+  const handleMultiRepoContinue = () => {
+    setCurrentStep('workflow');
+  };
+
+  const toggleSubmoduleSelection = (sub: { name: string; path: string; url: string }) => {
+    setSelectedSecondaryRepos(prev => {
+      const exists = prev.find(r => r.repoPath === sub.path);
+      if (exists) {
+        return prev.filter(r => r.repoPath !== sub.path);
+      }
+      return [...prev, { repoPath: sub.path, repoName: sub.name, isSubmodule: true }];
+    });
   };
 
   const handleCreate = async () => {
@@ -153,6 +186,35 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
     setError(null);
 
     try {
+      // Build multi-repo config if enabled and repos selected
+      let multiRepo: MultiRepoConfig | undefined;
+      if (multiRepoEnabled && selectedSecondaryRepos.length > 0) {
+        const primaryRepoName = repoPath.split('/').pop() || repoPath;
+        const primaryEntry: RepoEntry = {
+          repoPath,
+          repoName: primaryRepoName,
+          branchName: settings.branchName,
+          baseBranch: settings.baseBranch,
+          worktreePath: '', // Set during instance creation
+          role: 'primary',
+          isSubmodule: false,
+        };
+        const secondaryEntries: RepoEntry[] = selectedSecondaryRepos.map(r => ({
+          repoPath: r.repoPath,
+          repoName: r.repoName,
+          branchName: generateSecondaryBranchName(primaryRepoName),
+          baseBranch: 'main',
+          worktreePath: '', // Set during instance creation
+          role: 'secondary' as const,
+          isSubmodule: r.isSubmodule,
+        }));
+        multiRepo = {
+          primaryRepo: primaryEntry,
+          secondaryRepos: secondaryEntries,
+          commitScope,
+        };
+      }
+
       const config: AgentInstanceConfig = {
         repoPath,
         agentType,
@@ -165,6 +227,7 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
         rebaseFrequency: settings.rebaseFrequency,
         systemPrompt: settings.systemPrompt,
         contextPreservation: settings.contextPreservation,
+        multiRepo,
       };
 
       const result = await window.api?.instance?.create(config);
@@ -192,15 +255,16 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
     );
   }
 
-  // Calculate step number (setup step is optional)
-  const totalSteps = needsSetup ? 5 : 4;
+  // Calculate step number (setup step is optional, multi-repo is always shown)
+  const totalSteps = needsSetup ? 6 : 5;
   const stepNumber = {
     repo: 1,
     setup: 2,
     agent: needsSetup ? 3 : 2,
-    workflow: needsSetup ? 4 : 3,
-    prompt: needsSetup ? 5 : 4,
-    complete: needsSetup ? 6 : 5,
+    'multi-repo': needsSetup ? 4 : 3,
+    workflow: needsSetup ? 5 : 4,
+    prompt: needsSetup ? 6 : 5,
+    complete: needsSetup ? 7 : 6,
   }[currentStep];
 
   return (
@@ -361,7 +425,134 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
             </div>
           )}
 
-          {/* Step 3: Git Workflow */}
+          {/* Step: Multi-Repo Configuration */}
+          {currentStep === 'multi-repo' && (
+            <div className="space-y-6">
+              <CompletedStep>
+                {agentType?.charAt(0).toUpperCase()}{agentType?.slice(1)} agent for {repoValidation?.repoName}
+              </CompletedStep>
+
+              <ConversationBubble>
+                <p className="text-lg font-medium">Working across multiple repositories?</p>
+                <p className="text-sm text-text-secondary mt-1">
+                  Enable multi-repo mode if your work spans multiple repositories or submodules.
+                </p>
+              </ConversationBubble>
+
+              <div className="space-y-4 mt-4">
+                {/* Toggle */}
+                <SettingCard
+                  title="Multi-Repo Mode (Advanced)"
+                  description="Manage multiple repositories in a single session"
+                >
+                  <div className="flex gap-3">
+                    <OptionButton
+                      selected={!multiRepoEnabled}
+                      onClick={() => {
+                        setMultiRepoEnabled(false);
+                        setSelectedSecondaryRepos([]);
+                      }}
+                    >
+                      Single repo
+                    </OptionButton>
+                    <OptionButton
+                      selected={multiRepoEnabled}
+                      onClick={() => setMultiRepoEnabled(true)}
+                    >
+                      Multi-repo
+                    </OptionButton>
+                  </div>
+                </SettingCard>
+
+                {multiRepoEnabled && (
+                  <>
+                    {/* Detected Submodules */}
+                    {detectedSubmodules.length > 0 && (
+                      <SettingCard
+                        title="Detected Submodules"
+                        description="Select submodules to include in this session"
+                      >
+                        <div className="space-y-2">
+                          {detectedSubmodules.map(sub => {
+                            const isSelected = selectedSecondaryRepos.some(r => r.repoPath === sub.path);
+                            return (
+                              <label
+                                key={sub.path}
+                                className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                                  isSelected ? 'border-kanvas-blue bg-kanvas-blue/5' : 'border-border hover:border-text-secondary'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleSubmoduleSelection(sub)}
+                                  className="w-4 h-4 rounded border-border text-kanvas-blue"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-medium text-text-primary text-sm">{sub.name}</span>
+                                  <span className="text-xs text-text-secondary ml-2">{sub.path}</span>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </SettingCard>
+                    )}
+
+                    {detectedSubmodules.length === 0 && (
+                      <div className="p-4 rounded-xl border border-border bg-surface-secondary">
+                        <p className="text-sm text-text-secondary">
+                          No submodules detected in this repository.
+                          You can add external repositories below.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Commit Scope */}
+                    {selectedSecondaryRepos.length > 0 && (
+                      <SettingCard
+                        title="Commit Scope"
+                        description="How should commits be handled across repositories?"
+                      >
+                        <div className="flex gap-3">
+                          <OptionButton
+                            selected={commitScope === 'all'}
+                            onClick={() => setCommitScope('all')}
+                          >
+                            Commit all at once
+                          </OptionButton>
+                          <OptionButton
+                            selected={commitScope === 'per-repo'}
+                            onClick={() => setCommitScope('per-repo')}
+                          >
+                            Commit per-repo
+                          </OptionButton>
+                        </div>
+                        <p className="text-xs text-text-secondary mt-2">
+                          {commitScope === 'all'
+                            ? 'All repos will be committed together with the same message.'
+                            : 'Each repo will be committed independently.'}
+                        </p>
+                      </SettingCard>
+                    )}
+
+                    {/* Branch naming info */}
+                    {selectedSecondaryRepos.length > 0 && (
+                      <div className="p-4 rounded-xl border border-border bg-surface-secondary">
+                        <p className="text-sm text-text-secondary">
+                          Secondary repos will use branch: <code className="text-kanvas-blue font-mono">
+                            From_{repoValidation?.repoName || 'Repo'}_{new Date().toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '')}
+                          </code>
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step: Git Workflow */}
           {currentStep === 'workflow' && (
             <div className="space-y-6">
               <CompletedStep>
@@ -508,7 +699,8 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
                     repo: 'repo',
                     setup: 'repo',
                     agent: needsSetup ? 'setup' : 'repo',
-                    workflow: 'agent',
+                    'multi-repo': 'agent',
+                    workflow: 'multi-repo',
                     prompt: 'workflow',
                     complete: 'prompt',
                   };
@@ -550,6 +742,16 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
                   {featureOrgChoice === 'migrate' ? 'Coming Soon' : 'Apply & Continue'}
                 </button>
               </>
+            )}
+
+            {currentStep === 'multi-repo' && (
+              <button
+                type="button"
+                onClick={handleMultiRepoContinue}
+                className="btn-primary"
+              >
+                Next: Git Workflow
+              </button>
             )}
 
             {currentStep === 'workflow' && (

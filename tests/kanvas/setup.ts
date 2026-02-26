@@ -45,6 +45,7 @@ const mockApi = {
     getChangedFiles: createMockFn({ success: true, data: [] }),
     getFilesWithStatus: createMockFn({ success: true, data: [] }),
     getDiffSummary: createMockFn({ success: true, data: { files: [] } }),
+    detectSubmodules: createMockFn({ success: true, data: [] }),
   },
   instance: {
     create: createMockFn({ success: true, data: {} }),
@@ -94,6 +95,18 @@ const mockApi = {
     }),
     restart: createMockFn({ success: true }),
     onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
+  },
+  mcp: {
+    status: createMockFn({
+      success: true,
+      data: {
+        port: 39100,
+        url: 'http://127.0.0.1:39100/mcp',
+        connections: 0,
+        isRunning: true,
+      },
+    }),
+    onServerStarted: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
   recentRepos: {
     list: createMockFn({ success: true, data: [] }),
