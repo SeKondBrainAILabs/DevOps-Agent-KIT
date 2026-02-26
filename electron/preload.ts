@@ -1675,6 +1675,8 @@ const api = {
       commitCount: number;
       aheadBy: number;
       behindBy: number;
+      untrackedBlockingFiles?: string[];
+      blockingError?: string;
     }>> =>
       ipcRenderer.invoke(IPC.MERGE_PREVIEW, repoPath, sourceBranch, targetBranch),
 
@@ -1699,6 +1701,25 @@ const api = {
 
     abort: (repoPath: string): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.MERGE_ABORT, repoPath),
+
+    /**
+     * Stash untracked files that are blocking a merge
+     * (files that exist locally as untracked but are committed in the source branch)
+     * Files are safely stashed, not deleted, and can be recovered via git stash pop.
+     */
+    cleanUntracked: (repoPath: string, blockingFiles: string[]): Promise<IpcResult<{
+      stashed: string[];
+      failed: string[];
+      stashRef: string;
+    }>> =>
+      ipcRenderer.invoke(IPC.MERGE_CLEAN_UNTRACKED, repoPath, blockingFiles),
+
+    /**
+     * Resolve the actual active branch inside a worktree or repo directory.
+     * Use this instead of assuming the session branch name matches reality.
+     */
+    resolveActiveBranch: (dirPath: string): Promise<IpcResult<string>> =>
+      ipcRenderer.invoke(IPC.MERGE_RESOLVE_BRANCH, dirPath),
   },
 
   // ==========================================================================

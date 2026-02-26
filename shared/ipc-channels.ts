@@ -324,6 +324,8 @@ export const IPC = {
   MERGE_PREVIEW: 'merge:preview',
   MERGE_EXECUTE: 'merge:execute',
   MERGE_ABORT: 'merge:abort',
+  MERGE_CLEAN_UNTRACKED: 'merge:clean-untracked',     // Remove untracked files blocking merge
+  MERGE_RESOLVE_BRANCH: 'merge:resolve-branch',       // Get actual active branch from worktree path
 
   // ==========================================================================
   // COMMIT ANALYSIS CHANNELS
@@ -512,6 +514,12 @@ export const REQUEST_CHANNELS = [
   IPC.ANALYSIS_PARSE_KUBERNETES,
   IPC.ANALYSIS_PARSE_DOCKER_COMPOSE,
   IPC.ANALYSIS_GET_INFRA_SUMMARY,
+  // Merge workflow
+  IPC.MERGE_PREVIEW,
+  IPC.MERGE_EXECUTE,
+  IPC.MERGE_ABORT,
+  IPC.MERGE_CLEAN_UNTRACKED,
+  IPC.MERGE_RESOLVE_BRANCH,
   // Merge conflict resolution
   IPC.CONFLICT_GET_FILES,
   IPC.CONFLICT_READ_FILE,
@@ -523,6 +531,8 @@ export const REQUEST_CHANNELS = [
   IPC.CONFLICT_ABORT_REBASE,
   IPC.CONFLICT_IS_REBASE_IN_PROGRESS,
   IPC.CONFLICT_REBASE_WITH_AI,
+  IPC.CONFLICT_CREATE_BACKUP,
+  IPC.CONFLICT_DELETE_BACKUP,
   // Auto-update channels
   IPC.UPDATE_CHECK,
   IPC.UPDATE_DOWNLOAD,

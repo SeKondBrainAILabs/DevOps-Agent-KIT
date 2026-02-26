@@ -5,6 +5,8 @@
 
 import { BaseService } from './BaseService';
 import type { IpcResult, MergePreview, MergeResult } from '../../shared/types';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 // Dynamic import helper for execa (ESM-only module)
 // Handles various bundling scenarios with fallback patterns
@@ -31,14 +33,107 @@ export class MergeService extends BaseService {
   /**
    * Execute a git command (uses dynamic import for ESM-only execa)
    */
-  private async git(args: string[], cwd: string): Promise<{ stdout: string; exitCode: number }> {
+  private async git(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     try {
       const execa = await getExeca();
       const result = await execa('git', args, { cwd, reject: false });
-      return { stdout: result.stdout.trim(), exitCode: result.exitCode ?? 0 };
+      return { stdout: result.stdout.trim(), stderr: (result.stderr || '').trim(), exitCode: result.exitCode ?? 0 };
     } catch (error) {
-      return { stdout: '', exitCode: 1 };
+      return { stdout: '', stderr: error instanceof Error ? error.message : '', exitCode: 1 };
     }
+  }
+
+  /**
+   * Parse "untracked working tree files would be overwritten" error from git stderr.
+   * Returns the list of blocking files, or null if not this type of error.
+   */
+  private parseUntrackedBlockingFiles(stderr: string): string[] | null {
+    if (!stderr.includes('untracked working tree files would be overwritten')) {
+      return null;
+    }
+    // Git error format:
+    // error: The following untracked working tree files would be overwritten by merge:
+    //     path/to/file1
+    //     path/to/file2
+    // Please move or remove them before you merge.
+    const lines = stderr.split('\n');
+    const blockingFiles: string[] = [];
+    let capturing = false;
+    for (const line of lines) {
+      if (line.includes('untracked working tree files would be overwritten')) {
+        capturing = true;
+        continue;
+      }
+      if (capturing) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('Please ') || trimmed === 'Aborting' || trimmed === '') {
+          capturing = false;
+          continue;
+        }
+        if (trimmed) {
+          blockingFiles.push(trimmed);
+        }
+      }
+    }
+    return blockingFiles.length > 0 ? blockingFiles : null;
+  }
+
+  /**
+   * Stash untracked files that are blocking a merge, then attempt the merge.
+   * Uses `git stash --include-untracked` to safely preserve the files.
+   * After merge, user can pop the stash if needed.
+   *
+   * Flow:
+   * 1. Stage the blocking untracked files
+   * 2. Stash them with a descriptive message
+   * 3. Return stash info so UI can show what happened
+   */
+  async cleanUntrackedBlockingFiles(
+    repoPath: string,
+    blockingFiles: string[]
+  ): Promise<IpcResult<{ stashed: string[]; failed: string[]; stashRef: string }>> {
+    return this.wrap(async () => {
+      const stashed: string[] = [];
+      const failed: string[] = [];
+
+      // First, stage each blocking untracked file individually
+      for (const file of blockingFiles) {
+        const fullPath = path.join(repoPath, file);
+        try {
+          await fs.access(fullPath);
+          const { exitCode } = await this.git(['add', file], repoPath);
+          if (exitCode === 0) {
+            stashed.push(file);
+            console.log(`[MergeService] Staged blocking file for stash: ${file}`);
+          } else {
+            failed.push(file);
+          }
+        } catch {
+          // File doesn't exist, skip
+          console.warn(`[MergeService] Blocking file not found, skipping: ${file}`);
+        }
+      }
+
+      if (stashed.length === 0) {
+        return { stashed: [], failed: blockingFiles, stashRef: '' };
+      }
+
+      // Stash the staged files with a descriptive message
+      const stashMsg = `[Kanvas] Pre-merge stash: ${stashed.length} untracked file(s) blocking merge`;
+      const { exitCode: stashExit } = await this.git(['stash', 'push', '-m', stashMsg], repoPath);
+
+      if (stashExit !== 0) {
+        // Unstage and fail
+        await this.git(['reset', 'HEAD', '--', ...stashed], repoPath);
+        return { stashed: [], failed: blockingFiles, stashRef: '' };
+      }
+
+      // Get the stash ref
+      const { stdout: stashRef } = await this.git(['stash', 'list', '--max-count=1'], repoPath);
+      console.log(`[MergeService] Stashed ${stashed.length} blocking files: ${stashRef}`);
+
+      return { stashed, failed, stashRef };
+    }, 'CLEAN_UNTRACKED_FAILED');
   }
 
   /**
@@ -96,24 +191,36 @@ export class MergeService extends BaseService {
       let hasConflicts = false;
       let conflictingFiles: string[] = [];
       let canMerge = true;
+      let untrackedBlockingFiles: string[] | undefined;
+      let blockingError: string | undefined;
 
       // Save current state
       const { stdout: currentHead } = await this.git(['rev-parse', 'HEAD'], repoPath);
 
       try {
         // Attempt merge without committing
-        const { exitCode } = await this.git(
+        const { exitCode, stderr } = await this.git(
           ['merge', '--no-commit', '--no-ff', sourceBranch],
           repoPath
         );
 
         if (exitCode !== 0) {
-          hasConflicts = true;
-          canMerge = false;
+          // Check if this is an untracked files blocking error
+          const blockingFiles = this.parseUntrackedBlockingFiles(stderr);
+          if (blockingFiles) {
+            hasConflicts = true;
+            canMerge = false;
+            untrackedBlockingFiles = blockingFiles;
+            blockingError = 'Untracked files would be overwritten by merge. These can be auto-cleaned.';
+            console.log(`[MergeService] Untracked files blocking merge: ${blockingFiles.join(', ')}`);
+          } else {
+            hasConflicts = true;
+            canMerge = false;
 
-          // Get conflicting files
-          const { stdout: conflictOutput } = await this.git(['diff', '--name-only', '--diff-filter=U'], repoPath);
-          conflictingFiles = conflictOutput.split('\n').filter(Boolean);
+            // Get conflicting files (real code-level conflicts)
+            const { stdout: conflictOutput } = await this.git(['diff', '--name-only', '--diff-filter=U'], repoPath);
+            conflictingFiles = conflictOutput.split('\n').filter(Boolean);
+          }
         }
       } catch {
         hasConflicts = true;
@@ -135,6 +242,8 @@ export class MergeService extends BaseService {
         commitCount,
         aheadBy: aheadBy || 0,
         behindBy: behindBy || 0,
+        untrackedBlockingFiles,
+        blockingError,
       };
     }, 'MERGE_PREVIEW_FAILED');
   }
@@ -154,6 +263,10 @@ export class MergeService extends BaseService {
     } = {}
   ): Promise<IpcResult<MergeResult>> {
     return this.wrap(async () => {
+      // Ensure .S9N_KIT_DevOpsAgent/ is in .gitignore of the target repo
+      // This prevents agent artifacts from blocking merges
+      await this.ensureAgentArtifactsIgnored(repoPath);
+
       // CRITICAL: If worktreePath provided, commit any uncommitted changes first!
       // This prevents data loss when user has uncommitted changes in the worktree.
       if (options.worktreePath) {
@@ -205,12 +318,39 @@ export class MergeService extends BaseService {
       await this.git(['pull', 'origin', targetBranch], repoPath);
 
       // Perform the merge
-      const { exitCode, stdout } = await this.git(
+      let mergeResult = await this.git(
         ['merge', sourceBranch, '-m', `Merge branch '${sourceBranch}' into ${targetBranch}`],
         repoPath
       );
 
-      if (exitCode !== 0) {
+      // Handle untracked files blocking the merge - stash and retry
+      if (mergeResult.exitCode !== 0) {
+        const blockingFiles = this.parseUntrackedBlockingFiles(mergeResult.stderr);
+        if (blockingFiles && blockingFiles.length > 0) {
+          console.log(`[MergeService] Untracked files blocking merge, stashing: ${blockingFiles.join(', ')}`);
+
+          const cleanResult = await this.cleanUntrackedBlockingFiles(repoPath, blockingFiles);
+          if (cleanResult.success && cleanResult.data && cleanResult.data.failed.length === 0) {
+            console.log(`[MergeService] Stashed ${cleanResult.data.stashed.length} blocking files (${cleanResult.data.stashRef}), retrying merge...`);
+
+            // Retry the merge after stashing
+            mergeResult = await this.git(
+              ['merge', sourceBranch, '-m', `Merge branch '${sourceBranch}' into ${targetBranch}`],
+              repoPath
+            );
+          } else {
+            // Could not stash all blocking files
+            const failedFiles = cleanResult.data?.failed || blockingFiles;
+            return {
+              success: false,
+              message: `Untracked files blocking merge could not be stashed: ${failedFiles.join(', ')}. Please move or remove them manually.`,
+              conflictingFiles: blockingFiles,
+            };
+          }
+        }
+      }
+
+      if (mergeResult.exitCode !== 0) {
         // Get conflicting files
         const { stdout: conflictOutput } = await this.git(['diff', '--name-only', '--diff-filter=U'], repoPath);
         const conflictingFiles = conflictOutput.split('\n').filter(Boolean);
@@ -262,6 +402,48 @@ export class MergeService extends BaseService {
         filesChanged,
       };
     }, 'MERGE_EXECUTE_FAILED');
+  }
+
+  /**
+   * Ensure agent artifacts (.S9N_KIT_DevOpsAgent/) are in the repo's .gitignore.
+   * This prevents untracked agent files from blocking git merge/checkout operations.
+   */
+  private async ensureAgentArtifactsIgnored(repoPath: string): Promise<void> {
+    const gitignorePath = path.join(repoPath, '.gitignore');
+    const agentDir = '.S9N_KIT_DevOpsAgent';
+
+    try {
+      let content = '';
+      try {
+        content = await fs.readFile(gitignorePath, 'utf-8');
+      } catch {
+        // .gitignore doesn't exist yet
+      }
+
+      if (!content.includes(agentDir)) {
+        content += `\n# DevOps Agent Kit (local runtime data - do not commit)\n${agentDir}/\n`;
+        await fs.writeFile(gitignorePath, content, 'utf-8');
+        console.log(`[MergeService] Added ${agentDir}/ to .gitignore in ${repoPath}`);
+      }
+    } catch (err) {
+      console.warn(`[MergeService] Could not update .gitignore: ${err}`);
+    }
+  }
+
+  /**
+   * Resolve the actual active branch inside a worktree or repo path.
+   * This is critical because the session's branchName may differ from the
+   * branch the developer actually switched to inside the worktree.
+   */
+  async resolveActiveBranch(dirPath: string): Promise<IpcResult<string>> {
+    return this.wrap(async () => {
+      const { stdout: branch, exitCode } = await this.git(['branch', '--show-current'], dirPath);
+      if (exitCode !== 0 || !branch) {
+        throw new Error(`Could not resolve active branch in ${dirPath}`);
+      }
+      console.log(`[MergeService] Resolved active branch in ${dirPath}: ${branch}`);
+      return branch;
+    }, 'RESOLVE_BRANCH_FAILED');
   }
 
   /**

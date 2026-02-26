@@ -636,6 +636,10 @@ export interface MergePreview {
   commitCount: number;
   aheadBy: number;
   behindBy: number;
+  /** Untracked files blocking the merge (can be auto-cleaned) */
+  untrackedBlockingFiles?: string[];
+  /** Human-readable description of the blocking error */
+  blockingError?: string;
 }
 
 export interface MergeResult {

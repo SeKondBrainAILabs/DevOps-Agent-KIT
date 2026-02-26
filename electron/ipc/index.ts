@@ -1079,6 +1079,80 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.merge.abortMerge(repoPath);
   });
 
+  ipcMain.handle(IPC.MERGE_CLEAN_UNTRACKED, async (_, repoPath: string, blockingFiles: string[]) => {
+    return services.merge.cleanUntrackedBlockingFiles(repoPath, blockingFiles);
+  });
+
+  ipcMain.handle(IPC.MERGE_RESOLVE_BRANCH, async (_, dirPath: string) => {
+    return services.merge.resolveActiveBranch(dirPath);
+  });
+
+  // ==========================================================================
+  // MERGE CONFLICT RESOLUTION HANDLERS
+  // AI-powered conflict analysis and resolution with user approval
+  // ==========================================================================
+  ipcMain.handle(IPC.CONFLICT_GET_FILES, async (_, repoPath: string) => {
+    return services.mergeConflict.getConflictedFiles(repoPath);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_READ_FILE, async (_, repoPath: string, filePath: string) => {
+    return services.mergeConflict.readConflictedFile(repoPath, filePath);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_ANALYZE, async (_, repoPath: string, filePath: string) => {
+    return services.mergeConflict.analyzeConflict(repoPath, filePath);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_RESOLVE_FILE, async (_, repoPath: string, filePath: string, currentBranch: string, incomingBranch: string) => {
+    return services.mergeConflict.resolveFileConflict(repoPath, filePath, currentBranch, incomingBranch);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_APPLY_RESOLUTION, async (_, repoPath: string, filePath: string, content: string) => {
+    return services.mergeConflict.applyResolution(repoPath, filePath, content);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_GENERATE_PREVIEWS, async (_, repoPath: string, targetBranch: string) => {
+    return services.mergeConflict.generateResolutionPreviews(repoPath, targetBranch);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_APPLY_APPROVED, async (_, repoPath: string, approvedPreviews: unknown) => {
+    return services.mergeConflict.applyApprovedResolutions(repoPath, approvedPreviews as any);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_ABORT_REBASE, async (_, repoPath: string) => {
+    return services.mergeConflict.abortRebase(repoPath);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_IS_REBASE_IN_PROGRESS, async (_, repoPath: string) => {
+    return services.mergeConflict.isRebaseInProgress(repoPath);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_REBASE_WITH_AI, async (_, repoPath: string, targetBranch: string) => {
+    return services.mergeConflict.rebaseWithResolution(repoPath, targetBranch);
+  });
+
+  ipcMain.handle(IPC.CONFLICT_CREATE_BACKUP, async (_, repoPath: string, sessionId: string) => {
+    try {
+      const execa = (await import('execa')).execa || (await import('execa')).default;
+      const branchName = `backup_kit/${sessionId}`;
+      await (execa as any)('git', ['branch', branchName], { cwd: repoPath });
+      return { success: true, data: branchName };
+    } catch (error) {
+      return { success: false, error: { code: 'CREATE_BACKUP_FAILED', message: error instanceof Error ? error.message : String(error) } };
+    }
+  });
+
+  ipcMain.handle(IPC.CONFLICT_DELETE_BACKUP, async (_, repoPath: string, sessionId: string) => {
+    try {
+      const execa = (await import('execa')).execa || (await import('execa')).default;
+      const branchName = `backup_kit/${sessionId}`;
+      await (execa as any)('git', ['branch', '-D', branchName], { cwd: repoPath });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: { code: 'DELETE_BACKUP_FAILED', message: error instanceof Error ? error.message : String(error) } };
+    }
+  });
+
   // ==========================================================================
   // COMMIT ANALYSIS HANDLERS
   // AI-powered commit message generation from file diffs

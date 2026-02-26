@@ -1,9 +1,14 @@
 /**
  * MergeWorkflowModal Component
  * Guided merge workflow for bringing agent branches back to main
+ *
+ * Handles three scenarios:
+ * 1. Clean merge - no conflicts, proceed directly
+ * 2. Untracked blocking files - stash them, retry merge
+ * 3. Code-level conflicts - offer Auto-Fix (LLM) or manual resolution
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import type { MergePreview, BranchInfo } from '../../../shared/types';
 
 interface MergeWorkflowModalProps {
@@ -18,7 +23,13 @@ interface MergeWorkflowModalProps {
   onDeleteSession?: (sessionId: string) => void;
 }
 
-type Step = 'preview' | 'options' | 'executing' | 'complete' | 'error';
+type Step = 'preview' | 'options' | 'resolving' | 'executing' | 'complete' | 'error';
+
+interface ProgressEntry {
+  message: string;
+  status: 'pending' | 'active' | 'done' | 'error';
+  detail?: string;
+}
 
 export function MergeWorkflowModal({
   isOpen,
@@ -38,11 +49,18 @@ export function MergeWorkflowModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Dynamically resolved branch from worktree (may differ from session's branchName)
+  const [actualBranch, setActualBranch] = useState<string>(sourceBranch);
+  const branchMismatch = actualBranch !== sourceBranch;
+
   // Merge options
   const [deleteWorktree, setDeleteWorktree] = useState(true);
   const [deleteLocalBranch, setDeleteLocalBranch] = useState(false);
   const [deleteRemoteBranch, setDeleteRemoteBranch] = useState(false);
-  const [deleteSession, setDeleteSession] = useState(true); // Delete session from Kanvas after merge
+  const [deleteSession, setDeleteSession] = useState(true);
+
+  // Resolution progress tracking
+  const [progressLog, setProgressLog] = useState<ProgressEntry[]>([]);
 
   // Merge result
   const [mergeResult, setMergeResult] = useState<{
@@ -52,7 +70,21 @@ export function MergeWorkflowModal({
     filesChanged?: number;
   } | null>(null);
 
-  // Load branches when modal opens
+  // Helper to add/update progress entries
+  const addProgress = useCallback((message: string, status: ProgressEntry['status'] = 'active', detail?: string) => {
+    setProgressLog((prev) => [...prev, { message, status, detail }]);
+  }, []);
+
+  const updateLastProgress = useCallback((status: ProgressEntry['status'], detail?: string) => {
+    setProgressLog((prev) => {
+      if (prev.length === 0) return prev;
+      const updated = [...prev];
+      updated[updated.length - 1] = { ...updated[updated.length - 1], status, detail: detail || updated[updated.length - 1].detail };
+      return updated;
+    });
+  }, []);
+
+  // Load branches and resolve actual worktree branch when modal opens
   useEffect(() => {
     if (!isOpen) {
       setStep('preview');
@@ -60,33 +92,56 @@ export function MergeWorkflowModal({
       setError(null);
       setMergeResult(null);
       setBranches([]);
+      setProgressLog([]);
+      setActualBranch(sourceBranch);
       return;
     }
 
-    // Fetch available branches
-    const loadBranches = async () => {
+    const init = async () => {
+      // Step 1: Resolve the ACTUAL active branch from the worktree
+      // The session's branchName may be stale if the developer switched branches
+      let resolvedBranch = sourceBranch;
+      const pathToCheck = worktreePath || repoPath;
+
+      if (pathToCheck && window.api?.merge?.resolveActiveBranch) {
+        try {
+          const branchResult = await window.api.merge.resolveActiveBranch(pathToCheck);
+          if (branchResult.success && branchResult.data) {
+            resolvedBranch = branchResult.data;
+            if (resolvedBranch !== sourceBranch) {
+              console.log(`[MergeWorkflow] Branch mismatch: session says "${sourceBranch}", worktree is on "${resolvedBranch}"`);
+            }
+          }
+        } catch (err) {
+          console.warn('[MergeWorkflow] Could not resolve active branch, using session branch:', err);
+        }
+      }
+
+      setActualBranch(resolvedBranch);
+
+      // Step 2: Load branches list (filtering out the actual branch being merged)
       if (window.api?.git?.branches && repoPath) {
-        // Use repoPath for branches, not sessionId
         const result = await window.api.git.branches(repoPath);
         if (result.success && result.data) {
-          // Filter out the source branch and session branches
           setBranches(result.data.filter((b) =>
-            b.name !== sourceBranch && !b.name.startsWith('session/')
+            b.name !== resolvedBranch && b.name !== sourceBranch && !b.name.startsWith('session/')
           ));
         }
       }
+
+      // Step 3: Load merge preview using the actual branch
+      await loadPreviewWithBranch(resolvedBranch);
     };
 
-    loadBranches();
-    loadPreview();
-  }, [isOpen, sourceBranch, targetBranch, repoPath]);
+    init();
+  }, [isOpen, sourceBranch, targetBranch, repoPath, worktreePath]);
 
-  const loadPreview = async () => {
+  const loadPreviewWithBranch = async (branch: string) => {
     setLoading(true);
     setError(null);
     try {
       if (window.api?.merge?.preview) {
-        const result = await window.api.merge.preview(repoPath, sourceBranch, targetBranch);
+        const result = await window.api.merge.preview(repoPath, branch, targetBranch);
         if (result.success && result.data) {
           setPreview(result.data);
         } else {
@@ -100,15 +155,174 @@ export function MergeWorkflowModal({
     }
   };
 
+  const loadPreview = () => loadPreviewWithBranch(actualBranch);
+
+  /**
+   * Handle stashing untracked blocking files, then reload preview
+   */
+  const handleStashAndRetry = async () => {
+    if (!preview?.untrackedBlockingFiles?.length) return;
+
+    setStep('resolving');
+    setProgressLog([]);
+
+    try {
+      addProgress(`Found ${preview.untrackedBlockingFiles.length} untracked file(s) blocking merge`);
+
+      // Show which files
+      for (const file of preview.untrackedBlockingFiles) {
+        addProgress(`  Stashing: ${file}`, 'pending');
+      }
+
+      addProgress('Stashing blocking files to preserve them safely...', 'active');
+
+      const result = await window.api?.merge?.cleanUntracked?.(repoPath, preview.untrackedBlockingFiles);
+
+      if (result?.success && result.data) {
+        const { stashed, failed, stashRef } = result.data;
+
+        if (failed.length > 0) {
+          updateLastProgress('error', `Failed to stash: ${failed.join(', ')}`);
+          addProgress(`Could not stash ${failed.length} file(s). Please move or remove them manually.`, 'error');
+          setError(`Failed to stash files: ${failed.join(', ')}`);
+          setStep('error');
+          return;
+        }
+
+        updateLastProgress('done', `Stashed ${stashed.length} file(s)`);
+        if (stashRef) {
+          addProgress(`Saved to: ${stashRef}`, 'done');
+        }
+        addProgress('Files safely stashed. You can recover them later with: git stash pop', 'done');
+
+        // Reload the merge preview using the actual branch
+        addProgress('Re-checking merge compatibility...', 'active');
+        const previewResult = await window.api?.merge?.preview?.(repoPath, actualBranch, targetBranch);
+
+        if (previewResult?.success && previewResult.data) {
+          setPreview(previewResult.data);
+          updateLastProgress('done');
+
+          if (previewResult.data.canMerge) {
+            addProgress('Merge is now ready to proceed!', 'done');
+            // Auto-advance to options after a brief pause
+            setTimeout(() => setStep('options'), 1000);
+          } else if (previewResult.data.hasConflicts) {
+            addProgress('Code-level conflicts remain. Use AI Auto-Fix or resolve manually.', 'active');
+            setTimeout(() => setStep('preview'), 1500);
+          }
+        } else {
+          updateLastProgress('error');
+          setError('Failed to re-check merge after stashing');
+          setStep('error');
+        }
+      } else {
+        updateLastProgress('error');
+        setError(result?.error?.message || 'Failed to stash blocking files');
+        setStep('error');
+      }
+    } catch (err) {
+      updateLastProgress('error');
+      setError(err instanceof Error ? err.message : 'Failed during stash operation');
+      setStep('error');
+    }
+  };
+
+  /**
+   * Handle AI auto-fix for code-level conflicts
+   */
+  const handleAutoFix = async () => {
+    setStep('resolving');
+    setProgressLog([]);
+
+    try {
+      addProgress('Creating backup branch for safety...');
+
+      // Create backup if we have a sessionId
+      if (sessionId) {
+        const backupResult = await window.api?.conflict?.createBackup?.(repoPath, sessionId);
+        if (backupResult?.success) {
+          updateLastProgress('done', `Backup: backup_kit/${sessionId}`);
+        } else {
+          updateLastProgress('done', 'Backup skipped (non-critical)');
+        }
+      } else {
+        updateLastProgress('done', 'No session ID for backup');
+      }
+
+      addProgress('Analyzing conflicts with AI (llama/qwen)...');
+
+      const result = await window.api?.conflict?.generatePreviews?.(repoPath, targetBranch);
+
+      if (result?.success && result.data) {
+        const previews = result.data as Array<{
+          filePath: string;
+          resolvedContent: string;
+          resolution: string;
+        }>;
+
+        updateLastProgress('done', `Generated ${previews.length} resolution(s)`);
+
+        // Show each file resolution
+        for (const p of previews) {
+          addProgress(`Resolved: ${p.filePath} (${p.resolution})`, 'done');
+        }
+
+        addProgress('Applying approved resolutions...');
+
+        const applyResult = await window.api?.conflict?.applyApproved?.(
+          repoPath,
+          previews.map((p) => ({ ...p, approved: true }))
+        );
+
+        if (applyResult?.success) {
+          updateLastProgress('done');
+
+          // Clean up backup
+          if (sessionId) {
+            await window.api?.conflict?.deleteBackup?.(repoPath, sessionId);
+          }
+
+          addProgress('All conflicts resolved! Proceeding to merge options...', 'done');
+
+          // Reload preview using actual branch
+          const previewResult = await window.api?.merge?.preview?.(repoPath, actualBranch, targetBranch);
+          if (previewResult?.success && previewResult.data) {
+            setPreview(previewResult.data);
+          }
+
+          setTimeout(() => setStep('options'), 1500);
+        } else {
+          updateLastProgress('error');
+          addProgress('Some resolutions could not be applied. Try manual resolution.', 'error');
+          setError(applyResult?.error?.message || 'Failed to apply resolutions');
+          setTimeout(() => setStep('preview'), 2000);
+        }
+      } else {
+        updateLastProgress('error');
+        setError(result?.error?.message || 'AI conflict resolution failed');
+        addProgress('AI resolution failed. You can try manual resolution instead.', 'error');
+        setTimeout(() => setStep('preview'), 2000);
+      }
+    } catch (err) {
+      updateLastProgress('error');
+      setError(err instanceof Error ? err.message : 'Auto-fix failed');
+      setStep('error');
+    }
+  };
+
   const handleExecuteMerge = async () => {
     setStep('executing');
     setError(null);
+    setProgressLog([]);
 
     try {
       if (window.api?.merge?.execute) {
+        addProgress('Executing merge...');
+
         const result = await window.api.merge.execute(
           repoPath,
-          sourceBranch,
+          actualBranch,
           targetBranch,
           {
             deleteWorktree: deleteWorktree && !!worktreePath,
@@ -121,28 +335,35 @@ export function MergeWorkflowModal({
         if (result.success && result.data) {
           setMergeResult(result.data);
           if (result.data.success) {
+            updateLastProgress('done');
             setStep('complete');
             onMergeComplete?.();
-            // Delete the session from Kanvas if option is checked
             if (deleteSession && sessionId && onDeleteSession) {
               onDeleteSession(sessionId);
             }
           } else {
+            updateLastProgress('error');
             setError(result.data.message);
             setStep('error');
           }
         } else {
+          updateLastProgress('error');
           setError(result.error?.message || 'Merge failed');
           setStep('error');
         }
       }
     } catch (err) {
+      updateLastProgress('error');
       setError(err instanceof Error ? err.message : 'Merge failed');
       setStep('error');
     }
   };
 
   if (!isOpen) return null;
+
+  // Determine if there are untracked blocking files vs code-level conflicts
+  const hasUntrackedBlocking = preview?.untrackedBlockingFiles && preview.untrackedBlockingFiles.length > 0;
+  const hasCodeConflicts = preview?.hasConflicts && preview.conflictingFiles.length > 0 && !hasUntrackedBlocking;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -152,9 +373,9 @@ export function MergeWorkflowModal({
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold text-text-primary">Merge Workflow</h2>
-              <div className="flex items-center gap-2 text-sm text-text-secondary mt-1">
+              <div className="flex items-center gap-2 text-sm text-text-secondary mt-1 flex-wrap">
                 <span>Merge</span>
-                <code className="text-kanvas-blue">{sourceBranch}</code>
+                <code className="text-kanvas-blue">{actualBranch}</code>
                 <span>into</span>
                 {step === 'preview' && branches.length > 0 ? (
                   <select
@@ -162,7 +383,6 @@ export function MergeWorkflowModal({
                     onChange={(e) => setTargetBranch(e.target.value)}
                     className="px-2 py-1 rounded bg-surface-secondary border border-border text-kanvas-blue text-sm font-mono focus:outline-none focus:ring-2 focus:ring-kanvas-blue/50"
                   >
-                    {/* Always include current target even if not in branches list */}
                     {!branches.find(b => b.name === targetBranch) && (
                       <option value={targetBranch}>{targetBranch}</option>
                     )}
@@ -187,13 +407,25 @@ export function MergeWorkflowModal({
             </button>
           </div>
 
+          {/* Branch mismatch notice */}
+          {branchMismatch && (
+            <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-xs text-blue-700">
+                <span className="font-medium">Branch auto-corrected:</span>{' '}
+                Session was created as <code className="bg-blue-100 px-1 rounded">{sourceBranch}</code>,{' '}
+                but the worktree is on <code className="bg-blue-100 px-1 rounded">{actualBranch}</code>.{' '}
+                Using the actual active branch.
+              </p>
+            </div>
+          )}
+
           {/* Step indicator */}
           <div className="flex items-center gap-2 mt-4">
             {(['preview', 'options', 'executing', 'complete'] as Step[]).map((s, i) => (
               <React.Fragment key={s}>
                 <div
                   className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-                    step === s
+                    step === s || (step === 'resolving' && s === 'preview')
                       ? 'bg-kanvas-blue text-white'
                       : step === 'error' && s === 'executing'
                       ? 'bg-red-500 text-white'
@@ -232,39 +464,72 @@ export function MergeWorkflowModal({
               ) : preview ? (
                 <div className="space-y-4">
                   {/* Merge status */}
-                  <div className={`p-4 rounded-xl border ${
-                    preview.canMerge
-                      ? 'bg-green-50 border-green-200'
-                      : 'bg-red-50 border-red-200'
-                  }`}>
-                    <div className="flex items-center gap-2">
-                      {preview.canMerge ? (
-                        <>
-                          <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                          <span className="font-medium text-green-700">Ready to merge</span>
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                          </svg>
-                          <span className="font-medium text-red-700">Conflicts detected</span>
-                        </>
-                      )}
-                    </div>
-                    {preview.hasConflicts && preview.conflictingFiles.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-sm text-red-600">Conflicting files:</p>
-                        <ul className="mt-1 text-sm text-red-700 font-mono">
-                          {preview.conflictingFiles.map((file) => (
-                            <li key={file}>• {file}</li>
-                          ))}
-                        </ul>
+                  {preview.canMerge ? (
+                    <div className="p-4 rounded-xl border bg-green-50 border-green-200">
+                      <div className="flex items-center gap-2">
+                        <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span className="font-medium text-green-700">Ready to merge</span>
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  ) : hasUntrackedBlocking ? (
+                    /* Untracked files blocking - show specific UX */
+                    <div className="p-4 rounded-xl border bg-yellow-50 border-yellow-200">
+                      <div className="flex items-center gap-2 mb-2">
+                        <svg className="w-5 h-5 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span className="font-medium text-yellow-700">Untracked files blocking merge</span>
+                      </div>
+                      <p className="text-sm text-yellow-600 mb-3">
+                        Git refuses to merge because these untracked files would be overwritten.
+                        They can be safely stashed (preserved) so the merge can proceed.
+                      </p>
+                      <div className="bg-yellow-100/50 rounded-lg p-2 mb-3">
+                        {preview.untrackedBlockingFiles!.map((file) => (
+                          <div key={file} className="text-xs font-mono text-yellow-800 py-0.5 flex items-center gap-2">
+                            <span className="text-yellow-600">!</span>
+                            {file}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-xs text-yellow-600">
+                        These files will be saved to git stash and can be recovered with <code className="bg-yellow-100 px-1 rounded">git stash pop</code>
+                      </p>
+                    </div>
+                  ) : hasCodeConflicts ? (
+                    /* Code-level conflicts - show auto-fix option */
+                    <div className="p-4 rounded-xl border bg-red-50 border-red-200">
+                      <div className="flex items-center gap-2 mb-2">
+                        <svg className="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span className="font-medium text-red-700">Code conflicts detected</span>
+                      </div>
+                      <p className="text-sm text-red-600 mb-2">
+                        Both branches have changes to the same files that need to be resolved.
+                      </p>
+                      <div className="bg-red-100/50 rounded-lg p-2">
+                        {preview.conflictingFiles.map((file) => (
+                          <div key={file} className="text-xs font-mono text-red-800 py-0.5 flex items-center gap-2">
+                            <span className="text-red-500">!</span>
+                            {file}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    /* Generic conflict */
+                    <div className="p-4 rounded-xl border bg-red-50 border-red-200">
+                      <div className="flex items-center gap-2">
+                        <svg className="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span className="font-medium text-red-700">Conflicts detected</span>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Stats */}
                   <div className="grid grid-cols-3 gap-3">
@@ -306,6 +571,49 @@ export function MergeWorkflowModal({
                   )}
                 </div>
               ) : null}
+            </div>
+          )}
+
+          {/* Resolving step - progress log for stash/auto-fix operations */}
+          {step === 'resolving' && (
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-text-primary mb-3">Resolving merge blockers...</h3>
+              <div className="bg-surface-secondary rounded-lg p-3 max-h-60 overflow-auto">
+                {progressLog.map((entry, i) => (
+                  <div key={i} className="flex items-start gap-2 py-1 text-sm">
+                    {entry.status === 'active' && (
+                      <div className="w-4 h-4 mt-0.5 flex-shrink-0">
+                        <div className="animate-spin w-4 h-4 border-2 border-kanvas-blue border-t-transparent rounded-full" />
+                      </div>
+                    )}
+                    {entry.status === 'done' && (
+                      <svg className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                    {entry.status === 'error' && (
+                      <svg className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    )}
+                    {entry.status === 'pending' && (
+                      <span className="w-4 h-4 flex-shrink-0 mt-0.5 text-text-secondary text-center">-</span>
+                    )}
+                    <div>
+                      <span className={`${
+                        entry.status === 'error' ? 'text-red-600' :
+                        entry.status === 'done' ? 'text-text-primary' :
+                        'text-text-secondary'
+                      }`}>
+                        {entry.message}
+                      </span>
+                      {entry.detail && (
+                        <p className="text-xs text-text-secondary mt-0.5">{entry.detail}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -383,10 +691,34 @@ export function MergeWorkflowModal({
 
           {/* Step 3: Executing */}
           {step === 'executing' && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <div className="animate-spin w-12 h-12 border-3 border-kanvas-blue border-t-transparent rounded-full mb-4" />
-              <h3 className="text-lg font-medium text-text-primary mb-2">Merging...</h3>
-              <p className="text-sm text-text-secondary">Please wait while the merge is executed</p>
+            <div className="space-y-4">
+              <div className="flex flex-col items-center justify-center py-8">
+                <div className="animate-spin w-12 h-12 border-3 border-kanvas-blue border-t-transparent rounded-full mb-4" />
+                <h3 className="text-lg font-medium text-text-primary mb-2">Merging...</h3>
+                <p className="text-sm text-text-secondary">Please wait while the merge is executed</p>
+              </div>
+              {progressLog.length > 0 && (
+                <div className="bg-surface-secondary rounded-lg p-3">
+                  {progressLog.map((entry, i) => (
+                    <div key={i} className="flex items-center gap-2 py-0.5 text-sm">
+                      {entry.status === 'active' && (
+                        <div className="animate-spin w-3 h-3 border-2 border-kanvas-blue border-t-transparent rounded-full" />
+                      )}
+                      {entry.status === 'done' && (
+                        <svg className="w-3 h-3 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                      {entry.status === 'error' && (
+                        <svg className="w-3 h-3 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      )}
+                      <span className="text-text-secondary">{entry.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -422,7 +754,18 @@ export function MergeWorkflowModal({
                 </svg>
               </div>
               <h3 className="text-lg font-medium text-text-primary mb-2">Merge Failed</h3>
-              <p className="text-sm text-red-600">{error}</p>
+              <p className="text-sm text-red-600 mb-4">{error}</p>
+              {progressLog.length > 0 && (
+                <div className="bg-surface-secondary rounded-lg p-3 text-left max-h-40 overflow-auto">
+                  {progressLog.map((entry, i) => (
+                    <div key={i} className="flex items-center gap-2 py-0.5 text-xs">
+                      <span className={entry.status === 'error' ? 'text-red-500' : 'text-text-secondary'}>
+                        {entry.status === 'done' ? '[ok]' : entry.status === 'error' ? '[fail]' : '[...]'} {entry.message}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -438,18 +781,56 @@ export function MergeWorkflowModal({
                 >
                   Cancel
                 </button>
-                <button
-                  onClick={() => setStep('options')}
-                  disabled={!preview?.canMerge}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                    preview?.canMerge
-                      ? 'bg-kanvas-blue text-white hover:bg-kanvas-blue/90'
-                      : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  }`}
-                >
-                  Continue
-                </button>
+                <div className="flex gap-2">
+                  {/* Untracked blocking: Stash & Retry button */}
+                  {hasUntrackedBlocking && (
+                    <button
+                      onClick={handleStashAndRetry}
+                      className="px-4 py-2 rounded-lg bg-yellow-500 text-white font-medium hover:bg-yellow-600 transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                      </svg>
+                      Stash & Retry
+                    </button>
+                  )}
+                  {/* Code conflicts: Auto-Fix with AI */}
+                  {hasCodeConflicts && (
+                    <button
+                      onClick={handleAutoFix}
+                      className="px-4 py-2 rounded-lg bg-purple-600 text-white font-medium hover:bg-purple-700 transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      Auto-Fix with AI
+                    </button>
+                  )}
+                  {/* Normal continue */}
+                  <button
+                    onClick={() => setStep('options')}
+                    disabled={!preview?.canMerge}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      preview?.canMerge
+                        ? 'bg-kanvas-blue text-white hover:bg-kanvas-blue/90'
+                        : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    }`}
+                  >
+                    Continue
+                  </button>
+                </div>
               </>
+            )}
+            {step === 'resolving' && (
+              <button
+                onClick={() => {
+                  setStep('preview');
+                  setProgressLog([]);
+                }}
+                className="ml-auto px-4 py-2 rounded-lg text-text-secondary hover:bg-surface transition-colors"
+              >
+                Back to Preview
+              </button>
             )}
             {step === 'options' && (
               <>
