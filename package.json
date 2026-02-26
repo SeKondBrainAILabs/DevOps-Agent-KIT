@@ -105,6 +105,6 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "author": "SeKondBrain AI Labs",
+  "author": "SeKondBrain AI Labs <dev@sekondbrain.com>",
   "license": "MIT"
 }

@@ -54,14 +54,22 @@ jobs:
         run: npm run build
 
       - name: Build & Publish Electron App
-        run: npx electron-builder --${{ matrix.platform }} --publish always
+        shell: bash
+        run: |
+          # Only configure code signing when certificates are provided.
+          # Passing an empty CSC_LINK causes electron-builder to attempt signing
+          # and fail with "not a file" even when CSC_IDENTITY_AUTO_DISCOVERY=false.
+          if [ -n "$_CSC_LINK" ]; then
+            export CSC_LINK="$_CSC_LINK"
+            export CSC_KEY_PASSWORD="$_CSC_KEY_PASSWORD"
+          else
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+          npx electron-builder --${{ matrix.platform }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable auto-discovery of code signing certs when none are configured.
-          # Without this, electron-builder fails on macOS with "not a file" error.
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK && 'true' || 'false' }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          _CSC_LINK: ${{ secrets.CSC_LINK }}
+          _CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
