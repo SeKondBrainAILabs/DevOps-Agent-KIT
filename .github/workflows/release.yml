@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -42,7 +44,10 @@ jobs:
           CXX: g++-13
 
       - name: Install Dependencies
-        run: npm ci
+        # --ignore-scripts skips postinstall (electron-builder install-app-deps)
+        # which tries to rebuild optional native modules like tree-sitter.
+        # electron-builder handles native deps via npmRebuild config at build time.
+        run: npm ci --ignore-scripts
         env:
           CC: ${{ runner.os == 'Linux' && 'gcc-13' || '' }}
           CXX: ${{ runner.os == 'Linux' && 'g++-13' || '' }}
