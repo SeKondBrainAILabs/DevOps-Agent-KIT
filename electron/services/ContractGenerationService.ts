@@ -998,10 +998,9 @@ export class ContractGenerationService extends BaseService {
               processedNames.add(aiFeature.name);
 
               // Determine base path from the first path in the feature
+              // paths are directories (not files), so use the full path
               const firstPath = aiFeature.paths[0] || '';
-              const basePath = firstPath.includes('/')
-                ? path.join(repoPath, firstPath.split('/').slice(0, -1).join('/'))
-                : path.join(repoPath, firstPath);
+              const basePath = path.join(repoPath, firstPath);
 
               // Use keyFiles if provided (more specific), otherwise fall back to paths
               // keyFiles = specific files like "backend/src/routes/auth.ts"
@@ -1046,14 +1045,15 @@ export class ContractGenerationService extends BaseService {
                     other: filterByKeyFiles(allFiles.other),
                   };
                 } else if (dirPaths.length > 0) {
-                  // Use directory paths for broader matching
+                  // Use directory paths for matching - strict prefix match only
                   const filterByDirPaths = (fileList: string[]) => {
                     return fileList.filter(f => {
                       const fullPath = path.isAbsolute(f) ? f : path.join(repoPath, f);
-                      return dirPaths.some(dp => fullPath.startsWith(dp) || f.includes(path.basename(dp)));
+                      return dirPaths.some(dp => fullPath.startsWith(dp + path.sep) || fullPath === dp);
                     });
                   };
-                  files = {
+
+                  const filteredFiles = {
                     api: filterByDirPaths(allFiles.api),
                     schema: filterByDirPaths(allFiles.schema),
                     tests: {
@@ -1067,6 +1067,52 @@ export class ContractGenerationService extends BaseService {
                     prompts: filterByDirPaths(allFiles.prompts),
                     other: filterByDirPaths(allFiles.other),
                   };
+
+                  // Check if dirPaths filtering produced no narrowing (same as allFiles)
+                  // This happens when all features share the same broad path (e.g., 'services')
+                  const filteredTotal = filteredFiles.api.length + filteredFiles.schema.length +
+                    filteredFiles.config.length + filteredFiles.tests.unit.length +
+                    filteredFiles.tests.integration.length + filteredFiles.tests.e2e.length +
+                    filteredFiles.fixtures.length + filteredFiles.other.length;
+                  const allTotal = allFiles.api.length + allFiles.schema.length +
+                    allFiles.config.length + allFiles.tests.unit.length +
+                    allFiles.tests.integration.length + allFiles.tests.e2e.length +
+                    allFiles.fixtures.length + allFiles.other.length;
+
+                  if (filteredTotal === allTotal && allTotal > 0 && aiFeatures.length > 1) {
+                    // dirPaths didn't narrow results - fall back to name-based matching
+                    // Derive keywords from the feature name to match against file paths
+                    const nameWords = aiFeature.name.toLowerCase()
+                      .replace(/[&]/g, ' ')
+                      .split(/\s+/)
+                      .filter(w => w.length > 2 && !['and', 'the', 'for', 'with'].includes(w));
+
+                    const filterByName = (fileList: string[]) => {
+                      return fileList.filter(f => {
+                        const lowerPath = f.toLowerCase();
+                        return nameWords.some(w => lowerPath.includes(w));
+                      });
+                    };
+
+                    files = {
+                      api: filterByName(allFiles.api),
+                      schema: filterByName(allFiles.schema),
+                      tests: {
+                        unit: filterByName(allFiles.tests.unit),
+                        integration: filterByName(allFiles.tests.integration),
+                        e2e: filterByName(allFiles.tests.e2e),
+                      },
+                      fixtures: filterByName(allFiles.fixtures),
+                      config: filterByName(allFiles.config),
+                      css: filterByName(allFiles.css),
+                      prompts: filterByName(allFiles.prompts),
+                      other: filterByName(allFiles.other),
+                    };
+
+                    console.log(`[ContractGeneration] Used name-based matching for "${aiFeature.name}" (keywords: ${nameWords.join(', ')})`);
+                  } else {
+                    files = filteredFiles;
+                  }
                 } else {
                   files = allFiles;
                 }
