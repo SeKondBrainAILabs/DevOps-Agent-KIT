@@ -1,8 +1,8 @@
 /**
  * Sidebar Component
- * Displays connected agents and their sessions
- * Kanvas is a DASHBOARD - agents report INTO it
- * Follows SeKondBrain design aesthetics
+ * Two-column layout: narrow icon rail + main sidebar content.
+ * Top tabs switch between "Artefacts" and "Agents" views.
+ * Kanvas is a DASHBOARD - agents report INTO it.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -10,42 +10,31 @@ import { AgentList } from '../features/AgentList';
 import { KanvasLogo } from '../ui/KanvasLogo';
 import { FileCoordinationButton } from '../features/FileCoordinationPanel';
 import { MergeWorkflowModal } from '../features/MergeWorkflowModal';
-import { useAgentStore, selectSessionsByAgent } from '../../store/agentStore';
+import { useAgentStore } from '../../store/agentStore';
 import { useUIStore } from '../../store/uiStore';
+import type { SidebarTab } from '../../store/uiStore';
 import type { SessionReport } from '../../../shared/agent-protocol';
 
-type SidebarTab = 'agents' | 'sessions';
-
 export function Sidebar(): React.ReactElement {
-  const [activeTab, setActiveTab] = useState<SidebarTab>('agents');
-  const { setShowNewSessionWizard, setShowSettingsModal, setShowCreateAgentWizard } = useUIStore();
+  const { sidebarTab, setSidebarTab, setShowNewSessionWizard, setShowSettingsModal, setShowCreateAgentWizard, setMainView } = useUIStore();
   const selectedAgentId = useAgentStore((state) => state.selectedAgentId);
   const reportedSessions = useAgentStore((state) => state.reportedSessions);
   const selectedSessionId = useAgentStore((state) => state.selectedSessionId);
   const setSelectedSession = useAgentStore((state) => state.setSelectedSession);
+  const removeReportedSession = useAgentStore((state) => state.removeReportedSession);
 
-  // Get sessions for selected agent or all sessions
   const allSessions = Array.from(reportedSessions.values());
   const sessions = selectedAgentId
     ? allSessions.filter((session) => session.agentId === selectedAgentId)
     : allSessions;
 
-  const removeReportedSession = useAgentStore((state) => state.removeReportedSession);
-
-  // Handle session deletion
   const handleDeleteSession = async (sessionId: string): Promise<void> => {
     try {
-      // Get the session to find its repoPath (needed to delete files from disk)
       const session = reportedSessions.get(sessionId);
       const repoPath = session?.repoPath;
-
-      // Use deleteSession which takes sessionId (not instanceId)
-      // This also deletes session files from disk to prevent reappearing on restart
       const result = await window.api.instance?.deleteSession?.(sessionId, repoPath);
       if (result?.success) {
-        // Remove from store
         removeReportedSession(sessionId);
-        // Clear selection if deleted session was selected
         if (selectedSessionId === sessionId) {
           setSelectedSession(null);
         }
@@ -55,102 +44,240 @@ export function Sidebar(): React.ReactElement {
     }
   };
 
+  const handleTabChange = (tab: SidebarTab) => {
+    setSidebarTab(tab);
+    if (tab === 'artefacts') {
+      setMainView('artefacts');
+    } else {
+      setMainView('dashboard');
+    }
+  };
+
   return (
-    <div className="h-full flex flex-col bg-surface">
-      {/* Logo */}
-      <div className="p-4 border-b border-border">
-        <div className="flex items-center gap-3">
-          <KanvasLogo size="md" />
-          <div>
-            <h1 className="font-semibold text-text-primary text-sm">Kanvas for Kit</h1>
-            <p className="text-xs text-text-secondary">Agent Dashboard</p>
+    <div className="h-full flex bg-surface">
+      {/* Icon Rail */}
+      <IconRail />
+
+      {/* Main Sidebar Content */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header: Logo wordmark + Tabs */}
+        <div className="border-b border-border">
+          <div className="flex items-center gap-1 px-3 pt-3 pb-0">
+            <button
+              onClick={() => handleTabChange('artefacts')}
+              className={`
+                px-3 py-2.5 text-sm font-medium transition-colors rounded-t-lg
+                ${sidebarTab === 'artefacts'
+                  ? 'text-text-primary border-b-2 border-kanvas-blue'
+                  : 'text-text-secondary hover:text-text-primary'
+                }
+              `}
+            >
+              Artefacts
+            </button>
+            <button
+              onClick={() => handleTabChange('agents')}
+              className={`
+                px-3 py-2.5 text-sm font-medium transition-colors rounded-t-lg
+                ${sidebarTab === 'agents'
+                  ? 'text-text-primary border-b-2 border-kanvas-blue'
+                  : 'text-text-secondary hover:text-text-primary'
+                }
+              `}
+            >
+              Agents
+            </button>
           </div>
         </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-border">
-        <button
-          onClick={() => setActiveTab('agents')}
-          className={`
-            flex-1 px-4 py-3 text-sm font-medium transition-colors
-            ${activeTab === 'agents'
-              ? 'text-kanvas-blue border-b-2 border-kanvas-blue bg-surface-secondary'
-              : 'text-text-secondary hover:text-text-primary hover:bg-surface-secondary'
-            }
-          `}
-        >
-          Agents
-        </button>
-        <button
-          onClick={() => setActiveTab('sessions')}
-          className={`
-            flex-1 px-4 py-3 text-sm font-medium transition-colors
-            ${activeTab === 'sessions'
-              ? 'text-kanvas-blue border-b-2 border-kanvas-blue bg-surface-secondary'
-              : 'text-text-secondary hover:text-text-primary hover:bg-surface-secondary'
-            }
-          `}
-        >
-          Sessions
-        </button>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {activeTab === 'agents' ? (
-          <AgentList />
-        ) : (
-          <SessionList
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            onSelectSession={setSelectedSession}
-            onDeleteSession={handleDeleteSession}
-          />
-        )}
-      </div>
-
-      {/* Actions */}
-      <div className="p-4 border-t border-border space-y-2">
-        <button
-          onClick={() => setShowCreateAgentWizard(true)}
-          className="w-full py-2.5 px-4 rounded-xl bg-kanvas-blue text-white font-medium text-sm
-                     hover:bg-kanvas-blue-dark transition-colors shadow-kanvas flex items-center justify-center gap-2"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Create Agent Instance
-        </button>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setShowNewSessionWizard(true)}
-            className="flex-1 py-2 px-3 rounded-xl border border-border text-text-primary text-sm
-                       hover:bg-surface-secondary transition-colors"
-          >
-            Initialize Directory
-          </button>
-          <FileCoordinationButton currentSessionId={selectedSessionId || undefined} />
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-3">
+          {sidebarTab === 'agents' ? (
+            <AgentList />
+          ) : (
+            <ArtefactsPlaceholder />
+          )}
         </div>
-        <button
-          onClick={() => useUIStore.getState().setMainView('commits')}
-          className="w-full py-2 px-4 rounded-xl border border-border text-text-primary text-sm
-                     hover:bg-surface-secondary transition-colors flex items-center justify-center gap-2"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-          </svg>
-          View All Commits
-        </button>
-        <button
-          onClick={() => setShowSettingsModal(true)}
-          className="w-full py-2 px-4 rounded-xl border border-border text-text-primary text-sm
-                     hover:bg-surface-secondary transition-colors"
-        >
-          Settings
-        </button>
+
+        {/* Agent Actions */}
+        <div className="p-3 border-t border-border space-y-2">
+          <p className="text-xs font-medium text-text-secondary uppercase tracking-wider px-1">
+            Agent Actions
+          </p>
+          <button
+            onClick={() => setShowCreateAgentWizard(true)}
+            className="w-full py-2.5 px-4 rounded-xl bg-kanvas-blue text-white font-medium text-sm
+                       hover:bg-kanvas-blue-dark transition-colors shadow-kanvas flex items-center justify-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Create Instance
+          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowNewSessionWizard(true)}
+              className="flex-1 py-2 px-3 rounded-xl border border-border text-text-primary text-sm
+                         hover:bg-surface-secondary transition-colors flex items-center justify-center gap-1.5"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              Init. Directory
+            </button>
+            <FileCoordinationButton currentSessionId={selectedSessionId || undefined} />
+          </div>
+          <button
+            onClick={() => setMainView('commits')}
+            className="w-full py-2 px-4 rounded-xl border border-border text-text-primary text-sm
+                       hover:bg-surface-secondary transition-colors flex items-center justify-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+            View Commits
+          </button>
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            className="w-full py-2 px-4 rounded-xl border border-border text-text-primary text-sm
+                       hover:bg-surface-secondary transition-colors flex items-center justify-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            Settings
+          </button>
+        </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * IconRail - Narrow vertical icon strip on far left of sidebar.
+ * Contains logo, quick-add, navigation icons, and user avatar.
+ */
+function IconRail(): React.ReactElement {
+  const { setShowCreateAgentWizard, setSidebarTab, setMainView } = useUIStore();
+
+  return (
+    <div className="w-12 flex flex-col items-center py-3 border-r border-border bg-surface gap-1">
+      {/* Logo */}
+      <div className="mb-2">
+        <KanvasLogo size="md" />
+      </div>
+
+      {/* Add new */}
+      <button
+        onClick={() => setShowCreateAgentWizard(true)}
+        className="w-9 h-9 rounded-xl bg-kanvas-blue/10 text-kanvas-blue
+                   flex items-center justify-center hover:bg-kanvas-blue/20 transition-colors"
+        title="Create Instance"
+      >
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+      </button>
+
+      {/* Navigation icons */}
+      <div className="mt-3 flex flex-col gap-1">
+        <IconRailButton
+          icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+          }
+          title="Sessions"
+          onClick={() => { setSidebarTab('agents'); setMainView('dashboard'); }}
+        />
+        <IconRailButton
+          icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+          }
+          title="Agents"
+          onClick={() => { setSidebarTab('agents'); setMainView('dashboard'); }}
+        />
+        <IconRailButton
+          icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+          }
+          title="Connections"
+        />
+        <IconRailButton
+          icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+            </svg>
+          }
+          title="Organization"
+        />
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* User avatar */}
+      <div
+        className="w-9 h-9 rounded-full bg-gradient-to-br from-kanvas-blue to-sk-purple
+                   flex items-center justify-center text-white text-xs font-bold cursor-pointer
+                   hover:opacity-80 transition-opacity"
+        title="Profile"
+      >
+        U
+      </div>
+    </div>
+  );
+}
+
+function IconRailButton({
+  icon,
+  title,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  onClick?: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      onClick={onClick}
+      className="w-9 h-9 rounded-xl text-text-secondary
+                 flex items-center justify-center hover:bg-surface-secondary
+                 hover:text-text-primary transition-colors"
+      title={title}
+    >
+      {icon}
+    </button>
+  );
+}
+
+/**
+ * ArtefactsPlaceholder - shown in sidebar when Artefacts tab is active.
+ * The main artefact content is rendered in the main content area.
+ */
+function ArtefactsPlaceholder(): React.ReactElement {
+  return (
+    <div className="text-center py-8">
+      <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-surface-tertiary flex items-center justify-center">
+        <svg className="w-6 h-6 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+            d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+        </svg>
+      </div>
+      <p className="text-sm font-medium text-text-primary">Artefacts</p>
+      <p className="text-xs text-text-secondary mt-1">Project artefacts and documentation</p>
     </div>
   );
 }
@@ -190,7 +317,6 @@ function SessionList({ sessions, selectedSessionId, onSelectSession, onDeleteSes
     );
   }
 
-  // Group sessions by repository
   const sessionsByRepo = sessions.reduce((acc, session) => {
     const repoPath = session.repoPath || session.worktreePath || 'Unknown';
     const repoName = repoPath.split('/').pop() || repoPath;
@@ -254,7 +380,6 @@ function RepoSessionGroup({
 
   return (
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
-      {/* Repo Header */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full px-3 py-2.5 flex items-center gap-2 hover:bg-surface-secondary transition-colors"
@@ -283,7 +408,6 @@ function RepoSessionGroup({
         </span>
       </button>
 
-      {/* Sessions */}
       {isExpanded && (
         <div className="border-t border-border divide-y divide-border">
           {sessions.map((session) => (
@@ -327,7 +451,6 @@ function SessionCard({
   const [configValid, setConfigValid] = useState<boolean | null>(null);
   const recentActivity = useAgentStore((state) => state.recentActivity);
 
-  // Check if worktree/repo path is valid
   useEffect(() => {
     const checkConfig = async () => {
       const pathToCheck = session.worktreePath || session.repoPath;
@@ -335,44 +458,38 @@ function SessionCard({
         setConfigValid(false);
         return;
       }
-      // Check if path exists via git status
-      if (window.api?.git?.getStatus) {
+      if (window.api?.git?.status) {
         try {
-          const result = await window.api.git.getStatus(session.sessionId);
+          const result = await window.api.git.status(session.sessionId);
           setConfigValid(result.success);
         } catch {
           setConfigValid(false);
         }
       } else {
-        setConfigValid(true); // Assume valid if we can't check
+        setConfigValid(true);
       }
     };
     checkConfig();
   }, [session.sessionId, session.worktreePath, session.repoPath]);
 
-  // Force re-render every 60 seconds to update activity status (reduced from 10s for performance)
   useEffect(() => {
     const interval = setInterval(() => forceUpdate(n => n + 1), 60000);
     return () => clearInterval(interval);
   }, []);
 
-  // Calculate activity-based status
   const getActivityStatus = (): { color: string; label: string; title: string } => {
-    // Check for error/damaged config (red indicator)
     if (session.status === 'error' || configValid === false) {
       return { color: 'bg-red-500', label: 'Error', title: 'Session config issue - worktree or branch may be missing' };
     }
 
-    // Get last activity for this session
     const sessionActivity = recentActivity.filter(a => a.sessionId === session.sessionId);
-    const lastActivity = sessionActivity[0]; // Most recent first
+    const lastActivity = sessionActivity[0];
 
     if (lastActivity) {
       const lastActivityTime = new Date(lastActivity.timestamp).getTime();
       const now = Date.now();
       const secondsSinceActivity = (now - lastActivityTime) / 1000;
 
-      // Green indicator - active within 30 seconds
       if (secondsSinceActivity < 30) {
         return {
           color: 'bg-green-500 animate-pulse',
@@ -382,7 +499,6 @@ function SessionCard({
       }
     }
 
-    // Check session updated timestamp as fallback
     if (session.updated) {
       const updatedTime = new Date(session.updated).getTime();
       const secondsSinceUpdate = (Date.now() - updatedTime) / 1000;
@@ -395,7 +511,6 @@ function SessionCard({
       }
     }
 
-    // Orange indicator - dormant (no recent activity)
     return { color: 'bg-orange-400', label: 'Dormant', title: 'Dormant - no recent activity' };
   };
 
@@ -408,7 +523,6 @@ function SessionCard({
       setShowConfirm(false);
     } else {
       setShowConfirm(true);
-      // Auto-hide confirm after 3 seconds
       setTimeout(() => setShowConfirm(false), 3000);
     }
   };
@@ -449,9 +563,7 @@ function SessionCard({
             )}
           </div>
         </div>
-        {/* Action buttons - show on hover or when selected */}
         <div className={`flex items-center gap-1 flex-shrink-0 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
-          {/* Merge button */}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -464,7 +576,6 @@ function SessionCard({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
             </svg>
           </button>
-          {/* Delete button */}
           <button
             onClick={handleDelete}
             className={`
@@ -487,7 +598,6 @@ function SessionCard({
         </div>
       </div>
 
-      {/* Merge Modal */}
       <MergeWorkflowModal
         isOpen={showMergeModal}
         onClose={() => setShowMergeModal(false)}

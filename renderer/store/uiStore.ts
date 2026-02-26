@@ -5,12 +5,14 @@
 
 import { create } from 'zustand';
 
-export type MainView = 'dashboard' | 'commits';
+export type MainView = 'dashboard' | 'commits' | 'artefacts';
+export type SidebarTab = 'artefacts' | 'agents';
 
 interface UIState {
   // Sidebar
   sidebarCollapsed: boolean;
   sidebarWidth: number;
+  sidebarTab: SidebarTab;
 
   // Main view
   mainView: MainView;
@@ -28,6 +30,7 @@ interface UIState {
   // Actions
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
+  setSidebarTab: (tab: SidebarTab) => void;
   setMainView: (view: MainView) => void;
   setShowNewSessionWizard: (show: boolean) => void;
   setShowCloseSessionDialog: (show: boolean, sessionId?: string) => void;
@@ -40,6 +43,7 @@ export const useUIStore = create<UIState>((set) => ({
   // Sidebar
   sidebarCollapsed: false,
   sidebarWidth: 256,
+  sidebarTab: 'agents',
 
   // Main view
   mainView: 'dashboard',
@@ -59,6 +63,8 @@ export const useUIStore = create<UIState>((set) => ({
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
+
+  setSidebarTab: (tab) => set({ sidebarTab: tab }),
 
   setMainView: (view) => set({ mainView: view }),
 

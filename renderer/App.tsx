@@ -13,6 +13,7 @@ import { StatusBar } from './components/layouts/StatusBar';
 import { DashboardCanvas } from './components/features/DashboardCanvas';
 import { SessionDetailView } from './components/features/SessionDetailView';
 import { UniversalCommitsView } from './components/features/UniversalCommitsView';
+import { HomeArtefactLeft } from './components/ui/HomeArtefactLeft';
 import { NewSessionWizard } from './components/features/NewSessionWizard';
 import { CloseSessionDialog } from './components/features/CloseSessionDialog';
 import { SettingsModal } from './components/features/SettingsModal';
@@ -159,7 +160,7 @@ export default function App(): React.ReactElement {
   const setMainView = useUIStore((state) => state.setMainView);
 
   // Determine what to show in main content
-  // Priority: 1) Session detail, 2) Commits view, 3) Dashboard
+  // Priority: 1) Session detail, 2) Commits view, 3) Artefacts view, 4) Dashboard
   const mainContent = selectedSession ? (
     <SessionDetailView
       session={selectedSession}
@@ -169,6 +170,10 @@ export default function App(): React.ReactElement {
     />
   ) : mainView === 'commits' ? (
     <UniversalCommitsView />
+  ) : mainView === 'artefacts' ? (
+    <div className="h-full p-6 overflow-auto">
+      <HomeArtefactLeft className="max-w-5xl aspect-[1440/1024] rounded-2xl shadow-card" />
+    </div>
   ) : (
     <DashboardCanvas agent={selectedAgent} />
   );
