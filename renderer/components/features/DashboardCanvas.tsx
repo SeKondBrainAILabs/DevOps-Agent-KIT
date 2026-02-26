@@ -240,7 +240,7 @@ function WelcomeScreen(): React.ReactElement {
         </div>
 
         <h1 className="text-2xl font-bold text-text-primary mb-2">
-          Welcome to Kanvas
+          Welcome to Kanvas for Kit
         </h1>
         <p className="text-text-secondary mb-8">
           Your multi-agent development dashboard. Start a DevOps Agent session or connect another AI agent to see their activity here.

@@ -62,7 +62,7 @@ export function Sidebar(): React.ReactElement {
         <div className="flex items-center gap-3">
           <KanvasLogo size="md" />
           <div>
-            <h1 className="font-semibold text-text-primary text-sm">Kanvas</h1>
+            <h1 className="font-semibold text-text-primary text-sm">Kanvas for Kit</h1>
             <p className="text-xs text-text-secondary">Agent Dashboard</p>
           </div>
         </div>

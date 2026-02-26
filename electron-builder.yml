@@ -1,5 +1,5 @@
 appId: com.sekondbrain.kanvas
-productName: Kanvas for KIT (DE)
+productName: Kanvas for Kit
 directories:
   output: release
   buildResources: resources
