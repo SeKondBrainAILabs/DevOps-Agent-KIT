@@ -366,6 +366,7 @@ export const IPC = {
   // ==========================================================================
   // DEBUG LOG CHANNELS
   // ==========================================================================
+  DEBUG_LOG_WRITE: 'debug-log:write',
   DEBUG_LOG_GET_RECENT: 'debug-log:get-recent',
   DEBUG_LOG_EXPORT: 'debug-log:export',
   DEBUG_LOG_CLEAR: 'debug-log:clear',

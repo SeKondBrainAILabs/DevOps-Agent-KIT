@@ -11,6 +11,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { MergePreview, BranchInfo } from '../../../shared/types';
 
+/** Log merge errors to the persistent DebugLogService via IPC */
+function logMergeDebug(level: 'info' | 'warn' | 'error', message: string, details?: unknown): void {
+  window.api?.debugLog?.write?.(level, 'MergeWorkflow', message, details);
+}
+
 interface MergeWorkflowModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -48,6 +53,20 @@ export function MergeWorkflowModal({
   const [preview, setPreview] = useState<MergePreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAdvancedError, setShowAdvancedError] = useState(false);
+
+  // Wrapper that logs errors to DebugLogService when transitioning to error step
+  const setErrorWithLog = useCallback((msg: string) => {
+    setError(msg);
+    logMergeDebug('error', `Merge workflow error`, {
+      errorMessage: msg,
+      repoPath,
+      sourceBranch: actualBranch,
+      targetBranch,
+      sessionId,
+      worktreePath,
+    });
+  }, [repoPath, actualBranch, targetBranch, sessionId, worktreePath]);
 
   // Dynamically resolved branch from worktree (may differ from session's branchName)
   const [actualBranch, setActualBranch] = useState<string>(sourceBranch);
@@ -184,7 +203,7 @@ export function MergeWorkflowModal({
         if (failed.length > 0) {
           updateLastProgress('error', `Failed to stash: ${failed.join(', ')}`);
           addProgress(`Could not stash ${failed.length} file(s). Please move or remove them manually.`, 'error');
-          setError(`Failed to stash files: ${failed.join(', ')}`);
+          setErrorWithLog(`Failed to stash files: ${failed.join(', ')}`);
           setStep('error');
           return;
         }
@@ -213,17 +232,17 @@ export function MergeWorkflowModal({
           }
         } else {
           updateLastProgress('error');
-          setError('Failed to re-check merge after stashing');
+          setErrorWithLog('Failed to re-check merge after stashing');
           setStep('error');
         }
       } else {
         updateLastProgress('error');
-        setError(result?.error?.message || 'Failed to stash blocking files');
+        setErrorWithLog(result?.error?.message || 'Failed to stash blocking files');
         setStep('error');
       }
     } catch (err) {
       updateLastProgress('error');
-      setError(err instanceof Error ? err.message : 'Failed during stash operation');
+      setErrorWithLog(err instanceof Error ? err.message : 'Failed during stash operation');
       setStep('error');
     }
   };
@@ -306,7 +325,7 @@ export function MergeWorkflowModal({
       }
     } catch (err) {
       updateLastProgress('error');
-      setError(err instanceof Error ? err.message : 'Auto-fix failed');
+      setErrorWithLog(err instanceof Error ? err.message : 'Auto-fix failed');
       setStep('error');
     }
   };
@@ -343,18 +362,18 @@ export function MergeWorkflowModal({
             }
           } else {
             updateLastProgress('error');
-            setError(result.data.message);
+            setErrorWithLog(result.data.message);
             setStep('error');
           }
         } else {
           updateLastProgress('error');
-          setError(result.error?.message || 'Merge failed');
+          setErrorWithLog(result.error?.message || 'Merge failed');
           setStep('error');
         }
       }
     } catch (err) {
       updateLastProgress('error');
-      setError(err instanceof Error ? err.message : 'Merge failed');
+      setErrorWithLog(err instanceof Error ? err.message : 'Merge failed');
       setStep('error');
     }
   };
@@ -756,7 +775,7 @@ export function MergeWorkflowModal({
               <h3 className="text-lg font-medium text-text-primary mb-2">Merge Failed</h3>
               <p className="text-sm text-red-600 mb-4">{error}</p>
               {progressLog.length > 0 && (
-                <div className="bg-surface-secondary rounded-lg p-3 text-left max-h-40 overflow-auto">
+                <div className="bg-surface-secondary rounded-lg p-3 text-left max-h-40 overflow-auto mb-3">
                   {progressLog.map((entry, i) => (
                     <div key={i} className="flex items-center gap-2 py-0.5 text-xs">
                       <span className={entry.status === 'error' ? 'text-red-500' : 'text-text-secondary'}>
@@ -766,6 +785,41 @@ export function MergeWorkflowModal({
                   ))}
                 </div>
               )}
+              {/* Advanced error details */}
+              <div className="border border-border rounded-lg overflow-hidden text-left">
+                <button
+                  onClick={() => setShowAdvancedError(!showAdvancedError)}
+                  className="w-full px-3 py-2 flex items-center justify-between text-xs text-text-secondary hover:bg-surface-secondary transition-colors"
+                >
+                  <span className="font-medium">Advanced Details</span>
+                  <svg
+                    className={`w-3.5 h-3.5 transition-transform ${showAdvancedError ? 'rotate-180' : ''}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showAdvancedError && (
+                  <div className="border-t border-border bg-surface-secondary p-3 space-y-1 max-h-48 overflow-y-auto">
+                    <div className="text-xs font-mono text-text-secondary space-y-1">
+                      <p><span className="text-text-primary font-medium">Error:</span> {error}</p>
+                      <p><span className="text-text-primary font-medium">Repo:</span> {repoPath}</p>
+                      <p><span className="text-text-primary font-medium">Source:</span> {actualBranch}</p>
+                      <p><span className="text-text-primary font-medium">Target:</span> {targetBranch}</p>
+                      {worktreePath && <p><span className="text-text-primary font-medium">Worktree:</span> {worktreePath}</p>}
+                      {sessionId && <p><span className="text-text-primary font-medium">Session:</span> {sessionId}</p>}
+                      {preview?.conflictingFiles && preview.conflictingFiles.length > 0 && (
+                        <>
+                          <p><span className="text-text-primary font-medium">Conflicting files:</span></p>
+                          {preview.conflictingFiles.map((f) => (
+                            <p key={f} className="pl-4 text-red-500">{f}</p>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -6,6 +6,7 @@
 import { BaseService } from './BaseService';
 import type { IpcResult } from '../../shared/types';
 import type { AIService } from './AIService';
+import type { DebugLogService } from './DebugLogService';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -102,10 +103,15 @@ export interface RebaseWithResolutionResult {
 
 export class MergeConflictService extends BaseService {
   private aiService: AIService;
+  private debugLog: DebugLogService | null = null;
 
   constructor(aiService: AIService) {
     super();
     this.aiService = aiService;
+  }
+
+  setDebugLog(debugLog: DebugLogService): void {
+    this.debugLog = debugLog;
   }
 
   /**
@@ -218,6 +224,7 @@ export class MergeConflictService extends BaseService {
     incomingBranch: string
   ): Promise<IpcResult<ResolutionResult>> {
     return this.wrap(async () => {
+      this.debugLog?.info('MergeConflict', `Resolving conflict in file`, { filePath, repoPath, currentBranch, incomingBranch });
       console.log(`[MergeConflict] Resolving conflict in: ${filePath}`);
 
       const fileResult = await this.readConflictedFile(repoPath, filePath);
@@ -273,6 +280,7 @@ export class MergeConflictService extends BaseService {
 
       // Verify no conflict markers remain
       if (this.hasConflictMarkers(resolvedContent)) {
+        this.debugLog?.warn('MergeConflict', `AI output still has conflict markers, retrying`, { filePath });
         console.warn(`[MergeConflict] AI output still has conflict markers, retrying...`);
 
         // Retry with stronger instruction
@@ -341,6 +349,7 @@ export class MergeConflictService extends BaseService {
   ): Promise<IpcResult<ConflictPreviewResult>> {
     return this.wrap(async () => {
       const currentBranch = await this.git(['branch', '--show-current'], repoPath);
+      this.debugLog?.info('MergeConflict', `Generating resolution previews`, { repoPath, currentBranch, targetBranch });
       console.log(`[MergeConflict] Generating previews for rebase of ${currentBranch} onto ${targetBranch}`);
 
       // Fetch latest
@@ -440,6 +449,21 @@ export class MergeConflictService extends BaseService {
         }
       }
 
+      this.debugLog?.info('MergeConflict', `Resolution preview generation complete`, {
+        repoPath,
+        currentBranch,
+        targetBranch,
+        totalConflicts: conflictedFiles.length,
+        resolvedByAI,
+        failedToResolve,
+        conflictedFiles,
+      });
+      if (failedToResolve > 0) {
+        this.debugLog?.warn('MergeConflict', `AI failed to resolve ${failedToResolve} of ${conflictedFiles.length} conflicts`, {
+          repoPath, failedToResolve, totalConflicts: conflictedFiles.length,
+        });
+      }
+
       return {
         repoPath,
         currentBranch,
@@ -481,7 +505,8 @@ export class MergeConflictService extends BaseService {
 
         // Verify no conflict markers in content to apply
         if (this.hasConflictMarkers(contentToApply)) {
-          console.error(`[MergeConflict] Cannot apply ${preview.file} - still has conflict markers`);
+          this.debugLog?.error('MergeConflict', `Cannot apply resolution — content still has conflict markers`, { filePath: preview.file, repoPath });
+        console.error(`[MergeConflict] Cannot apply ${preview.file} - still has conflict markers`);
           failed.push(preview.file);
           continue;
         }
@@ -504,11 +529,23 @@ export class MergeConflictService extends BaseService {
       }
 
       const allApplied = failed.length === 0;
+      const resultMsg = allApplied
+        ? `Applied ${applied.length} resolution(s)`
+        : `Applied ${applied.length}, failed ${failed.length}`;
+
+      if (allApplied) {
+        this.debugLog?.info('MergeConflict', `All approved resolutions applied successfully`, {
+          repoPath, applied, skipped,
+        });
+      } else {
+        this.debugLog?.error('MergeConflict', `Some resolutions failed to apply`, {
+          repoPath, applied, failed, skipped,
+        });
+      }
+
       return {
         success: allApplied,
-        message: allApplied
-          ? `Applied ${applied.length} resolution(s)`
-          : `Applied ${applied.length}, failed ${failed.length}`,
+        message: resultMsg,
         applied,
         failed,
         skipped,
@@ -664,7 +701,11 @@ export class MergeConflictService extends BaseService {
 
         if (!allResolved) {
           // Some conflicts couldn't be resolved, abort
-          console.warn(`[MergeConflict] Could not resolve all conflicts, aborting rebase`);
+          this.debugLog?.error('MergeConflict', `Could not resolve all conflicts, aborting rebase`, {
+          repoPath, targetBranch, conflictsResolved, conflictsFailed,
+          resolutions: resolutions.map(r => ({ file: r.file, resolved: r.resolved, error: r.error })),
+        });
+        console.warn(`[MergeConflict] Could not resolve all conflicts, aborting rebase`);
           try {
             await this.git(['rebase', '--abort'], repoPath);
           } catch {

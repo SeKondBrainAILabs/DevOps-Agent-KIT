@@ -33,6 +33,14 @@ interface WorkerStatus {
   spawnedAt: string | null;
 }
 
+interface McpStatus {
+  port: number | null;
+  url: string | null;
+  isRunning: boolean;
+  connectionCount: number;
+  startedAt: string | null;
+}
+
 interface StatusBarProps {
   agent: RegisteredAgent | null | undefined;
 }
@@ -100,6 +108,39 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
     } catch {
       setIsRestarting(false);
     }
+  }, []);
+
+  // MCP server status
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+
+  useEffect(() => {
+    // Fetch initial MCP status
+    window.api?.mcp?.status?.().then((result) => {
+      if (result?.success && result.data) setMcpStatus(result.data);
+    }).catch(() => {});
+
+    // Listen for MCP server started events
+    const unsubscribe = window.api?.mcp?.onServerStarted?.((data) => {
+      setMcpStatus((prev) => ({
+        port: data.port,
+        url: data.url,
+        isRunning: true,
+        connectionCount: prev?.connectionCount ?? 0,
+        startedAt: new Date().toISOString(),
+      }));
+    });
+
+    // Poll MCP status every 30s to keep connection count fresh
+    const interval = setInterval(() => {
+      window.api?.mcp?.status?.().then((result) => {
+        if (result?.success && result.data) setMcpStatus(result.data);
+      }).catch(() => {});
+    }, 30000);
+
+    return () => {
+      unsubscribe?.();
+      clearInterval(interval);
+    };
   }, []);
 
   // Agent counts from the agents map
@@ -188,6 +229,47 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
                 : workerStatus.workerReady
                   ? `${workerStatus.activeMonitors} monitors`
                   : 'Worker down'}
+            </span>
+          </span>
+        </>
+      )}
+
+      {/* MCP server status */}
+      {mcpStatus && (
+        <>
+          <span className="text-border">|</span>
+          <span
+            className="flex items-center gap-1.5 cursor-pointer hover:text-text-primary transition-colors"
+            title={
+              mcpStatus.isRunning
+                ? [
+                    `MCP Server: Running`,
+                    `URL: ${mcpStatus.url}`,
+                    `Port: ${mcpStatus.port}`,
+                    `Connections: ${mcpStatus.connectionCount}`,
+                    mcpStatus.startedAt ? `Up since: ${new Date(mcpStatus.startedAt).toLocaleTimeString()}` : null,
+                    'Click to copy URL',
+                  ].filter(Boolean).join(' · ')
+                : 'MCP Server: Down · Agents cannot use MCP tools'
+            }
+            onClick={() => {
+              if (mcpStatus.url) {
+                navigator.clipboard.writeText(mcpStatus.url);
+              }
+            }}
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                mcpStatus.isRunning ? 'bg-green-500' : 'bg-red-500'
+              }`}
+            />
+            <svg className="w-3.5 h-3.5 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <span className="text-text-secondary">
+              {mcpStatus.isRunning
+                ? `MCP :${mcpStatus.port}${mcpStatus.connectionCount > 0 ? ` · ${mcpStatus.connectionCount} conn` : ''}`
+                : 'MCP down'}
             </span>
           </span>
         </>

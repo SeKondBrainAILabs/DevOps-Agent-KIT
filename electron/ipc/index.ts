@@ -1178,6 +1178,12 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // ==========================================================================
   // DEBUG LOG HANDLERS
   // ==========================================================================
+  ipcMain.handle(IPC.DEBUG_LOG_WRITE, async (_, level: string, source: string, message: string, details?: unknown) => {
+    const logLevel = level as 'debug' | 'info' | 'warn' | 'error';
+    services.debugLog[logLevel](source, message, details);
+    return { success: true };
+  });
+
   ipcMain.handle(IPC.DEBUG_LOG_GET_RECENT, async (_, count?: number, level?: string) => {
     return services.debugLog.getRecentLogs(count, level as any);
   });

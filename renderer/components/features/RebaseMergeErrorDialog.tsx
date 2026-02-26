@@ -20,8 +20,13 @@
  *             Success → Delete backup_kit       ◄─────┘
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useConflictStore, type ConflictResolutionStep } from '../../store/conflictStore';
+
+/** Log errors to the persistent DebugLogService via IPC */
+function logToDebug(level: 'info' | 'warn' | 'error', message: string, details?: unknown): void {
+  window.api?.debugLog?.write?.(level, 'ConflictResolution', message, details);
+}
 
 export function RebaseMergeErrorDialog(): React.ReactElement | null {
   const {
@@ -44,6 +49,21 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
   } = useConflictStore();
 
   const [manualFixAcknowledged, setManualFixAcknowledged] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Log the error to DebugLogService when dialog opens
+  useEffect(() => {
+    if (isDialogOpen && errorDetails) {
+      logToDebug('error', `Rebase/merge conflict dialog opened`, {
+        sessionId: errorDetails.sessionId,
+        repoPath: errorDetails.repoPath,
+        baseBranch: errorDetails.baseBranch,
+        currentBranch: errorDetails.currentBranch,
+        conflictedFiles: errorDetails.conflictedFiles,
+        errorMessage: errorDetails.errorMessage,
+      });
+    }
+  }, [isDialogOpen, errorDetails]);
 
   if (!isDialogOpen || !errorDetails) {
     return null;
@@ -92,7 +112,9 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
         setResult(false, result?.error?.message || 'Failed to generate resolution previews');
       }
     } catch (error) {
-      setResult(false, error instanceof Error ? error.message : 'Unknown error during auto-fix');
+      const msg = error instanceof Error ? error.message : 'Unknown error during auto-fix';
+      logToDebug('error', `Auto-fix failed`, { errorMessage: msg, sessionId: errorDetails.sessionId });
+      setResult(false, msg);
     } finally {
       setIsProcessing(false);
     }
@@ -127,7 +149,9 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
         setResult(false, result?.error?.message || 'Failed to apply resolutions');
       }
     } catch (error) {
-      setResult(false, error instanceof Error ? error.message : 'Unknown error applying resolutions');
+      const msg = error instanceof Error ? error.message : 'Unknown error applying resolutions';
+      logToDebug('error', `Apply resolutions failed`, { errorMessage: msg, sessionId: errorDetails.sessionId });
+      setResult(false, msg);
     } finally {
       setIsProcessing(false);
     }
@@ -207,6 +231,37 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* Advanced error details (collapsible) */}
+            <div className="border border-border rounded-lg overflow-hidden">
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="w-full px-3 py-2 flex items-center justify-between text-xs text-text-secondary hover:bg-surface-secondary transition-colors"
+              >
+                <span className="font-medium">Advanced Details</span>
+                <svg
+                  className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? 'rotate-180' : ''}`}
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showAdvanced && (
+                <div className="border-t border-border bg-surface-secondary p-3 space-y-2 max-h-48 overflow-y-auto">
+                  <div className="text-xs font-mono text-text-secondary space-y-1">
+                    <p><span className="text-text-primary font-medium">Error:</span> {errorDetails.errorMessage}</p>
+                    <p><span className="text-text-primary font-medium">Session:</span> {errorDetails.sessionId}</p>
+                    <p><span className="text-text-primary font-medium">Repo:</span> {errorDetails.repoPath}</p>
+                    <p><span className="text-text-primary font-medium">Current branch:</span> {errorDetails.currentBranch}</p>
+                    <p><span className="text-text-primary font-medium">Base branch:</span> {errorDetails.baseBranch}</p>
+                    <p><span className="text-text-primary font-medium">Conflicted files ({errorDetails.conflictedFiles.length}):</span></p>
+                    {errorDetails.conflictedFiles.map((file) => (
+                      <p key={file} className="pl-4 text-red-500">{file}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="border-t border-border pt-4">
@@ -389,6 +444,42 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
                 </div>
               </div>
             </div>
+
+            {/* Advanced details on failure */}
+            {!resultSuccess && (
+              <div className="border border-border rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="w-full px-3 py-2 flex items-center justify-between text-xs text-text-secondary hover:bg-surface-secondary transition-colors"
+                >
+                  <span className="font-medium">Advanced Details</span>
+                  <svg
+                    className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? 'rotate-180' : ''}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showAdvanced && (
+                  <div className="border-t border-border bg-surface-secondary p-3 space-y-2 max-h-48 overflow-y-auto">
+                    <div className="text-xs font-mono text-text-secondary space-y-1">
+                      <p><span className="text-text-primary font-medium">Result:</span> {resultMessage}</p>
+                      <p><span className="text-text-primary font-medium">Session:</span> {errorDetails.sessionId}</p>
+                      <p><span className="text-text-primary font-medium">Repo:</span> {errorDetails.repoPath}</p>
+                      <p><span className="text-text-primary font-medium">Branch:</span> {errorDetails.currentBranch} → {errorDetails.baseBranch}</p>
+                      {errorDetails.conflictedFiles.length > 0 && (
+                        <>
+                          <p><span className="text-text-primary font-medium">Conflicted files:</span></p>
+                          {errorDetails.conflictedFiles.map((file) => (
+                            <p key={file} className="pl-4 text-red-500">{file}</p>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <button
               onClick={handleClose}

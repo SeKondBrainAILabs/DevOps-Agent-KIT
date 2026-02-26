@@ -8,6 +8,7 @@ import { BaseService } from './BaseService';
 import { IPC } from '../../shared/ipc-channels';
 import type { GitService } from './GitService';
 import type { WorkerBridgeService } from './WorkerBridgeService';
+import type { DebugLogService } from './DebugLogService';
 import type { IpcResult, RebaseFrequency } from '../../shared/types';
 
 // Watch configuration for a session
@@ -75,10 +76,18 @@ export class RebaseWatcherService extends BaseService {
   private gitService: GitService;
   private watchedSessions: Map<string, WatchState> = new Map();
   private workerBridge: WorkerBridgeService | null = null;
+  private debugLog: DebugLogService | null = null;
 
   constructor(gitService: GitService) {
     super();
     this.gitService = gitService;
+  }
+
+  /**
+   * Set debug log service for persistent error logging
+   */
+  setDebugLog(debugLog: DebugLogService): void {
+    this.debugLog = debugLog;
   }
 
   /**
@@ -189,7 +198,8 @@ export class RebaseWatcherService extends BaseService {
 
       this.watchedSessions.set(sessionId, state);
 
-      console.log(`[RebaseWatcher] Started watching ${sessionId} (${config.repoPath}) - polling every ${pollInterval / 1000}s`);
+      this.debugLog?.info('RebaseWatcher', `Started watching session`, { sessionId, repoPath: config.repoPath, pollIntervalMs: pollInterval });
+    console.log(`[RebaseWatcher] Started watching ${sessionId} (${config.repoPath}) - polling every ${pollInterval / 1000}s`);
 
       // Emit initial status
       this.emitStatus(sessionId);
@@ -332,6 +342,11 @@ export class RebaseWatcherService extends BaseService {
     try {
       await this.checkAndRebaseIfNeeded(state, false);
     } catch (error) {
+      this.debugLog?.error('RebaseWatcher', `Error polling for remote changes`, {
+        sessionId,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorStack: error instanceof Error ? error.stack : undefined,
+      });
       console.error(`[RebaseWatcher] Error polling ${sessionId}:`, error);
     }
   }
@@ -433,6 +448,14 @@ export class RebaseWatcherService extends BaseService {
     state.isRebasing = true;
     this.emitStatus(config.sessionId);
 
+    this.debugLog?.info('RebaseWatcher', `Starting auto-rebase`, {
+      sessionId: config.sessionId,
+      repoPath: config.repoPath,
+      baseBranch: config.baseBranch,
+      currentBranch: config.currentBranch,
+      behindCount: state.behindCount,
+      aheadCount: state.aheadCount,
+    });
     console.log(`[RebaseWatcher] Starting auto-rebase for ${config.sessionId} onto ${config.baseBranch}`);
 
     try {
@@ -458,11 +481,11 @@ export class RebaseWatcherService extends BaseService {
       // Update status after rebase
       if (rebaseResult.success) {
         state.behindCount = 0;
+        this.debugLog?.info('RebaseWatcher', `Auto-rebase successful`, { sessionId: config.sessionId });
         console.log(`[RebaseWatcher] Auto-rebase successful for ${config.sessionId}`);
       } else {
         // Pause watching on conflict to prevent repeated failures
         state.isPaused = true;
-        console.log(`[RebaseWatcher] Auto-rebase failed for ${config.sessionId}, pausing watcher`);
 
         // Emit rebase error event for UI dialog
         // Try to get list of conflicted files
@@ -473,9 +496,26 @@ export class RebaseWatcherService extends BaseService {
           const execAsync = promisify(exec);
           const conflictResult = await execAsync('git diff --name-only --diff-filter=U', { cwd: config.repoPath });
           conflictedFiles = conflictResult.stdout.trim().split('\n').filter(Boolean);
-        } catch {
-          // Ignore errors getting conflict list
+        } catch (conflictListErr) {
+          this.debugLog?.warn('RebaseWatcher', `Failed to get conflicted file list`, {
+            sessionId: config.sessionId,
+            error: conflictListErr instanceof Error ? conflictListErr.message : String(conflictListErr),
+          });
         }
+
+        this.debugLog?.error('RebaseWatcher', `Auto-rebase FAILED — merge conflicts detected`, {
+          sessionId: config.sessionId,
+          repoPath: config.repoPath,
+          baseBranch: config.baseBranch,
+          currentBranch: config.currentBranch,
+          errorMessage: rebaseResult.message,
+          conflictedFiles,
+          conflictedFileCount: conflictedFiles.length,
+          behindCount: state.behindCount,
+          aheadCount: state.aheadCount,
+          watcherPaused: true,
+        });
+        console.log(`[RebaseWatcher] Auto-rebase failed for ${config.sessionId}, pausing watcher`);
 
         this.emitToRenderer(IPC.REBASE_ERROR_DETECTED, {
           sessionId: config.sessionId,
@@ -495,11 +535,24 @@ export class RebaseWatcherService extends BaseService {
       state.isPaused = true; // Pause on error
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
       state.lastRebaseResult = {
         success: false,
         message: errorMessage,
         timestamp: new Date(),
       };
+
+      this.debugLog?.error('RebaseWatcher', `Auto-rebase threw exception`, {
+        sessionId: config.sessionId,
+        repoPath: config.repoPath,
+        baseBranch: config.baseBranch,
+        currentBranch: config.currentBranch,
+        errorMessage,
+        errorStack,
+        behindCount: state.behindCount,
+        aheadCount: state.aheadCount,
+        watcherPaused: true,
+      });
 
       this.emitStatus(config.sessionId);
       console.error(`[RebaseWatcher] Auto-rebase error for ${config.sessionId}:`, error);

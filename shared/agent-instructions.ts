@@ -59,12 +59,21 @@ YOU MUST WORK ONLY IN THIS DIRECTORY - NOT THE MAIN REPO
 
 BRANCH: ${vars.branchName}
 TASK: ${task}
+${vars.mcpUrl ? `
+## 🔌 MCP SERVER CONNECTION
+This session has a Kanvas MCP server configured at: \`${vars.mcpUrl}\`
+Your \`.mcp.json\` file points to this server. You should have MCP tools available:
+\`kanvas_commit\`, \`kanvas_lock_file\`, \`kanvas_unlock_file\`, \`kanvas_get_session_info\`, etc.
 
+**⚠️ These are MCP protocol tools, NOT bash commands. Do NOT try to run them in a terminal.**
+**If you do NOT see these tools in your available tools list, the MCP connection failed — use the FALLBACK instructions in each section below.**
+` : ''}
 ## MANDATORY FIRST RESPONSE
 Before doing ANY other work, you MUST respond with:
 ✓ Current directory: [output of pwd]
 ✓ Houserules read: [yes/no - if yes, summarize key rules]
-✓ File locks checked: [yes/no]
+✓ File locks checked: [yes/no]${vars.mcpUrl ? `
+✓ MCP tools available: [yes/no — list the kanvas_* tools you can see]` : ''}
 
 ## 1. SETUP (run first)
 \`\`\`bash
@@ -128,7 +137,14 @@ If you see "context compacted", IMMEDIATELY:
 4. cat FOLDER_STRUCTURE.md
 5. ls .file-coordination/active-edits/
 
-## 4. FILE LOCKS (before editing any file)
+## 4. FILE LOCKS (before editing any file)${vars.mcpUrl ? `
+🔧 **PREFERRED: Use MCP tool \`kanvas_lock_file\`** to declare file edit intent.
+- Call \`kanvas_lock_file\` MCP tool with: session_id="${vars.sessionId}", files=["file1.ts","file2.ts"]
+- When done, call \`kanvas_unlock_file\` MCP tool to release locks.
+- The MCP tool checks for conflicts with other agents automatically.
+
+### ⚠️ FALLBACK: If MCP tools are NOT available
+` : ''}Use filesystem locks:
 \`\`\`bash
 ls .file-coordination/active-edits/  # Check for conflicts first
 # Replace <FILES> with actual files you're editing:
@@ -149,23 +165,32 @@ EOF
 \`\`\`
 
 ## 6. COMMITS${vars.mcpUrl ? `
-🔧 **USE MCP TOOL: \`kanvas_commit\`** to commit changes. This is the preferred method.
-- DO NOT write .devops-commit files. DO NOT run \`git commit\` directly.
+🔧 **PREFERRED: Use MCP tool \`kanvas_commit\`** to commit changes.
+- These are **MCP protocol tools** available via your MCP server connection.
+- ⛔ They are NOT bash commands — do NOT run \`kanvas_commit\` or \`kanvas_commit_all\` in a terminal.
+- ⛔ DO NOT use \`type\`, \`which\`, or \`grep\` to find them — they are MCP tools, not executables.
+- Call them as MCP tools with the parameters shown below.
 - The MCP tool handles staging, committing, recording, and optionally pushing.
-- Example: \`kanvas_commit({ session_id: "${vars.sessionId}", message: "feat: add auth", push: false })\`
 
 ### Available MCP Tools
-| Tool | Description |
-|------|-------------|
-| \`kanvas_commit\` | Stage + commit + record + push |
-| \`kanvas_get_session_info\` | Session config and metadata |
-| \`kanvas_log_activity\` | Log to Kanvas dashboard timeline |
-| \`kanvas_lock_file\` | Declare file edit intent (replaces manual file locks) |
-| \`kanvas_unlock_file\` | Release file locks |
-| \`kanvas_get_commit_history\` | Recent commits for session branch |
-| \`kanvas_request_review\` | Signal work ready for review |` : `
-📝 **Write commit messages to: \`.devops-commit-${shortSessionId}.msg\`** (this session's file)
-⚠️ DO NOT use .claude-commit-msg - use the session-specific file above!`}
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| \`kanvas_commit\` | session_id, message, push (optional) | Stage + commit + record + push |
+| \`kanvas_get_session_info\` | session_id | Session config and metadata |
+| \`kanvas_log_activity\` | session_id, type, message | Log to Kanvas dashboard timeline |
+| \`kanvas_lock_file\` | session_id, files | Declare file edit intent |
+| \`kanvas_unlock_file\` | session_id, files | Release file locks |
+| \`kanvas_get_commit_history\` | session_id | Recent commits for session branch |
+| \`kanvas_request_review\` | session_id, summary | Signal work ready for review |
+
+### ⚠️ FALLBACK: If MCP tools are NOT in your available tools list
+If the \`kanvas_commit\` MCP tool is not listed in your tools (MCP connection failed):
+1. Stage and commit directly: \`git add -A && git commit -m "your message"\`
+2. Or write commit message to \`.devops-commit-${shortSessionId}.msg\` or \`.claude-commit-msg\` — the Kanvas watcher will auto-commit.` : `
+📝 **To commit**, either:
+1. Stage and commit directly: \`git add -A && git commit -m "your message"\`
+2. Or write your commit message to \`.devops-commit-${shortSessionId}.msg\` or \`.claude-commit-msg\` — the Kanvas watcher will auto-commit.`}
+
 **One story = one commit.** If given multiple stories, complete and commit each separately.
 
 ### ⚠️ IMPORTANT: Git Attribution
@@ -183,16 +208,25 @@ This session spans multiple repositories. Your primary repo is listed above.
 |------|------|--------|------|
 ${vars.multiRepoEntries.map(r => `| ${r.repoName} | ${r.role} | ${r.branchName} | ${r.worktreePath} |`).join('\n')}
 
-**Commit scope**: ${vars.commitScope === 'per-repo' ? 'Commit each repo independently' : 'Commit all repos together using `kanvas_commit_all`'}
+**Commit scope**: ${vars.commitScope === 'per-repo' ? 'Commit each repo independently' : 'Commit all repos together using the `kanvas_commit_all` MCP tool'}
 
-### Multi-Repo MCP Tools
-- \`kanvas_commit({ session_id, message, repo: "repoName" })\` — commit in a specific repo
-- \`kanvas_commit_all({ session_id, message })\` — commit across ALL repos at once
-- \`kanvas_lock_file({ session_id, files, repo: "repoName" })\` — lock files in a specific repo
-- \`kanvas_get_commit_history({ session_id, repo: "repoName" })\` — history for a specific repo
+### Multi-Repo MCP Tools (these are MCP protocol tools, NOT bash commands)
+| Tool | Extra Parameters | Description |
+|------|-----------------|-------------|
+| \`kanvas_commit\` | repo (optional) | Commit in a specific repo |
+| \`kanvas_commit_all\` | — | Commit across ALL repos at once |
+| \`kanvas_lock_file\` | repo (optional) | Lock files in a specific repo |
+| \`kanvas_get_commit_history\` | repo (optional) | History for a specific repo |
 
 When no \`repo\` parameter is specified, operations target the **primary** repo.
 Secondary repo branches use the naming convention: \`From_{PrimaryRepoName}_{DDMMYY}\`.
+
+### ⚠️ FALLBACK: If MCP tools are NOT available
+If \`kanvas_commit_all\` is not in your tools list, commit each repo manually:
+\`\`\`bash
+# For each repo, cd to its worktree path and commit
+cd /path/to/repo-worktree && git add -A && git commit -m "your message"
+\`\`\`
 ` : ''}---
 ⛔ STOP: Run setup commands, read houserules.md, then await instructions.`;
 }
@@ -256,7 +290,7 @@ This file will persist your session context and can be re-read after context com
 
 **Key files to update as you work:**
 1. \`.claude-session-${shortSessionId}.md\` - Update progress and notes
-2. \`.devops-commit-${shortSessionId}.msg\` - Write commit messages here
+2. Commit via: MCP tool \`kanvas_commit\`, or \`git commit\`, or write to \`.devops-commit-${shortSessionId}.msg\` / \`.claude-commit-msg\`
 
 ${vars.contextPreservation ? `
 ### Custom House Rules

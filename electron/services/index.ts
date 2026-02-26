@@ -160,6 +160,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // For auto-rebasing when remote changes are detected (on-demand mode)
   const rebaseWatcher = new RebaseWatcherService(git);
   rebaseWatcher.setMainWindow(mainWindow);
+  rebaseWatcher.setDebugLog(debugLog);
 
   // Connect terminalLog to watcher for terminal view logging
   watcher.setTerminalLogService(terminalLog);
@@ -184,6 +185,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Initialize Merge Conflict service
   // For AI-powered conflict resolution using LLM (llama, qwen, etc.)
   const mergeConflict = new MergeConflictService(ai);
+  mergeConflict.setDebugLog(debugLog);
 
   // Initialize Heartbeat service
   // For monitoring agent connection status

@@ -1801,6 +1801,12 @@ const api = {
   // ==========================================================================
   debugLog: {
     /**
+     * Write a log entry from the renderer process
+     */
+    write: (level: 'debug' | 'info' | 'warn' | 'error', source: string, message: string, details?: unknown): Promise<void> =>
+      ipcRenderer.invoke(IPC.DEBUG_LOG_WRITE, level, source, message, details),
+
+    /**
      * Get recent logs from memory buffer
      */
     getRecent: (count?: number, level?: string): Promise<IpcResult<Array<{
