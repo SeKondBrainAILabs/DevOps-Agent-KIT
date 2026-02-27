@@ -1,11 +1,11 @@
-<!-- HOUSERULES_VERSION: 2.0.0 -->
-<!-- LAST_UPDATED: 2026-02-14 -->
+<!-- HOUSERULES_VERSION: 2.1.0 -->
+<!-- LAST_UPDATED: 2026-02-27 -->
 <!-- CHECKSUM: auto-generated-on-commit -->
 
 # House Rules for SeKondBrain Kanvas (DevOpsAgent)
 
-**Version:** 2.0.0
-**Last Updated:** 2026-02-14
+**Version:** 2.1.0
+**Last Updated:** 2026-02-27
 **Project:** SeKondBrain Kanvas - AI Agent Dashboard for DevOps
 **App Version:** 1.1.1
 **Stack:** Electron + React + TypeScript (Frontend) | Python FastAPI (Backend)
@@ -30,7 +30,9 @@
 > 7. Update contracts AFTER making changes
 > 8. Hold file locks for entire session - release only on close
 > 9. Read `infrastructure/infrastructure.md` before creating any infra
-> 10. This file version is **2.0.0** - the house-rules-manager uses this for updates
+> 10. **NO EMBEDDED SQL** - All SQL goes through `SQL_CONTRACT.json` and `DatabaseService`
+> 11. **CONTRACT-FIRST** for API/SQL/schema changes - read & amend the contract BEFORE writing code
+> 12. This file version is **2.1.0** - the house-rules-manager uses this for updates
 
 ---
 
@@ -215,11 +217,16 @@ The system supports these contract types (from `shared/types.ts`):
 
 ```
 BEFORE making ANY change:
-1. IDENTIFY what you're changing (database, API, feature, etc.)
-2. READ the relevant contract file
-3. SEARCH for existing implementation
-4. DECIDE: REUSE existing or CREATE new
-5. AFTER changes: UPDATE the contract immediately
+1. IDENTIFY what you're changing (database, API, SQL, feature, etc.)
+2. READ the relevant contract file FIRST
+3. SEARCH for existing implementation — REUSE before creating new
+4. For API/SQL/schema changes: AMEND the contract BEFORE writing code
+5. IMPLEMENT according to the contract
+6. AFTER changes: UPDATE the contract with final state
+
+⚠️  NEVER write raw SQL in application code — use SQL_CONTRACT.json + DatabaseService
+⚠️  NEVER create/modify an API endpoint without reading API_CONTRACT.md first
+⚠️  NEVER alter database schema without reading DATABASE_SCHEMA_CONTRACT.md first
 
 Contract updates MUST include:
 - Date stamp (YYYY-MM-DD)
@@ -627,6 +634,50 @@ What qualifies:
 
 ## 12. Code Quality Standards
 
+### No Embedded SQL (MANDATORY)
+
+**NEVER write raw SQL strings directly in service code, components, or IPC handlers.**
+
+All SQL queries MUST be:
+1. **Defined in `SQL_CONTRACT.json`** — Every query has a named entry with parameters, description, and expected return type
+2. **Executed through `DatabaseService`** — Use `DatabaseService.query()`, `.insert()`, `.update()` methods
+3. **Parameterized** — Never concatenate values into SQL strings (prevents SQL injection)
+
+```typescript
+// BAD - Embedded SQL in service code
+const rows = db.prepare(`SELECT * FROM commits WHERE session_id = '${sessionId}'`).all();
+
+// BAD - Raw SQL in IPC handler
+ipcMain.handle('get-commits', (_, sid) => db.exec(`SELECT * FROM commits WHERE session_id = ?`, [sid]));
+
+// GOOD - Use DatabaseService with named query from SQL_CONTRACT
+const rows = await this.db.getCommitsForSession(sessionId);
+```
+
+**Why:** Embedded SQL scatters data access logic across the codebase, makes schema migrations dangerous (no single place to find all queries), and bypasses the contract system.
+
+### Contract-First for API, SQL, and Schema Changes (MANDATORY)
+
+Before making ANY change to API endpoints, SQL queries, or database schema:
+
+1. **READ the relevant contract FIRST:**
+   - API change → Read `API_CONTRACT.md`
+   - SQL query → Read `SQL_CONTRACT.json`
+   - Database schema → Read `DATABASE_SCHEMA_CONTRACT.md`
+
+2. **AMEND the contract** with your proposed change before writing code
+
+3. **IMPLEMENT** according to the amended contract
+
+4. **VERIFY** the implementation matches the contract
+
+```
+❌ Wrong order: Write code → Maybe update contract later
+✅ Right order: Read contract → Amend contract → Write code → Verify match
+```
+
+This ensures all agents share a consistent understanding of the data layer and prevents conflicting changes to shared interfaces.
+
 ### TypeScript Standards (Electron + Renderer)
 
 - **Strict mode** - No `any` types, proper interfaces
@@ -823,6 +874,7 @@ Available for contract generation and analysis:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.1.0 | 2026-02-27 | Added no-embedded-SQL rule and contract-first mandate for API/SQL/schema changes |
 | 2.0.0 | 2026-02-14 | Major overhaul: added Kanvas architecture, service registry, IPC domains, type system, compaction-safe design, version tracking |
 | 1.3.0 | 2024-12-16 | Added DevOps Agent change workflow, contract flags, validation |
 | 1.0.0 | 2024-12-02 | Initial contract system, file coordination protocol |
