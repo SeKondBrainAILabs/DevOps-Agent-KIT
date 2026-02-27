@@ -40,6 +40,101 @@ prompts:
       5. Preserve all imports, exports, and type definitions from both sides
       6. Maintain consistent code style
 
+  # Phase 1: Analyze the conflict with commit context to build a resolution plan
+  analyze_with_context:
+    system: |
+      {base_system}
+
+      You are performing Phase 1 of a two-phase conflict resolution.
+      Your job is to ANALYZE the conflict and produce a RESOLUTION PLAN.
+      Do NOT output resolved code yet — that happens in Phase 2.
+
+      You will receive:
+      - The conflicted file with markers
+      - Recent commit messages from BOTH branches (explaining WHY each change was made)
+
+      Your analysis must determine:
+      1. What the current branch was trying to achieve (using commit messages as evidence)
+      2. What the incoming branch was trying to achieve
+      3. Whether the changes are compatible, semantically conflicting, or structurally incompatible
+      4. A concrete resolution strategy with specific instructions
+
+    user_template: |
+      File: {file_path}
+      Language: {language}
+
+      Current branch (ours): {current_branch}
+      Recent commits on current branch:
+      {current_commits}
+
+      Incoming branch (theirs): {incoming_branch}
+      Recent commits on incoming branch:
+      {incoming_commits}
+
+      File content with conflict markers:
+      ```{language}
+      {conflicted_content}
+      ```
+
+      Analyze this conflict and return ONLY valid JSON:
+      ```json
+      {
+        "currentBranchIntent": "what the current branch commits were trying to do to this file",
+        "incomingBranchIntent": "what the incoming branch commits were trying to do to this file",
+        "conflictType": "compatible|semantic|structural",
+        "recommendedStrategy": "merge_both|prefer_current|prefer_incoming|manual",
+        "explanation": "why this strategy is correct",
+        "complexity": "simple|moderate|complex",
+        "resolutionPlan": "step-by-step instructions for how to merge the two versions"
+      }
+      ```
+
+  # Phase 2: Resolve using the analysis plan and commit context
+  resolve_with_plan:
+    system: |
+      {base_system}
+
+      You are performing Phase 2 of a two-phase conflict resolution.
+      Phase 1 already analyzed the conflict and produced a resolution plan.
+
+      You MUST follow the resolution plan provided. Use the commit context to
+      understand the intent behind each change.
+
+      CRITICAL:
+      - Output ONLY the resolved file content — no explanations, no markdown fences
+      - Remove ALL conflict markers (<<<<<<, ======, >>>>>>)
+      - The output must be syntactically valid {language}
+      - Preserve ALL functionality from both sides unless the plan says otherwise
+
+    user_template: |
+      File: {file_path}
+      Language: {language}
+
+      Current branch (ours): {current_branch}
+      Incoming branch (theirs): {incoming_branch}
+
+      === ANALYSIS FROM PHASE 1 ===
+      Current branch intent: {analysis_current_intent}
+      Incoming branch intent: {analysis_incoming_intent}
+      Conflict type: {analysis_conflict_type}
+      Strategy: {analysis_strategy}
+      Resolution plan: {analysis_plan}
+      === END ANALYSIS ===
+
+      Recent commits on current branch:
+      {current_commits}
+
+      Recent commits on incoming branch:
+      {incoming_commits}
+
+      File content with conflict markers:
+      ```{language}
+      {conflicted_content}
+      ```
+
+      Follow the resolution plan above. Output ONLY the final merged code.
+
+  # Fallback: simple resolve without analysis (used when Phase 1 fails)
   resolve_conflict:
     system: |
       {base_system}
@@ -67,38 +162,12 @@ prompts:
 
       Resolve this conflict and output ONLY the final merged code.
 
-  resolve_with_context:
-    system: |
-      {base_system}
-
-      You have additional context about what each branch was trying to accomplish.
-      Use this to make better merge decisions.
-
-    user_template: |
-      File: {file_path}
-      Language: {language}
-
-      Current branch: {current_branch}
-      Current branch commit messages:
-      {current_commits}
-
-      Incoming branch: {incoming_branch}
-      Incoming branch commit messages:
-      {incoming_commits}
-
-      File content with conflict markers:
-      ```{language}
-      {conflicted_content}
-      ```
-
-      Resolve this conflict and output ONLY the final merged code.
-
+  # Legacy: kept for backwards compatibility
   analyze_conflict:
     system: |
       {base_system}
 
       Analyze a merge conflict and explain what each side is trying to do.
-      This helps understand the conflict before resolution.
 
     user_template: |
       File: {file_path}

@@ -178,23 +178,55 @@ export class MergeConflictService extends BaseService {
   }
 
   /**
-   * Analyze a conflict to understand what each side is doing
+   * Get recent commit messages for a branch (for conflict context)
+   */
+  private async getBranchCommits(repoPath: string, branch: string, limit = 10): Promise<string> {
+    try {
+      const output = await this.git(
+        ['log', branch, `--format=%h %s`, `-${limit}`],
+        repoPath
+      );
+      return output || '(no commits found)';
+    } catch {
+      return '(could not retrieve commits)';
+    }
+  }
+
+  /**
+   * Phase 1: Analyze a conflict with commit context to build a resolution plan
    */
   async analyzeConflict(
     repoPath: string,
-    filePath: string
-  ): Promise<IpcResult<ConflictAnalysis>> {
+    filePath: string,
+    currentBranch?: string,
+    incomingBranch?: string
+  ): Promise<IpcResult<ConflictAnalysis & { resolutionPlan?: string }>> {
     return this.wrap(async () => {
       const fileResult = await this.readConflictedFile(repoPath, filePath);
       if (!fileResult.success || !fileResult.data) {
         throw new Error(`Failed to read file: ${filePath}`);
       }
 
+      // Get commit context from both branches
+      const currentCommits = currentBranch
+        ? await this.getBranchCommits(repoPath, currentBranch)
+        : '(unknown branch)';
+      const incomingCommits = incomingBranch
+        ? await this.getBranchCommits(repoPath, `origin/${incomingBranch}`)
+        : '(unknown branch)';
+
+      const promptKey = currentBranch ? 'analyze_with_context' : 'analyze_conflict';
+
       const result = await this.aiService.sendWithMode({
         modeId: 'merge_conflict_resolver',
-        promptKey: 'analyze_conflict',
+        promptKey,
         variables: {
           file_path: filePath,
+          language: fileResult.data.language,
+          current_branch: currentBranch || 'current',
+          incoming_branch: incomingBranch || 'incoming',
+          current_commits: currentCommits,
+          incoming_commits: incomingCommits,
           conflicted_content: fileResult.data.content,
         },
         userMessage: 'Analyze this conflict and return ONLY valid JSON.',
@@ -210,22 +242,28 @@ export class MergeConflictService extends BaseService {
         throw new Error('Failed to parse AI response as JSON');
       }
 
-      return JSON.parse(jsonMatch[0]) as ConflictAnalysis;
+      return JSON.parse(jsonMatch[0]) as ConflictAnalysis & { resolutionPlan?: string };
     }, 'ANALYZE_CONFLICT_FAILED');
   }
 
   /**
-   * Resolve a single file's conflicts using AI
+   * Phase 2: Resolve a single file's conflicts using AI
+   * Uses analysis from Phase 1 and commit context for informed resolution
    */
   async resolveFileConflict(
     repoPath: string,
     filePath: string,
     currentBranch: string,
-    incomingBranch: string
+    incomingBranch: string,
+    analysis?: ConflictAnalysis & { resolutionPlan?: string }
   ): Promise<IpcResult<ResolutionResult>> {
     return this.wrap(async () => {
-      this.debugLog?.info('MergeConflict', `Resolving conflict in file`, { filePath, repoPath, currentBranch, incomingBranch });
-      console.log(`[MergeConflict] Resolving conflict in: ${filePath}`);
+      this.debugLog?.info('MergeConflict', `Resolving conflict in file`, {
+        filePath, repoPath, currentBranch, incomingBranch,
+        hasAnalysis: !!analysis,
+        strategy: analysis?.recommendedStrategy,
+      });
+      console.log(`[MergeConflict] Resolving conflict in: ${filePath} (strategy: ${analysis?.recommendedStrategy || 'none'})`);
 
       const fileResult = await this.readConflictedFile(repoPath, filePath);
       if (!fileResult.success || !fileResult.data) {
@@ -248,19 +286,50 @@ export class MergeConflictService extends BaseService {
         };
       }
 
-      // Use AI to resolve the conflict
-      const result = await this.aiService.sendWithMode({
-        modeId: 'merge_conflict_resolver',
-        promptKey: 'resolve_conflict',
-        variables: {
-          file_path: filePath,
-          language,
-          current_branch: currentBranch,
-          incoming_branch: incomingBranch,
-          conflicted_content: content,
-        },
-        userMessage: 'Resolve this conflict and output ONLY the final merged code. No explanations.',
-      });
+      // Get commit context for both branches
+      const currentCommits = await this.getBranchCommits(repoPath, currentBranch);
+      const incomingCommits = await this.getBranchCommits(repoPath, `origin/${incomingBranch}`);
+
+      let result;
+
+      if (analysis?.resolutionPlan) {
+        // Phase 2: Use the analysis plan from Phase 1
+        console.log(`[MergeConflict] Using Phase 2 resolve_with_plan for ${filePath}`);
+        result = await this.aiService.sendWithMode({
+          modeId: 'merge_conflict_resolver',
+          promptKey: 'resolve_with_plan',
+          variables: {
+            file_path: filePath,
+            language,
+            current_branch: currentBranch,
+            incoming_branch: incomingBranch,
+            analysis_current_intent: analysis.currentBranchIntent,
+            analysis_incoming_intent: analysis.incomingBranchIntent,
+            analysis_conflict_type: analysis.conflictType,
+            analysis_strategy: analysis.recommendedStrategy,
+            analysis_plan: analysis.resolutionPlan,
+            current_commits: currentCommits,
+            incoming_commits: incomingCommits,
+            conflicted_content: content,
+          },
+          userMessage: 'Follow the resolution plan. Output ONLY the final merged code — no explanations, no markdown fences.',
+        });
+      } else {
+        // Fallback: single-shot resolve without analysis
+        console.log(`[MergeConflict] Fallback to single-shot resolve for ${filePath}`);
+        result = await this.aiService.sendWithMode({
+          modeId: 'merge_conflict_resolver',
+          promptKey: 'resolve_conflict',
+          variables: {
+            file_path: filePath,
+            language,
+            current_branch: currentBranch,
+            incoming_branch: incomingBranch,
+            conflicted_content: content,
+          },
+          userMessage: 'Resolve this conflict and output ONLY the final merged code. No explanations.',
+        });
+      }
 
       if (!result.success || !result.data) {
         return {
@@ -280,21 +349,28 @@ export class MergeConflictService extends BaseService {
 
       // Verify no conflict markers remain
       if (this.hasConflictMarkers(resolvedContent)) {
-        this.debugLog?.warn('MergeConflict', `AI output still has conflict markers, retrying`, { filePath });
+        this.debugLog?.warn('MergeConflict', `AI output still has conflict markers, retrying with stronger instruction`, { filePath });
         console.warn(`[MergeConflict] AI output still has conflict markers, retrying...`);
 
         // Retry with stronger instruction
         const retryResult = await this.aiService.sendWithMode({
           modeId: 'merge_conflict_resolver',
-          promptKey: 'resolve_conflict',
+          promptKey: 'resolve_with_plan',
           variables: {
             file_path: filePath,
             language,
             current_branch: currentBranch,
             incoming_branch: incomingBranch,
+            analysis_current_intent: analysis?.currentBranchIntent || 'unknown',
+            analysis_incoming_intent: analysis?.incomingBranchIntent || 'unknown',
+            analysis_conflict_type: analysis?.conflictType || 'unknown',
+            analysis_strategy: analysis?.recommendedStrategy || 'merge_both',
+            analysis_plan: analysis?.resolutionPlan || 'Merge both sides, preserving all functionality',
+            current_commits: currentCommits,
+            incoming_commits: incomingCommits,
             conflicted_content: content,
           },
-          userMessage: 'CRITICAL: You MUST remove ALL conflict markers (<<<<<<, ======, >>>>>>) and produce clean, merged code. Output ONLY the resolved code.',
+          userMessage: 'CRITICAL: You MUST remove ALL conflict markers (<<<<<<, ======, >>>>>>) and produce clean, merged code. Output ONLY the resolved code — no markdown, no explanation.',
         });
 
         if (retryResult.success && retryResult.data) {
@@ -310,7 +386,7 @@ export class MergeConflictService extends BaseService {
           return {
             file: filePath,
             resolved: false,
-            error: 'AI could not fully resolve conflict markers',
+            error: 'AI could not fully resolve conflict markers after retry',
           };
         }
       }
@@ -319,6 +395,7 @@ export class MergeConflictService extends BaseService {
         file: filePath,
         resolved: true,
         content: resolvedContent.trim(),
+        analysis,
       };
     }, 'RESOLVE_FILE_CONFLICT_FAILED');
   }
@@ -406,23 +483,29 @@ export class MergeConflictService extends BaseService {
 
         const { content, language } = fileResult.data;
 
-        // First, analyze the conflict
-        let analysis: ConflictAnalysis | undefined;
+        // Phase 1: Analyze the conflict with commit context
+        let analysis: (ConflictAnalysis & { resolutionPlan?: string }) | undefined;
         try {
-          const analysisResult = await this.analyzeConflict(repoPath, file);
+          const analysisResult = await this.analyzeConflict(repoPath, file, currentBranch, targetBranch);
           if (analysisResult.success && analysisResult.data) {
             analysis = analysisResult.data;
+            this.debugLog?.info('MergeConflict', `Phase 1 analysis complete for ${file}`, {
+              conflictType: analysis.conflictType,
+              strategy: analysis.recommendedStrategy,
+              hasPlan: !!analysis.resolutionPlan,
+            });
           }
         } catch {
           // Analysis is optional, continue without it
         }
 
-        // Generate AI resolution (but don't apply)
+        // Phase 2: Generate AI resolution using the analysis plan
         const resolution = await this.resolveFileConflict(
           repoPath,
           file,
           currentBranch,
-          targetBranch
+          targetBranch,
+          analysis
         );
 
         if (resolution.success && resolution.data?.resolved && resolution.data.content) {
@@ -657,14 +740,27 @@ export class MergeConflictService extends BaseService {
 
         console.log(`[MergeConflict] Found ${conflictedFiles.length} conflicted files`);
 
-        // Resolve each conflicted file
+        // Resolve each conflicted file (two-phase: analyze then resolve)
         let allResolved = true;
         for (const file of conflictedFiles) {
+          // Phase 1: Analyze with commit context
+          let analysis: (ConflictAnalysis & { resolutionPlan?: string }) | undefined;
+          try {
+            const analysisResult = await this.analyzeConflict(repoPath, file, currentBranch, targetBranch);
+            if (analysisResult.success && analysisResult.data) {
+              analysis = analysisResult.data;
+            }
+          } catch {
+            // Analysis is optional, continue without it
+          }
+
+          // Phase 2: Resolve using the analysis plan
           const resolution = await this.resolveFileConflict(
             repoPath,
             file,
             currentBranch,
-            targetBranch
+            targetBranch,
+            analysis
           );
 
           if (resolution.success && resolution.data) {

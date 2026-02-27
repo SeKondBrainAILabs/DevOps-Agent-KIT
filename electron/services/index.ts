@@ -162,6 +162,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   rebaseWatcher.setMainWindow(mainWindow);
   rebaseWatcher.setDebugLog(debugLog);
 
+  // Connect rebaseWatcher to watcher for post-commit rebase
+  watcher.setRebaseWatcher(rebaseWatcher);
+
   // Connect terminalLog to watcher for terminal view logging
   watcher.setTerminalLogService(terminalLog);
 

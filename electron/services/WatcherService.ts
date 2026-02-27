@@ -21,6 +21,7 @@ import type { ASTParserService } from './analysis/ASTParserService';
 import type { RepositoryAnalysisService } from './analysis/RepositoryAnalysisService';
 import type { CommitAnalysisService } from './CommitAnalysisService';
 import type { WorkerBridgeService } from './WorkerBridgeService';
+import type { RebaseWatcherService } from './RebaseWatcherService';
 import { databaseService } from './DatabaseService';
 import type { AgentType } from '../../shared/types';
 import chokidar, { type FSWatcher } from 'chokidar';
@@ -64,6 +65,9 @@ export class WatcherService extends BaseService {
 
   // Worker bridge: when set, file monitoring runs in utility process
   private workerBridge: WorkerBridgeService | null = null;
+
+  // Rebase watcher: when set, triggers post-commit rebase to stay in sync
+  private rebaseWatcher: RebaseWatcherService | null = null;
 
   constructor(git: GitService, activity: ActivityService) {
     super();
@@ -146,6 +150,15 @@ export class WatcherService extends BaseService {
   setWorkerBridge(bridge: WorkerBridgeService): void {
     this.workerBridge = bridge;
     console.log('[WatcherService] Worker bridge configured — file monitoring delegated to utility process');
+  }
+
+  /**
+   * Set rebase watcher for post-commit rebase.
+   * When set, a rebase check is triggered after every successful commit + push.
+   */
+  setRebaseWatcher(rebaseWatcher: RebaseWatcherService): void {
+    this.rebaseWatcher = rebaseWatcher;
+    console.log('[WatcherService] RebaseWatcher configured — post-commit rebase enabled');
   }
 
   /**
@@ -546,6 +559,20 @@ export class WatcherService extends BaseService {
 
         // Auto-push (could be configurable)
         await this.gitService.push(sessionId, instance.repoName);
+
+        // Post-commit rebase: fetch + rebase if behind remote to stay in sync
+        if (this.rebaseWatcher) {
+          try {
+            const rebaseResult = await this.rebaseWatcher.forceCheck(sessionId);
+            if (rebaseResult.success && rebaseResult.data?.hasChanges) {
+              console.log(`[WatcherService] Post-commit rebase: synced with remote (was ${rebaseResult.data.behindCount} commits behind)`);
+              this.terminalLogService?.log('info', `Post-commit rebase: synced with remote`, { sessionId, source: 'Watcher' });
+            }
+          } catch (rebaseError) {
+            // Non-fatal: rebase failures are handled by RebaseWatcherService (shows dialog)
+            console.warn(`[WatcherService] Post-commit rebase check failed:`, rebaseError);
+          }
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         this.activityService.log(sessionId, 'error', `Commit failed: ${message}`);
