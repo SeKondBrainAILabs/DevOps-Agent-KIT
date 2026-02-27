@@ -55,6 +55,9 @@ export function MergeWorkflowModal({
   const [error, setError] = useState<string | null>(null);
   const [showAdvancedError, setShowAdvancedError] = useState(false);
 
+  // Dynamically resolved branch from worktree (may differ from session's branchName)
+  const [actualBranch, setActualBranch] = useState<string>(sourceBranch);
+
   // Wrapper that logs errors to DebugLogService when transitioning to error step
   const setErrorWithLog = useCallback((msg: string) => {
     setError(msg);
@@ -67,9 +70,6 @@ export function MergeWorkflowModal({
       worktreePath,
     });
   }, [repoPath, actualBranch, targetBranch, sessionId, worktreePath]);
-
-  // Dynamically resolved branch from worktree (may differ from session's branchName)
-  const [actualBranch, setActualBranch] = useState<string>(sourceBranch);
   const branchMismatch = actualBranch !== sourceBranch;
 
   // Merge options
