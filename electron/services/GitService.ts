@@ -1209,26 +1209,38 @@ export class GitService extends BaseService {
   async getCommitHistory(
     repoPath: string,
     baseBranch = 'main',
-    limit = 50
+    limit = 50,
+    branchName?: string
   ): Promise<IpcResult<GitCommitWithFiles[]>> {
     return this.wrap(async () => {
-      const currentBranch = await this.git(['branch', '--show-current'], repoPath);
       const logFormat = '%H|%h|%s|%an|%aI';
 
       // Helper to run git log and parse output
-      const runGitLog = async (range: string): Promise<string> => {
+      const runGitLog = async (args: string[]): Promise<string> => {
         return this.git([
           'log',
-          range,
+          ...args,
           `--format=${logFormat}`,
           '--shortstat',
           `-${limit}`,
         ], repoPath);
       };
 
-      // Always get recent commits from HEAD - this is what users expect to see in the timeline
-      // The branch comparison approach only shows "new" commits which may be very few after rebasing
-      const logOutput = await runGitLog(`-${limit}`);
+      // If branchName is provided, scope commits to only those on this branch since baseBranch
+      // This filters to session-specific commits instead of entire repo history
+      let logOutput: string;
+      if (branchName) {
+        try {
+          // Show only commits on branchName that are not on baseBranch
+          logOutput = await runGitLog([`${baseBranch}..${branchName}`]);
+        } catch {
+          // Fallback: if baseBranch doesn't exist or range fails, get commits from branchName HEAD
+          logOutput = await runGitLog([branchName]);
+        }
+      } else {
+        // No branch specified — get recent commits from HEAD (legacy behavior)
+        logOutput = await runGitLog([]);
+      }
 
       const commits: GitCommitWithFiles[] = [];
       const lines = logOutput.split('\n');

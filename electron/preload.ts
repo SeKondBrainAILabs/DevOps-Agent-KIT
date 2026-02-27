@@ -143,7 +143,7 @@ const api = {
     }>> =>
       ipcRenderer.invoke(IPC.GIT_GET_DIFF_SUMMARY, repoPath),
 
-    getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number): Promise<IpcResult<Array<{
+    getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number, branchName?: string): Promise<IpcResult<Array<{
       hash: string;
       shortHash: string;
       message: string;
@@ -159,7 +159,7 @@ const api = {
         deletions: number;
       }>;
     }>>> =>
-      ipcRenderer.invoke(IPC.GIT_GET_COMMIT_HISTORY, repoPath, baseBranch, limit),
+      ipcRenderer.invoke(IPC.GIT_GET_COMMIT_HISTORY, repoPath, baseBranch, limit, branchName),
 
     getCommitDiff: (repoPath: string, commitHash: string): Promise<IpcResult<{
       commit: {

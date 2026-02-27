@@ -499,6 +499,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             sessionId={session.sessionId}
             repoPath={session.worktreePath || session.repoPath}
             baseBranch={session.baseBranch}
+            branchName={session.branchName}
           />
         )}
         {activeTab === 'commits' && (
@@ -613,7 +614,7 @@ function InfoCard({ label, value, mono = false }: { label: string; value: string
  * Combines activity logs and commits from database + git history
  * Includes verbose mode toggle to show/hide file changes and debug info
  */
-function ActivityTab({ sessionId, repoPath, baseBranch }: { sessionId: string; repoPath?: string; baseBranch?: string }): React.ReactElement {
+function ActivityTab({ sessionId, repoPath, baseBranch, branchName }: { sessionId: string; repoPath?: string; baseBranch?: string; branchName?: string }): React.ReactElement {
   const [verboseMode, setVerboseMode] = useState(false);
   const [historicalLogs, setHistoricalLogs] = useState<ActivityLogEntry[]>([]);
   const [commits, setCommits] = useState<Array<{
@@ -662,7 +663,7 @@ function ActivityTab({ sessionId, repoPath, baseBranch }: { sessionId: string; r
         const gitCommits: typeof commits = [];
         if (repoPath && window.api?.git?.getCommitHistory) {
           try {
-            const gitResult = await window.api.git.getCommitHistory(repoPath, baseBranch || 'main', 100);
+            const gitResult = await window.api.git.getCommitHistory(repoPath, baseBranch || 'main', 100, branchName);
             if (gitResult.success && gitResult.data) {
               // Map git commits to our format
               for (const gc of gitResult.data) {
@@ -697,7 +698,7 @@ function ActivityTab({ sessionId, repoPath, baseBranch }: { sessionId: string; r
       }
     }
     loadHistory();
-  }, [sessionId, repoPath, baseBranch]);
+  }, [sessionId, repoPath, baseBranch, branchName]);
 
   // Load more historical logs with proper offset
   const loadMore = async () => {

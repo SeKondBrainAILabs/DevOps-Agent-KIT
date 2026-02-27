@@ -32,7 +32,7 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
       const baseBranch = session.baseBranch || 'main';
 
       if (window.api?.git?.getCommitHistory && repoPath) {
-        const result = await window.api.git.getCommitHistory(repoPath, baseBranch, 50);
+        const result = await window.api.git.getCommitHistory(repoPath, baseBranch, 50, session.branchName);
         if (result.success && result.data) {
           setCommits(result.data.map(c => ({ ...c, expanded: false })));
         } else if (result.error) {

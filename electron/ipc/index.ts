@@ -541,8 +541,8 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // ==========================================================================
   // COMMIT HISTORY HANDLERS
   // ==========================================================================
-  ipcMain.handle(IPC.GIT_GET_COMMIT_HISTORY, async (_, repoPath: string, baseBranch?: string, limit?: number) => {
-    return services.git.getCommitHistory(repoPath, baseBranch, limit);
+  ipcMain.handle(IPC.GIT_GET_COMMIT_HISTORY, async (_, repoPath: string, baseBranch?: string, limit?: number, branchName?: string) => {
+    return services.git.getCommitHistory(repoPath, baseBranch, limit, branchName);
   });
 
   ipcMain.handle(IPC.GIT_GET_COMMIT_DIFF, async (_, repoPath: string, commitHash: string) => {
