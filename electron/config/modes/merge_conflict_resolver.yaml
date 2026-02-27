@@ -1,18 +1,46 @@
 # Merge Conflict Resolver Mode Configuration
 # ===========================================
 # AI-powered merge conflict resolution using code understanding
+# Two-phase approach: Plan (reasoning LLM) → Execute (fast LLM)
+# Based on: FEATURE_DEVOPS_REBASE_AGENT.md spec
 
 mode:
   id: merge_conflict_resolver
   name: "Merge Conflict Resolver"
   description: "Analyzes and resolves git merge conflicts using AI"
-  version: "1.0.0"
+  version: "2.0.0"
   app: "kanvas"
 
 settings:
   temperature: 0.2  # Low temperature for deterministic, accurate resolutions
   max_tokens: 4096  # Need enough tokens for full file content
-  model: kimi-k2  # Long context, good at code reasoning
+  model: kimi-k2  # Default: reasoning model for complex conflicts
+
+# Model routing for cost-optimized conflict resolution
+# Simple conflicts use fast model, complex use reasoning model
+models:
+  triage: llama-3.1-8b      # Classify conflict type (~800 tok/s on Groq)
+  plan: kimi-k2              # Reasoning model for complex analysis
+  execute_simple: llama-3.1-8b  # Fast model for simple resolutions
+  execute_complex: kimi-k2      # Reasoning model for complex resolutions
+
+# Safety configuration
+safety:
+  confidence_threshold: 0.80  # Abort if any conflict scores below this
+  max_conflicts: 15           # Abort if more than this many conflicts (major divergence)
+  create_backup_tag: true     # Create backup/pre-rebase tag before starting
+  # Files that should NEVER be auto-resolved — always require manual review
+  never_auto_resolve:
+    - "package.json"
+    - "package-lock.json"
+    - "yarn.lock"
+    - "pnpm-lock.yaml"
+    - "docker-compose.yml"
+    - "docker-compose.yaml"
+    - "Dockerfile"
+    - ".env"
+    - ".env.local"
+    - ".env.production"
 
 persona:
   name: "Conflict Resolver"
@@ -22,7 +50,7 @@ persona:
     - "Understands code semantics, not just text"
     - "Preserves intent from both sides when possible"
     - "Prefers merging functionality over choosing one side"
-    - "Documents resolution decisions"
+    - "Documents resolution decisions with confidence scores"
 
 prompts:
   system:
@@ -40,6 +68,40 @@ prompts:
       5. Preserve all imports, exports, and type definitions from both sides
       6. Maintain consistent code style
 
+  # Triage: Classify a conflict quickly to route to the right model
+  triage:
+    system: |
+      You are a conflict classifier. Given a file with conflict markers, quickly
+      determine what TYPE of conflict this is and how complex it is.
+
+      Conflict types:
+      - append_both: Both sides add content to the same location (e.g., changelog entries, new functions). Resolution: concatenate both.
+      - keep_current: HEAD version is clearly better (refactored, newer structure). Resolution: accept HEAD.
+      - keep_incoming: Incoming version is clearly better (bug fix, improvement over hardcoded values). Resolution: accept incoming.
+      - semantic_merge: Both sides modify the same block with different intent. Resolution: understand both intents and merge.
+      - structural_adapt: One side changed the code structure (e.g., externalized SQL), other changed logic. Resolution: keep new structure, transplant logic.
+
+      Respond with ONLY valid JSON. No explanation.
+
+    user_template: |
+      File: {file_path}
+      Language: {language}
+
+      File content with conflict markers:
+      ```{language}
+      {conflicted_content}
+      ```
+
+      Classify this conflict:
+      ```json
+      {
+        "conflictCategory": "append_both|keep_current|keep_incoming|semantic_merge|structural_adapt",
+        "complexity": "simple|moderate|complex",
+        "confidence": 0.95,
+        "rationale": "one sentence explaining classification"
+      }
+      ```
+
   # Phase 1: Analyze the conflict with commit context to build a resolution plan
   analyze_with_context:
     system: |
@@ -56,8 +118,17 @@ prompts:
       Your analysis must determine:
       1. What the current branch was trying to achieve (using commit messages as evidence)
       2. What the incoming branch was trying to achieve
-      3. Whether the changes are compatible, semantically conflicting, or structurally incompatible
-      4. A concrete resolution strategy with specific instructions
+      3. The specific conflict category (see taxonomy below)
+      4. A confidence score (0.0 to 1.0) for the proposed resolution
+      5. A concrete resolution strategy with specific instructions
+      6. Any side-effect files that may also need updating
+
+      Conflict Category Taxonomy:
+      - append_both: Both sides add entries/blocks to the same location
+      - keep_current: HEAD version is clearly better (refactored, newer structure)
+      - keep_incoming: Incoming version is clearly better (bug fix, config upgrade)
+      - semantic_merge: Both modify the same block with different intent
+      - structural_adapt: One side changed structure, other changed logic
 
     user_template: |
       File: {file_path}
@@ -82,10 +153,19 @@ prompts:
         "currentBranchIntent": "what the current branch commits were trying to do to this file",
         "incomingBranchIntent": "what the incoming branch commits were trying to do to this file",
         "conflictType": "compatible|semantic|structural",
+        "conflictCategory": "append_both|keep_current|keep_incoming|semantic_merge|structural_adapt",
         "recommendedStrategy": "merge_both|prefer_current|prefer_incoming|manual",
         "explanation": "why this strategy is correct",
         "complexity": "simple|moderate|complex",
-        "resolutionPlan": "step-by-step instructions for how to merge the two versions"
+        "confidence": 0.90,
+        "resolutionPlan": "step-by-step instructions for how to merge the two versions",
+        "sideEffects": [
+          {
+            "file": "path/to/related/file",
+            "action": "update|rewrite",
+            "description": "what needs to change and why"
+          }
+        ]
       }
       ```
 
@@ -117,7 +197,9 @@ prompts:
       Current branch intent: {analysis_current_intent}
       Incoming branch intent: {analysis_incoming_intent}
       Conflict type: {analysis_conflict_type}
+      Conflict category: {analysis_category}
       Strategy: {analysis_strategy}
+      Confidence: {analysis_confidence}
       Resolution plan: {analysis_plan}
       === END ANALYSIS ===
 

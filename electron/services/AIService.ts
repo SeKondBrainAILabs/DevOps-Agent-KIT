@@ -32,6 +32,7 @@ export interface ModeRequestOptions {
   promptKey: string;
   variables?: Record<string, string>;
   userMessage?: string;
+  modelOverride?: GroqModelKey;  // Override mode's default model (e.g., fast model for simple conflicts)
 }
 
 export class AIService extends BaseService {
@@ -186,8 +187,8 @@ export class AIService extends BaseService {
         throw new Error(`Mode not found: ${options.modeId}`);
       }
 
-      // Get model from mode settings or use default
-      const modelKey = this.resolveModelKey(mode.settings.model);
+      // Get model: explicit override > mode settings > default
+      const modelKey = options.modelOverride || this.resolveModelKey(mode.settings.model);
       const modelId = GROQ_MODELS[modelKey] || this.getModelId();
 
       // Build messages from mode prompts
