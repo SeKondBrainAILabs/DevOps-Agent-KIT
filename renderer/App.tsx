@@ -69,6 +69,7 @@ export default function App(): React.ReactElement {
         currentBranch: data.currentBranch,
         conflictedFiles: data.conflictedFiles,
         errorMessage: data.errorMessage,
+        rawError: data.rawError,
       });
     });
 

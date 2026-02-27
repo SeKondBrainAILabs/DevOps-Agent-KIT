@@ -1936,6 +1936,7 @@ const api = {
       currentBranch: string;
       conflictedFiles: string[];
       errorMessage: string;
+      rawError?: string;
     }) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, data: {
         sessionId: string;
@@ -1944,6 +1945,7 @@ const api = {
         currentBranch: string;
         conflictedFiles: string[];
         errorMessage: string;
+        rawError?: string;
       }) => callback(data);
       ipcRenderer.on(IPC.REBASE_ERROR_DETECTED, handler);
       return () => ipcRenderer.removeListener(IPC.REBASE_ERROR_DETECTED, handler);

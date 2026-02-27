@@ -12,6 +12,7 @@ export interface RebaseErrorDetails {
   currentBranch: string;
   conflictedFiles: string[];
   errorMessage: string;
+  rawError?: string;
 }
 
 export interface ConflictPreview {

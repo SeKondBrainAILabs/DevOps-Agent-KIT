@@ -503,12 +503,14 @@ export class RebaseWatcherService extends BaseService {
           });
         }
 
+        const rawError = rebaseResult.data?.rawError || rebaseResult.message;
         this.debugLog?.error('RebaseWatcher', `Auto-rebase FAILED — merge conflicts detected`, {
           sessionId: config.sessionId,
           repoPath: config.repoPath,
           baseBranch: config.baseBranch,
           currentBranch: config.currentBranch,
           errorMessage: rebaseResult.message,
+          rawError,
           conflictedFiles,
           conflictedFileCount: conflictedFiles.length,
           behindCount: state.behindCount,
@@ -524,6 +526,7 @@ export class RebaseWatcherService extends BaseService {
           currentBranch: config.currentBranch,
           conflictedFiles,
           errorMessage: rebaseResult.message,
+          rawError,
         });
       }
 

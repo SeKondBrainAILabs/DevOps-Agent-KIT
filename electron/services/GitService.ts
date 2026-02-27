@@ -511,7 +511,10 @@ export class GitService extends BaseService {
         };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[GitService] Rebase failed:`, errorMsg);
+        // Capture stderr from execa if available
+        const stderr = (error as { stderr?: string })?.stderr || '';
+        const rawError = stderr ? `${errorMsg}\n\nstderr:\n${stderr}` : errorMsg;
+        console.error(`[GitService] Rebase failed:`, rawError);
 
         // Abort the rebase to clean up
         try {
@@ -521,7 +524,7 @@ export class GitService extends BaseService {
           // Ignore abort errors
         }
 
-        // Provide user-friendly error messages
+        // Provide user-friendly error messages while preserving raw detail
         let userMessage = 'Rebase failed';
         if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
           userMessage = 'Rebase failed due to merge conflicts. Please resolve manually.';
@@ -534,6 +537,7 @@ export class GitService extends BaseService {
         return {
           success: false,
           message: userMessage,
+          rawError,
           commitsAdded: 0,
           beforeHead: beforeHead,
           afterHead: beforeHead, // Same as before since rebase failed
@@ -549,6 +553,7 @@ export class GitService extends BaseService {
   async performRebase(repoPath: string, baseBranch: string): Promise<IpcResult<{
     success: boolean;
     message: string;
+    rawError?: string;
     hadChanges: boolean;
     commitsAdded?: number;
     beforeHead?: string;
@@ -604,6 +609,7 @@ export class GitService extends BaseService {
         return {
           success: false,
           message: rebaseResult.data?.message || 'Rebase failed',
+          rawError: rebaseResult.data?.rawError,
           hadChanges,
         };
       }

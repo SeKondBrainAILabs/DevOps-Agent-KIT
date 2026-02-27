@@ -251,6 +251,12 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
                 <div className="border-t border-border bg-surface-secondary p-3 space-y-2 max-h-48 overflow-y-auto">
                   <div className="text-xs font-mono text-text-secondary space-y-1">
                     <p><span className="text-text-primary font-medium">Error:</span> {errorDetails.errorMessage}</p>
+                    {errorDetails.rawError && errorDetails.rawError !== errorDetails.errorMessage && (
+                      <>
+                        <p className="mt-2"><span className="text-text-primary font-medium">Git Output:</span></p>
+                        <pre className="pl-2 text-red-400 whitespace-pre-wrap break-all bg-black/10 rounded p-2 mt-1">{errorDetails.rawError}</pre>
+                      </>
+                    )}
                     <p><span className="text-text-primary font-medium">Session:</span> {errorDetails.sessionId}</p>
                     <p><span className="text-text-primary font-medium">Repo:</span> {errorDetails.repoPath}</p>
                     <p><span className="text-text-primary font-medium">Current branch:</span> {errorDetails.currentBranch}</p>
@@ -464,6 +470,12 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
                   <div className="border-t border-border bg-surface-secondary p-3 space-y-2 max-h-48 overflow-y-auto">
                     <div className="text-xs font-mono text-text-secondary space-y-1">
                       <p><span className="text-text-primary font-medium">Result:</span> {resultMessage}</p>
+                      {errorDetails.rawError && (
+                        <>
+                          <p className="mt-2"><span className="text-text-primary font-medium">Git Output:</span></p>
+                          <pre className="pl-2 text-red-400 whitespace-pre-wrap break-all bg-black/10 rounded p-2 mt-1">{errorDetails.rawError}</pre>
+                        </>
+                      )}
                       <p><span className="text-text-primary font-medium">Session:</span> {errorDetails.sessionId}</p>
                       <p><span className="text-text-primary font-medium">Repo:</span> {errorDetails.repoPath}</p>
                       <p><span className="text-text-primary font-medium">Branch:</span> {errorDetails.currentBranch} → {errorDetails.baseBranch}</p>
