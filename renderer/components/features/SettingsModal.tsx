@@ -32,7 +32,15 @@ const agentTypes: { value: AgentType; label: string }[] = [
   { value: 'custom', label: 'Custom' },
 ];
 
-type Tab = 'general' | 'credentials' | 'maintenance' | 'debug';
+interface McpStatus {
+  port: number | null;
+  url: string | null;
+  isRunning: boolean;
+  connectionCount: number;
+  startedAt: string | null;
+}
+
+type Tab = 'general' | 'credentials' | 'maintenance' | 'mcp' | 'debug';
 
 export function SettingsModal({ onClose }: SettingsModalProps): React.ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>('general');
@@ -55,6 +63,10 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [logStats, setLogStats] = useState<{ memoryEntries: number; fileSize: number; rotatedFiles: number } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isClearingLogs, setIsClearingLogs] = useState(false);
+
+  // MCP server state
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+  const [mcpCopied, setMcpCopied] = useState(false);
 
   // Version management state
   const [selectedRepoPath, setSelectedRepoPath] = useState<string>('');
@@ -392,6 +404,22 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
             }`}
           >
             Maintenance
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('mcp');
+              // Load MCP status when switching to tab
+              window.api?.mcp?.status?.().then((result) => {
+                if (result?.success && result.data) setMcpStatus(result.data);
+              });
+            }}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === 'mcp'
+                ? 'text-accent border-b-2 border-accent'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            MCP
           </button>
           <button
             onClick={() => {
@@ -831,6 +859,156 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                   className="btn-secondary w-full"
                 >
                   Reload App
+                </button>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'mcp' && (
+            <>
+              {/* MCP Server Status */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-200">MCP Server</h3>
+                <p className="text-xs text-gray-400">
+                  The MCP server lets coding agents (Claude Code, Cursor, Cline) commit, lock files, and interact with Kanvas via MCP protocol tools.
+                </p>
+
+                <div className="bg-surface-tertiary rounded-lg p-3 space-y-2">
+                  {/* Status row */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Status</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${mcpStatus?.isRunning ? 'bg-green-500' : 'bg-red-500'}`} />
+                      <span className={`text-sm font-medium ${mcpStatus?.isRunning ? 'text-green-400' : 'text-red-400'}`}>
+                        {mcpStatus?.isRunning ? 'Running' : 'Stopped'}
+                      </span>
+                    </span>
+                  </div>
+
+                  {/* Port */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Port</span>
+                    <span className="text-sm font-mono text-gray-200">
+                      {mcpStatus?.port || '—'}
+                    </span>
+                  </div>
+
+                  {/* Connections */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Active Connections</span>
+                    <span className="text-sm font-mono text-gray-200">
+                      {mcpStatus?.connectionCount ?? 0}
+                    </span>
+                  </div>
+
+                  {/* Uptime */}
+                  {mcpStatus?.startedAt && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-300">Started</span>
+                      <span className="text-sm text-gray-200">
+                        {new Date(mcpStatus.startedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* URL + Copy */}
+                {mcpStatus?.url && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-500 uppercase tracking-wide">Server URL</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={mcpStatus.url}
+                        readOnly
+                        className="input flex-1 font-mono text-sm"
+                      />
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(mcpStatus.url!);
+                          setMcpCopied(true);
+                          setTimeout(() => setMcpCopied(false), 2000);
+                        }}
+                        className="btn-secondary px-3"
+                        title="Copy URL"
+                      >
+                        {mcpCopied ? (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-400">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-border my-4" />
+
+              {/* Available Tools */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-200">Available MCP Tools</h3>
+                <p className="text-xs text-gray-400">
+                  These tools are exposed to connected agents via the MCP protocol.
+                </p>
+                <div className="bg-surface-tertiary rounded-lg divide-y divide-border text-sm">
+                  {[
+                    { name: 'kanvas_commit', desc: 'Stage, commit, record, and optionally push' },
+                    { name: 'kanvas_commit_all', desc: 'Commit across all repos in multi-repo session' },
+                    { name: 'kanvas_lock_file', desc: 'Declare file edit intent (conflict detection)' },
+                    { name: 'kanvas_unlock_file', desc: 'Release file locks' },
+                    { name: 'kanvas_get_session_info', desc: 'Session config and metadata' },
+                    { name: 'kanvas_log_activity', desc: 'Log to Kanvas dashboard timeline' },
+                    { name: 'kanvas_get_commit_history', desc: 'Recent commits for session branch' },
+                    { name: 'kanvas_request_review', desc: 'Signal work ready for review' },
+                  ].map((tool) => (
+                    <div key={tool.name} className="px-3 py-2 flex items-center gap-3">
+                      <span className="font-mono text-accent text-xs">{tool.name}</span>
+                      <span className="text-gray-400 text-xs">{tool.desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t border-border my-4" />
+
+              {/* .mcp.json info */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-200">Agent Configuration</h3>
+                <p className="text-xs text-gray-400">
+                  When you create an agent instance, Kanvas writes a <code className="font-mono text-accent">.mcp.json</code> file in the worktree so agents auto-discover this server.
+                </p>
+                {mcpStatus?.url && (
+                  <div className="bg-surface-tertiary rounded-lg p-3">
+                    <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto">
+{JSON.stringify({
+  mcpServers: {
+    kanvas: {
+      type: 'streamable-http',
+      url: mcpStatus.url,
+    },
+  },
+}, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Refresh button */}
+                <button
+                  onClick={() => {
+                    window.api?.mcp?.status?.().then((result) => {
+                      if (result?.success && result.data) setMcpStatus(result.data);
+                    });
+                    setMessage({ type: 'success', text: 'MCP status refreshed' });
+                  }}
+                  className="btn-secondary w-full"
+                >
+                  Refresh Status
                 </button>
               </div>
             </>
