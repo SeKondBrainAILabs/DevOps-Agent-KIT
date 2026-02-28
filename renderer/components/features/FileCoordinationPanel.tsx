@@ -284,11 +284,11 @@ export function FileCoordinationButton({
     <>
       <button
         onClick={() => setIsOpen(true)}
-        className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
-          bg-surface-secondary text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors"
+        className="relative flex-1 py-2 px-2 rounded-xl border border-border text-text-primary text-[13px] leading-5
+          hover:bg-surface-secondary transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap"
         title="File Coordination"
       >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
             d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
         </svg>

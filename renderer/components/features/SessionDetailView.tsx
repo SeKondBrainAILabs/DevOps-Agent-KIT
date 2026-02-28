@@ -589,7 +589,7 @@ function PromptTab({
       <div className="flex-1 min-h-0">
         <h3 className="text-sm font-medium text-text-secondary mb-2">Prompt for Agent</h3>
         <div className="h-full bg-surface-secondary rounded-xl border border-border overflow-auto">
-          <pre className="p-4 text-sm text-text-primary whitespace-pre-wrap font-mono">
+          <pre className="p-4 text-sm text-text-primary whitespace-pre-wrap font-mono select-text cursor-text">
             {prompt}
           </pre>
         </div>

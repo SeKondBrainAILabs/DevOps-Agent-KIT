@@ -42,7 +42,7 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   // Sidebar
   sidebarCollapsed: false,
-  sidebarWidth: 256,
+  sidebarWidth: 300,
   sidebarTab: 'agents',
 
   // Main view

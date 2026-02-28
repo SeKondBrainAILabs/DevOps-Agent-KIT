@@ -20,6 +20,7 @@ interface AgentState {
   selectedAgentId: string | null;
   selectedAgentType: string | null;  // For grouped agent view
   selectedSessionId: string | null;  // For session detail view
+  viewedCommitCounts: Map<string, number>;  // sessionId → commitCount at last view
   isInitialized: boolean;
 
   // Actions
@@ -49,6 +50,7 @@ export const useAgentStore = create<AgentState>((set) => ({
   selectedAgentId: null,
   selectedAgentType: null,
   selectedSessionId: null,
+  viewedCommitCounts: new Map(),
   isInitialized: false,
 
   setAgents: (agents) =>
@@ -167,7 +169,17 @@ export const useAgentStore = create<AgentState>((set) => ({
     set({ selectedAgentType: agentType, selectedSessionId: null }),
 
   setSelectedSession: (sessionId) =>
-    set({ selectedSessionId: sessionId }),
+    set((state) => {
+      if (sessionId) {
+        const session = state.reportedSessions.get(sessionId);
+        if (session) {
+          const newViewed = new Map(state.viewedCommitCounts);
+          newViewed.set(sessionId, session.commitCount || 0);
+          return { selectedSessionId: sessionId, viewedCommitCounts: newViewed };
+        }
+      }
+      return { selectedSessionId: sessionId };
+    }),
 
   setInitialized: (initialized) =>
     set({ isInitialized: initialized }),

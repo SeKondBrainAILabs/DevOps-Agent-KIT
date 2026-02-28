@@ -3,31 +3,15 @@
  * Displays all agents reporting into Kanvas
  * Kanvas is a DASHBOARD - agents report INTO it
  *
- * Groups agents by type (Claude, Cursor, etc.) to show a consolidated view
- * Expands to show sessions when an agent type is selected
+ * Collapsible tree: Repo → Agent Type → Session
+ * Compact rows with columnar session info
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { AgentCardSkeleton } from './AgentCard';
 import { useAgentStore } from '../../store/agentStore';
-import type { AgentInfo, SessionReport } from '../../../shared/agent-protocol';
+import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentType } from '../../../shared/types';
-
-interface RegisteredAgent extends AgentInfo {
-  isAlive: boolean;
-  sessions: string[];
-  lastHeartbeat?: string;
-  repoPath?: string;
-}
-
-interface AgentTypeGroup {
-  agentType: AgentType;
-  agents: RegisteredAgent[];
-  totalSessions: number;
-  aliveCount: number;
-  latestHeartbeat?: string;
-  repos: string[];
-}
 
 const AGENT_TYPE_COLORS: Record<string, string> = {
   claude: 'bg-[#CC785C]',
@@ -39,14 +23,44 @@ const AGENT_TYPE_COLORS: Record<string, string> = {
   custom: 'bg-gray-400',
 };
 
-const AGENT_TYPE_ICONS: Record<string, string> = {
-  claude: 'C',
-  cursor: 'Cu',
-  copilot: 'Co',
-  cline: 'Cl',
-  aider: 'Ai',
-  warp: 'W',
-  custom: '?',
+const AGENT_TYPE_ICONS: Record<string, React.ReactElement> = {
+  claude: (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M4.709 15.955l4.397-10.985c.2-.5.349-.852.746-.852.396 0 .546.352.746.852l4.397 10.985c.13.325.2.558.2.703 0 .396-.332.614-.83.614-.382 0-.614-.145-.745-.527l-1.107-2.834H6.39l-1.107 2.834c-.13.382-.363.527-.745.527-.498 0-.83-.218-.83-.614 0-.145.07-.378.2-.703zm3.065-4.03h4.354L9.952 5.798l-2.178 6.128z" />
+    </svg>
+  ),
+  cursor: (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M8 12h8M12 8v8" strokeLinecap="round" />
+    </svg>
+  ),
+  copilot: (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+    </svg>
+  ),
+  cline: (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+    </svg>
+  ),
+  aider: (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M8 9h8M8 13h5" />
+    </svg>
+  ),
+  warp: (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 17l6-6-6-6M12 19h8" />
+    </svg>
+  ),
+  custom: (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+    </svg>
+  ),
 };
 
 const AGENT_TYPE_NAMES: Record<string, string> = {
@@ -59,73 +73,73 @@ const AGENT_TYPE_NAMES: Record<string, string> = {
   custom: 'Custom Agent',
 };
 
+/* ── Data structures ── */
+
+interface AgentBucket {
+  agentType: AgentType;
+  sessions: SessionReport[];
+  aliveCount: number;
+}
+
+interface RepoGroup {
+  repoName: string;
+  repoPath: string;
+  agents: AgentBucket[];
+  totalSessions: number;
+}
+
+/* ── Main component ── */
+
 export function AgentList(): React.ReactElement {
-  const agentsMap = useAgentStore((state) => state.agents);
-  const selectedAgentType = useAgentStore((state) => state.selectedAgentType);
-  const setSelectedAgentType = useAgentStore((state) => state.setSelectedAgentType);
-  const selectedSessionId = useAgentStore((state) => state.selectedSessionId);
-  const setSelectedSession = useAgentStore((state) => state.setSelectedSession);
   const isInitialized = useAgentStore((state) => state.isInitialized);
   const reportedSessions = useAgentStore((state) => state.reportedSessions);
+  const selectedSessionId = useAgentStore((state) => state.selectedSessionId);
+  const setSelectedSession = useAgentStore((state) => state.setSelectedSession);
 
-  const agents = useMemo(() => Array.from(agentsMap.values()), [agentsMap]);
-
-  // Get sessions for selected agent type
-  const sessionsForType = useMemo(
-    () =>
-      selectedAgentType
-        ? Array.from(reportedSessions.values()).filter(
-            (session) => session.agentType === selectedAgentType
-          )
-        : [],
-    [reportedSessions, selectedAgentType]
-  );
-
-  // Group by agent type - derive from sessions (the accurate data source)
-  const agentGroups = useMemo(() => {
-    const groups = new Map<AgentType, AgentTypeGroup>();
+  // Build tree: Repo → AgentType → Sessions
+  const repoGroups = useMemo(() => {
+    const repos = new Map<string, RepoGroup>();
     const sessions = Array.from(reportedSessions.values());
 
-    // Build groups from sessions (source of truth)
     for (const session of sessions) {
-      const agentType = session.agentType as AgentType;
-      if (!agentType) continue;
-
-      const existing = groups.get(agentType);
-      const repoPath = session.repoPath || session.worktreePath;
-      const repoName = repoPath?.split('/').pop() || '';
+      const agentType = (session.agentType || 'custom') as AgentType;
+      const repoPath = session.repoPath || session.worktreePath || 'Unknown';
+      const repoName = repoPath.split('/').pop() || repoPath;
       const isActive = session.status === 'active';
 
-      if (existing) {
-        existing.totalSessions++;
-        if (isActive) existing.aliveCount++;
-        if (repoName && !existing.repos.includes(repoName)) {
-          existing.repos.push(repoName);
-        }
-        if (session.updated && (!existing.latestHeartbeat || session.updated > existing.latestHeartbeat)) {
-          existing.latestHeartbeat = session.updated;
-        }
-      } else {
-        groups.set(agentType, {
-          agentType,
-          agents: [], // Not used anymore, kept for type compatibility
-          totalSessions: 1,
-          aliveCount: isActive ? 1 : 0,
-          latestHeartbeat: session.updated,
-          repos: repoName ? [repoName] : [],
-        });
+      // Find or create repo
+      let repo = repos.get(repoPath);
+      if (!repo) {
+        repo = { repoName, repoPath, agents: [], totalSessions: 0 };
+        repos.set(repoPath, repo);
       }
+      repo.totalSessions++;
+
+      // Find or create agent bucket within repo
+      let agent = repo.agents.find((a) => a.agentType === agentType);
+      if (!agent) {
+        agent = { agentType, sessions: [], aliveCount: 0 };
+        repo.agents.push(agent);
+      }
+      agent.sessions.push(session);
+      if (isActive) agent.aliveCount++;
     }
 
-    // Sort by active count, then by name
-    return Array.from(groups.values())
-      .filter(group => group.totalSessions > 0)
-      .sort((a, b) => {
-        if (a.aliveCount !== b.aliveCount) return b.aliveCount - a.aliveCount;
-        return (AGENT_TYPE_NAMES[a.agentType] || a.agentType).localeCompare(
-          AGENT_TYPE_NAMES[b.agentType] || b.agentType
-        );
-      });
+    // Sort: sessions newest-first, agents by count desc, repos by total desc
+    for (const repo of repos.values()) {
+      for (const agent of repo.agents) {
+        agent.sessions.sort((a, b) => {
+          const ta = a.updated || a.created || '';
+          const tb = b.updated || b.created || '';
+          return tb.localeCompare(ta);
+        });
+      }
+      repo.agents.sort((a, b) => b.sessions.length - a.sessions.length);
+    }
+
+    return Array.from(repos.values()).sort(
+      (a, b) => b.totalSessions - a.totalSessions
+    );
   }, [reportedSessions]);
 
   if (!isInitialized) {
@@ -133,38 +147,23 @@ export function AgentList(): React.ReactElement {
       <div className="space-y-3">
         <AgentCardSkeleton />
         <AgentCardSkeleton />
-        <AgentCardSkeleton />
       </div>
     );
   }
 
-  const totalSessions = agentGroups.reduce((sum, g) => sum + g.totalSessions, 0);
+  const totalSessions = repoGroups.reduce((sum, r) => sum + r.totalSessions, 0);
 
-  // Show empty state if no sessions
-  if (reportedSessions.size === 0 || agentGroups.length === 0) {
+  if (reportedSessions.size === 0 || repoGroups.length === 0) {
     return (
-      <div className="text-center py-12">
-        <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-surface-tertiary flex items-center justify-center">
-          <svg
-            className="w-8 h-8 text-text-secondary"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-            />
+      <div className="text-center py-10">
+        <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-surface-tertiary flex items-center justify-center">
+          <svg className="w-6 h-6 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
           </svg>
         </div>
-        <h3 className="text-lg font-medium text-text-primary mb-2">
-          No Agents Connected
-        </h3>
-        <p className="text-sm text-text-secondary max-w-xs mx-auto">
-          Start a DevOps Agent session to see it appear here. Agents report their activity to Kanvas.
-        </p>
+        <h3 className="text-sm font-medium text-text-primary mb-1">No Agents Connected</h3>
+        <p className="text-xs text-text-secondary">Start a session to see it here</p>
       </div>
     );
   }
@@ -172,28 +171,25 @@ export function AgentList(): React.ReactElement {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-text-primary">Agents</span>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-kanvas-blue/10 text-kanvas-blue">
-            {totalSessions} sessions
-          </span>
-        </div>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">
+          Repositories
+        </span>
+        <span className="text-xs px-1.5 py-0.5 rounded-full bg-kanvas-blue/10 text-kanvas-blue">
+          {totalSessions} sessions
+        </span>
       </div>
 
-      {/* Agent type groups */}
-      <div className="space-y-2">
-        {agentGroups.map((group) => (
-          <AgentTypeRow
-            key={group.agentType}
-            group={group}
-            isExpanded={selectedAgentType === group.agentType}
-            sessions={selectedAgentType === group.agentType ? sessionsForType : []}
+      {/* Repo tree */}
+      <div className="space-y-1">
+        {repoGroups.map((repo) => (
+          <RepoNode
+            key={repo.repoPath}
+            repo={repo}
             selectedSessionId={selectedSessionId}
-            onToggle={() => setSelectedAgentType(
-              selectedAgentType === group.agentType ? null : group.agentType
-            )}
-            onSelectSession={setSelectedSession}
+            onSelectSession={(id) =>
+              setSelectedSession(selectedSessionId === id ? null : id)
+            }
           />
         ))}
       </div>
@@ -201,196 +197,221 @@ export function AgentList(): React.ReactElement {
   );
 }
 
-interface AgentTypeRowProps {
-  group: AgentTypeGroup;
-  isExpanded: boolean;
-  sessions: SessionReport[];
-  selectedSessionId: string | null;
-  onToggle: () => void;
-  onSelectSession: (sessionId: string | null) => void;
-}
+/* ── Repo Node (top level) ── */
 
-function AgentTypeRow({
-  group,
-  isExpanded,
-  sessions,
+function RepoNode({
+  repo,
   selectedSessionId,
-  onToggle,
-  onSelectSession
-}: AgentTypeRowProps): React.ReactElement {
-  const typeColor = AGENT_TYPE_COLORS[group.agentType] || AGENT_TYPE_COLORS.custom;
-  const typeIcon = AGENT_TYPE_ICONS[group.agentType] || AGENT_TYPE_ICONS.custom;
-  const typeName = AGENT_TYPE_NAMES[group.agentType] || group.agentType;
-
-  const timeAgo = group.latestHeartbeat
-    ? getTimeAgo(new Date(group.latestHeartbeat))
-    : null;
+  onSelectSession,
+}: {
+  repo: RepoGroup;
+  selectedSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
+}): React.ReactElement {
+  const [expanded, setExpanded] = useState(true);
 
   return (
-    <div className="space-y-1">
-      {/* Agent Type Header */}
-      <div
-        onClick={onToggle}
-        className={`
-          relative p-3 rounded-xl border transition-all cursor-pointer
-          ${isExpanded
-            ? 'border-kanvas-blue bg-surface-secondary shadow-kanvas'
-            : 'border-border bg-surface hover:border-kanvas-blue/50 hover:shadow-card-hover'
-          }
-        `}
+    <div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-1.5 py-1.5 rounded-lg
+                   hover:bg-surface-secondary transition-colors"
       >
-        <div className="flex items-center gap-3">
-          {/* Expand/Collapse chevron */}
-          <svg
-            className={`w-4 h-4 text-text-secondary transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
+        <Chevron open={expanded} />
+        <svg className="w-4 h-4 text-kanvas-blue flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+            d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+        </svg>
+        <span className="text-[13px] font-medium text-text-primary truncate flex-1 text-left">
+          {repo.repoName}
+        </span>
+        {repo.totalSessions > 1 && (
+          <span className="text-[11px] text-text-secondary flex-shrink-0">
+            {repo.totalSessions}
+          </span>
+        )}
+      </button>
 
-          {/* Agent type badge */}
-          <div className={`
-            w-10 h-10 rounded-lg ${typeColor}
-            flex items-center justify-center flex-shrink-0
-            text-white font-bold text-sm
-          `}>
-            {typeIcon}
-          </div>
-
-          {/* Info */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="font-semibold text-text-primary truncate">
-                {typeName}
-              </h3>
-              <span className={`
-                w-2 h-2 rounded-full flex-shrink-0
-                ${group.aliveCount > 0 ? 'bg-green-500 animate-pulse-slow' : 'bg-gray-400'}
-              `} />
-            </div>
-            <div className="flex items-center gap-3 mt-0.5">
-              <span className="text-sm text-text-secondary">
-                {group.totalSessions} {group.totalSessions === 1 ? 'session' : 'sessions'}
-              </span>
-              {group.repos.length > 0 && (
-                <span className="text-xs text-text-secondary truncate">
-                  {group.repos.length === 1
-                    ? group.repos[0].split('/').pop()
-                    : `${group.repos.length} repos`}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Activity indicator */}
-          <div className="flex flex-col items-end text-xs text-text-secondary">
-            {group.aliveCount > 0 && (
-              <span className="text-green-600">
-                {group.aliveCount} active
-              </span>
-            )}
-            {timeAgo && (
-              <span>{timeAgo}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Expanded Sessions List */}
-      {isExpanded && sessions.length > 0 && (
-        <div className="ml-6 space-y-1">
-          {sessions.map((session) => (
-            <SessionRow
-              key={session.sessionId}
-              session={session}
-              isSelected={selectedSessionId === session.sessionId}
-              onClick={() => onSelectSession(
-                selectedSessionId === session.sessionId ? null : session.sessionId
-              )}
+      {expanded && (
+        <div className="ml-4 border-l border-border/50 pl-2 mt-0.5 space-y-0.5">
+          {repo.agents.length === 1 ? (
+            /* Single agent — skip the agent row, show sessions directly */
+            <SessionList
+              agent={repo.agents[0]}
+              selectedSessionId={selectedSessionId}
+              onSelectSession={onSelectSession}
             />
-          ))}
+          ) : (
+            repo.agents.map((agent) => (
+              <AgentNode
+                key={agent.agentType}
+                agent={agent}
+                selectedSessionId={selectedSessionId}
+                onSelectSession={onSelectSession}
+              />
+            ))
+          )}
         </div>
       )}
     </div>
   );
 }
 
-interface SessionRowProps {
-  session: SessionReport;
-  isSelected: boolean;
-  onClick: () => void;
-}
+/* ── Agent Node (middle level) ── */
 
-function SessionRow({ session, isSelected, onClick }: SessionRowProps): React.ReactElement {
-  const statusColors = {
-    active: 'bg-green-500',
-    idle: 'bg-yellow-500',
-    error: 'bg-red-500',
-    completed: 'bg-gray-400',
-  };
-
-  const repoName = session.repoPath?.split('/').pop() || 'Unknown';
+function AgentNode({
+  agent,
+  selectedSessionId,
+  onSelectSession,
+}: {
+  agent: AgentBucket;
+  selectedSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
+}): React.ReactElement {
+  const [expanded, setExpanded] = useState(true);
+  const typeColor = AGENT_TYPE_COLORS[agent.agentType] || AGENT_TYPE_COLORS.custom;
+  const typeIcon = AGENT_TYPE_ICONS[agent.agentType] || AGENT_TYPE_ICONS.custom;
+  const typeName = AGENT_TYPE_NAMES[agent.agentType] || agent.agentType;
 
   return (
-    <div
+    <div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-1.5 px-1 py-1 rounded-md
+                   hover:bg-surface-secondary transition-colors"
+      >
+        <Chevron open={expanded} size="sm" />
+        <span className={`w-6 h-6 rounded-md ${typeColor} flex items-center justify-center
+                          text-white flex-shrink-0`}>
+          {typeIcon}
+        </span>
+        <span className="text-xs font-medium text-text-primary truncate flex-1 text-left">
+          {typeName}
+        </span>
+        <span className="flex items-center gap-1 flex-shrink-0">
+          {agent.aliveCount > 0 && (
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+          )}
+          {agent.sessions.length > 1 && (
+            <span className="text-[11px] text-text-secondary">{agent.sessions.length}</span>
+          )}
+        </span>
+      </button>
+
+      {expanded && (
+        <SessionList
+          agent={agent}
+          selectedSessionId={selectedSessionId}
+          onSelectSession={onSelectSession}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── Session List (shared between single-agent shortcut and agent node) ── */
+
+function SessionList({
+  agent,
+  selectedSessionId,
+  onSelectSession,
+}: {
+  agent: AgentBucket;
+  selectedSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
+}): React.ReactElement {
+  return (
+    <div className="ml-3 border-l border-border/40 pl-1.5 mt-0.5 space-y-px">
+      {agent.sessions.map((session, idx) => (
+        <SessionRow
+          key={session.sessionId}
+          session={session}
+          index={idx + 1}
+          isSelected={selectedSessionId === session.sessionId}
+          onClick={() => onSelectSession(session.sessionId)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ── Session Row (leaf) ── */
+
+const STATUS_COLORS: Record<string, string> = {
+  active: 'bg-green-500',
+  idle: 'bg-yellow-500',
+  error: 'bg-red-500',
+  completed: 'bg-gray-400',
+};
+
+function SessionRow({
+  session,
+  index,
+  isSelected,
+  onClick,
+}: {
+  session: SessionReport;
+  index: number;
+  isSelected: boolean;
+  onClick: () => void;
+}): React.ReactElement {
+  const statusColor = STATUS_COLORS[session.status] || 'bg-gray-400';
+  const branch = session.branchName || '';
+  // Extract trailing suffix like "-mr4c", "-l63a", "-UXUPG" from branch name
+  const suffix = branch.match(/-([a-zA-Z0-9]{3,5})$/)?.[1] || branch.slice(-5);
+  const timeAgo = session.updated ? getTimeAgo(new Date(session.updated)) : null;
+
+  // New commits since last viewed
+  const viewedCount = useAgentStore((state) => state.viewedCommitCounts.get(session.sessionId));
+  const totalCommits = session.commitCount || 0;
+  const newCommits = viewedCount !== undefined ? totalCommits - viewedCount : totalCommits;
+
+  return (
+    <button
       onClick={onClick}
+      title={`${branch}\n${session.task || ''}`}
       className={`
-        p-3 rounded-lg border transition-all cursor-pointer
+        w-full flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors
         ${isSelected
-          ? 'border-kanvas-blue bg-kanvas-blue/10'
-          : 'border-border/50 bg-surface-secondary hover:border-kanvas-blue/30'
+          ? 'bg-kanvas-blue/10 text-kanvas-blue'
+          : 'hover:bg-surface-secondary text-text-primary'
         }
       `}
     >
-      <div className="flex items-center gap-3">
-        {/* Status dot */}
-        <span className={`
-          w-2 h-2 rounded-full flex-shrink-0
-          ${statusColors[session.status] || 'bg-gray-400'}
-        `} />
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusColor}`} />
+      <span className="text-xs truncate flex-1">{index}-{suffix}</span>
+      {newCommits > 0 && (
+        <span className="text-[10px] font-medium text-green-600 flex-shrink-0">
+          +{newCommits}
+        </span>
+      )}
+      {timeAgo && (
+        <span className="text-[10px] text-text-secondary flex-shrink-0">{timeAgo}</span>
+      )}
+    </button>
+  );
+}
 
-        {/* Session info */}
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-text-primary truncate">
-            {session.task || session.branchName || 'Untitled Session'}
-          </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-xs text-text-secondary truncate">
-              {repoName}
-            </span>
-            <span className="text-xs text-text-secondary">
-              {session.branchName}
-            </span>
-          </div>
-        </div>
+/* ── Shared components ── */
 
-        {/* Commit count badge */}
-        {session.commitCount > 0 && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-surface-tertiary text-text-secondary">
-            {session.commitCount} commits
-          </span>
-        )}
-
-        {/* Arrow indicator for selected */}
-        {isSelected && (
-          <svg className="w-4 h-4 text-kanvas-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-        )}
-      </div>
-    </div>
+function Chevron({ open, size = 'md' }: { open: boolean; size?: 'sm' | 'md' }): React.ReactElement {
+  const px = size === 'sm' ? 'w-3 h-3' : 'w-3.5 h-3.5';
+  return (
+    <svg
+      className={`${px} text-text-secondary transition-transform flex-shrink-0 ${open ? 'rotate-90' : ''}`}
+      fill="none" viewBox="0 0 24 24" stroke="currentColor"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+    </svg>
   );
 }
 
 function getTimeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds < 60) return 'now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
 }
 
 /**
@@ -404,7 +425,6 @@ export function AgentListCompact(): React.ReactElement {
   const agents = useMemo(() => Array.from(agentsMap.values()), [agentsMap]);
   const aliveAgents = agents.filter((a) => a.isAlive);
 
-  // Group by type for compact view
   const typeGroups = useMemo(() => {
     const groups = new Map<string, number>();
     for (const agent of aliveAgents) {
@@ -432,9 +452,7 @@ export function AgentListCompact(): React.ReactElement {
         >
           <span className="w-2 h-2 rounded-full bg-green-500" />
           {AGENT_TYPE_NAMES[agentType] || agentType}
-          <span className="text-xs opacity-70">
-            ({count})
-          </span>
+          <span className="text-xs opacity-70">({count})</span>
         </button>
       ))}
       {typeGroups.length === 0 && (
