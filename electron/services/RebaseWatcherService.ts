@@ -7,6 +7,7 @@
 import { BaseService } from './BaseService';
 import { IPC } from '../../shared/ipc-channels';
 import type { GitService } from './GitService';
+import type { MergeConflictService } from './MergeConflictService';
 import type { WorkerBridgeService } from './WorkerBridgeService';
 import type { DebugLogService } from './DebugLogService';
 import type { IpcResult, RebaseFrequency } from '../../shared/types';
@@ -74,6 +75,7 @@ const DEFAULT_POLL_INTERVAL_MS = 60 * 1000;
 
 export class RebaseWatcherService extends BaseService {
   private gitService: GitService;
+  private mergeConflictService: MergeConflictService | null = null;
   private watchedSessions: Map<string, WatchState> = new Map();
   private workerBridge: WorkerBridgeService | null = null;
   private debugLog: DebugLogService | null = null;
@@ -81,6 +83,14 @@ export class RebaseWatcherService extends BaseService {
   constructor(gitService: GitService) {
     super();
     this.gitService = gitService;
+  }
+
+  /**
+   * Set merge conflict service for AI-powered conflict resolution during rebase
+   */
+  setMergeConflictService(service: MergeConflictService): void {
+    this.mergeConflictService = service;
+    console.log('[RebaseWatcher] MergeConflictService configured — AI conflict resolution enabled');
   }
 
   /**
@@ -125,7 +135,7 @@ export class RebaseWatcherService extends BaseService {
     const hasNewCommits = behind > 0 && behind > previousBehind;
     if (hasNewCommits) {
       console.log(`[RebaseWatcher] Worker detected ${behind} commits behind for ${sessionId}`);
-      this.emitToRenderer(IPC.REBASE_REMOTE_CHANGES, {
+      this.emitToRenderer(IPC.REBASE_REMOTE_CHANGES_DETECTED, {
         sessionId,
         repoPath: state.config.repoPath,
         baseBranch: state.config.baseBranch,
@@ -459,12 +469,28 @@ export class RebaseWatcherService extends BaseService {
     console.log(`[RebaseWatcher] Starting auto-rebase for ${config.sessionId} onto ${config.baseBranch}`);
 
     try {
-      const result = await this.gitService.performRebase(config.repoPath, config.baseBranch);
+      // Use AI-powered rebase if MergeConflictService is available
+      let result: IpcResult<{
+        success: boolean;
+        message: string;
+        hadChanges?: boolean;
+        rawError?: string;
+        conflictsResolved?: number;
+        conflictsFailed?: number;
+      }>;
+
+      if (this.mergeConflictService) {
+        console.log(`[RebaseWatcher] Using AI-powered rebase for ${config.sessionId}`);
+        result = await this.gitService.performRebaseWithAI(config.repoPath, config.baseBranch, this.mergeConflictService);
+      } else {
+        result = await this.gitService.performRebase(config.repoPath, config.baseBranch);
+      }
 
       const rebaseResult = {
         success: result.success && result.data?.success || false,
         message: result.data?.message || result.error?.message || 'Unknown error',
         timestamp: new Date(),
+        data: result.data,
       };
 
       state.lastRebaseResult = rebaseResult;
@@ -481,29 +507,26 @@ export class RebaseWatcherService extends BaseService {
       // Update status after rebase
       if (rebaseResult.success) {
         state.behindCount = 0;
-        this.debugLog?.info('RebaseWatcher', `Auto-rebase successful`, { sessionId: config.sessionId });
-        console.log(`[RebaseWatcher] Auto-rebase successful for ${config.sessionId}`);
+        const aiInfo = result.data?.conflictsResolved
+          ? ` (AI resolved ${result.data.conflictsResolved} conflicts)`
+          : '';
+        this.debugLog?.info('RebaseWatcher', `Auto-rebase successful${aiInfo}`, { sessionId: config.sessionId });
+        console.log(`[RebaseWatcher] Auto-rebase successful for ${config.sessionId}${aiInfo}`);
       } else {
         // Pause watching on conflict to prevent repeated failures
         state.isPaused = true;
 
-        // Emit rebase error event for UI dialog
-        // Try to get list of conflicted files
+        // Parse conflict files from the raw error output (git rebase --abort cleans up
+        // the working tree, so `git diff --diff-filter=U` returns nothing)
+        const rawError = result.data?.rawError || rebaseResult.message;
         let conflictedFiles: string[] = [];
-        try {
-          const { exec } = await import('child_process');
-          const { promisify } = await import('util');
-          const execAsync = promisify(exec);
-          const conflictResult = await execAsync('git diff --name-only --diff-filter=U', { cwd: config.repoPath });
-          conflictedFiles = conflictResult.stdout.trim().split('\n').filter(Boolean);
-        } catch (conflictListErr) {
-          this.debugLog?.warn('RebaseWatcher', `Failed to get conflicted file list`, {
-            sessionId: config.sessionId,
-            error: conflictListErr instanceof Error ? conflictListErr.message : String(conflictListErr),
-          });
+        if (rawError) {
+          const conflictMatches = rawError.matchAll(/CONFLICT.*?:\s+Merge conflict in (.+)/g);
+          for (const match of conflictMatches) {
+            if (match[1]) conflictedFiles.push(match[1].trim());
+          }
         }
 
-        const rawError = rebaseResult.data?.rawError || rebaseResult.message;
         this.debugLog?.error('RebaseWatcher', `Auto-rebase FAILED — merge conflicts detected`, {
           sessionId: config.sessionId,
           repoPath: config.repoPath,
@@ -517,7 +540,7 @@ export class RebaseWatcherService extends BaseService {
           aheadCount: state.aheadCount,
           watcherPaused: true,
         });
-        console.log(`[RebaseWatcher] Auto-rebase failed for ${config.sessionId}, pausing watcher`);
+        console.log(`[RebaseWatcher] Auto-rebase failed for ${config.sessionId}, pausing watcher. Conflicts in: ${conflictedFiles.join(', ') || 'unknown'}`);
 
         this.emitToRenderer(IPC.REBASE_ERROR_DETECTED, {
           sessionId: config.sessionId,
