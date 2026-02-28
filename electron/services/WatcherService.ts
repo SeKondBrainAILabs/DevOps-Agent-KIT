@@ -561,17 +561,48 @@ export class WatcherService extends BaseService {
         await this.gitService.push(sessionId, instance.repoName);
 
         // Post-commit rebase: fetch + rebase if behind remote to stay in sync
-        if (this.rebaseWatcher) {
-          try {
-            const rebaseResult = await this.rebaseWatcher.forceCheck(sessionId);
-            if (rebaseResult.success && rebaseResult.data?.hasChanges) {
-              console.log(`[WatcherService] Post-commit rebase: synced with remote (was ${rebaseResult.data.behindCount} commits behind)`);
-              this.terminalLogService?.log('info', `Post-commit rebase: synced with remote`, { sessionId, source: 'Watcher' });
+        // Try rebase watcher first (for sessions with on-demand rebase), fall back to direct rebase
+        try {
+          let rebased = false;
+          if (this.rebaseWatcher) {
+            try {
+              const rebaseResult = await this.rebaseWatcher.forceCheck(sessionId);
+              if (rebaseResult.success && rebaseResult.data?.hasChanges) {
+                console.log(`[WatcherService] Post-commit rebase: synced with remote (was ${rebaseResult.data.behindCount} commits behind)`);
+                this.terminalLogService?.log('info', `Post-commit rebase: synced with remote`, { sessionId, source: 'Watcher' });
+                rebased = true;
+              } else if (rebaseResult.success) {
+                rebased = true; // Checked successfully, just nothing to rebase
+              }
+            } catch {
+              // Session not in rebase watcher — fall through to direct rebase
             }
-          } catch (rebaseError) {
-            // Non-fatal: rebase failures are handled by RebaseWatcherService (shows dialog)
-            console.warn(`[WatcherService] Post-commit rebase check failed:`, rebaseError);
           }
+
+          // Direct rebase fallback: fetch + rebase onto baseBranch
+          if (!rebased && this.agentInstanceService) {
+            const instResult = this.agentInstanceService.getInstance(sessionId);
+            const inst = instResult?.data;
+            const baseBranch = inst?.config?.baseBranch || 'main';
+            const repoPath = inst?.worktreePath || inst?.config?.repoPath || instance.worktreePath;
+            if (repoPath) {
+              await this.gitService.fetchRemote(repoPath);
+              const checkResult = await this.gitService.checkRemoteChanges(repoPath, baseBranch);
+              if (checkResult.success && checkResult.data && checkResult.data.behind > 0) {
+                console.log(`[WatcherService] Direct post-commit rebase: ${checkResult.data.behind} commits behind ${baseBranch}`);
+                const rebaseResult = await this.gitService.rebase(repoPath, `origin/${baseBranch}`);
+                if (rebaseResult.success) {
+                  console.log(`[WatcherService] Direct post-commit rebase: synced with ${baseBranch}`);
+                  this.terminalLogService?.log('info', `Post-commit rebase: synced with ${baseBranch}`, { sessionId, source: 'Watcher' });
+                } else {
+                  console.warn(`[WatcherService] Direct post-commit rebase failed:`, rebaseResult.error);
+                }
+              }
+            }
+          }
+        } catch (rebaseError) {
+          // Non-fatal: log and continue
+          console.warn(`[WatcherService] Post-commit rebase check failed:`, rebaseError);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';

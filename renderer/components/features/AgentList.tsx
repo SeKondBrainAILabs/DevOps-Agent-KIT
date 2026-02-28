@@ -9,6 +9,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { AgentCardSkeleton } from './AgentCard';
+import { MergeWorkflowModal } from './MergeWorkflowModal';
 import { useAgentStore } from '../../store/agentStore';
 import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentType } from '../../../shared/types';
@@ -355,6 +356,10 @@ function SessionRow({
   isSelected: boolean;
   onClick: () => void;
 }): React.ReactElement {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  const removeReportedSession = useAgentStore((state) => state.removeReportedSession);
+
   const statusColor = STATUS_COLORS[session.status] || 'bg-gray-400';
   const branch = session.branchName || '';
   // Extract trailing suffix like "-mr4c", "-l63a", "-UXUPG" from branch name
@@ -366,29 +371,83 @@ function SessionRow({
   const totalCommits = session.commitCount || 0;
   const newCommits = viewedCount !== undefined ? totalCommits - viewedCount : totalCommits;
 
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (showConfirm) {
+      const repoPath = session.repoPath || session.worktreePath || '';
+      window.api?.instance?.deleteSession?.(session.sessionId, repoPath);
+      removeReportedSession(session.sessionId);
+      setShowConfirm(false);
+    } else {
+      setShowConfirm(true);
+      setTimeout(() => setShowConfirm(false), 3000);
+    }
+  };
+
   return (
-    <button
-      onClick={onClick}
-      title={`${branch}\n${session.task || ''}`}
-      className={`
-        w-full flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors
-        ${isSelected
-          ? 'bg-kanvas-blue/10 text-kanvas-blue'
-          : 'hover:bg-surface-secondary text-text-primary'
-        }
-      `}
-    >
-      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusColor}`} />
-      <span className="text-xs truncate flex-1">{index}-{suffix}</span>
-      {newCommits > 0 && (
-        <span className="text-[10px] font-medium text-green-600 flex-shrink-0">
-          +{newCommits}
+    <>
+      <div
+        onClick={onClick}
+        title={`${branch}\n${session.task || ''}`}
+        className={`
+          w-full flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors cursor-pointer group
+          ${isSelected
+            ? 'bg-kanvas-blue/10 text-kanvas-blue'
+            : 'hover:bg-surface-secondary text-text-primary'
+          }
+        `}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusColor}`} />
+        <span className="text-xs truncate flex-1">{index}-{suffix}</span>
+        {newCommits > 0 && (
+          <span className="text-[10px] font-medium text-green-600 flex-shrink-0">
+            +{newCommits}
+          </span>
+        )}
+        {timeAgo && (
+          <span className="text-[10px] text-text-secondary flex-shrink-0 group-hover:hidden">{timeAgo}</span>
+        )}
+        {/* Merge & Delete buttons — visible on hover */}
+        <span className={`flex items-center gap-0.5 flex-shrink-0 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowMergeModal(true); }}
+            className="p-0.5 rounded text-text-secondary hover:text-kanvas-blue hover:bg-kanvas-blue/10 transition-colors"
+            title={`Merge to ${session.baseBranch || 'main'}`}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            </svg>
+          </button>
+          <button
+            onClick={handleDelete}
+            className={`p-0.5 rounded transition-all ${showConfirm ? 'bg-red-500 text-white' : 'text-text-secondary hover:text-red-500 hover:bg-red-500/10'}`}
+            title={showConfirm ? 'Click again to confirm' : 'Delete session'}
+          >
+            {showConfirm ? (
+              <span className="text-[9px] px-0.5 font-medium">Del?</span>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            )}
+          </button>
         </span>
-      )}
-      {timeAgo && (
-        <span className="text-[10px] text-text-secondary flex-shrink-0">{timeAgo}</span>
-      )}
-    </button>
+      </div>
+
+      <MergeWorkflowModal
+        isOpen={showMergeModal}
+        onClose={() => setShowMergeModal(false)}
+        repoPath={session.repoPath || session.worktreePath || ''}
+        sourceBranch={session.branchName}
+        targetBranch={session.baseBranch || 'main'}
+        worktreePath={session.worktreePath}
+        sessionId={session.sessionId}
+        onMergeComplete={() => setShowMergeModal(false)}
+        onDeleteSession={() => {
+          removeReportedSession(session.sessionId);
+        }}
+      />
+    </>
   );
 }
 
