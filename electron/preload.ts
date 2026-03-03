@@ -83,6 +83,18 @@ const api = {
       ipcRenderer.on(IPC.SESSION_CLOSED, handler);
       return () => ipcRenderer.removeListener(IPC.SESSION_CLOSED, handler);
     },
+
+    onCrossSessionOverlap: (callback: (data: {
+      sessionId: string;
+      repoPath: string;
+      overlaps: Array<{ file: string; committedBySession: string; lockedBySession: string }>;
+      commitHash: string;
+      timestamp: string;
+    }) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on(IPC.CROSS_SESSION_OVERLAP_DETECTED, handler);
+      return () => ipcRenderer.removeListener(IPC.CROSS_SESSION_OVERLAP_DETECTED, handler);
+    },
   },
 
   // ==========================================================================
@@ -1677,6 +1689,7 @@ const api = {
       behindBy: number;
       untrackedBlockingFiles?: string[];
       blockingError?: string;
+      crossSessionOverlaps?: Array<{ file: string; sessionId: string }>;
     }>> =>
       ipcRenderer.invoke(IPC.MERGE_PREVIEW, repoPath, sourceBranch, targetBranch),
 
@@ -1696,6 +1709,8 @@ const api = {
       mergeCommitHash?: string;
       filesChanged?: number;
       conflictingFiles?: string[];
+      stashRecovered?: boolean;
+      stashConflictFiles?: string[];
     }>> =>
       ipcRenderer.invoke(IPC.MERGE_EXECUTE, repoPath, sourceBranch, targetBranch, options),
 
@@ -1999,10 +2014,33 @@ const api = {
     status: (): Promise<IpcResult<McpServerStatus>> =>
       ipcRenderer.invoke(IPC.MCP_SERVER_STATUS),
 
+    getCallLog: (limit?: number): Promise<IpcResult<Array<{
+      timestamp: string;
+      toolName: string;
+      sessionId: string;
+      success: boolean;
+      durationMs: number;
+      error?: string;
+    }>>> =>
+      ipcRenderer.invoke(IPC.MCP_GET_CALL_LOG, limit),
+
     onServerStarted: (callback: (data: { port: number; url: string }) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, data: { port: number; url: string }) => callback(data);
       ipcRenderer.on(IPC.MCP_SERVER_STARTED, handler);
       return () => ipcRenderer.removeListener(IPC.MCP_SERVER_STARTED, handler);
+    },
+
+    onToolCalled: (callback: (entry: {
+      timestamp: string;
+      toolName: string;
+      sessionId: string;
+      success: boolean;
+      durationMs: number;
+      error?: string;
+    }) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, entry: any) => callback(entry);
+      ipcRenderer.on(IPC.MCP_TOOL_CALLED, handler);
+      return () => ipcRenderer.removeListener(IPC.MCP_TOOL_CALLED, handler);
     },
   },
 

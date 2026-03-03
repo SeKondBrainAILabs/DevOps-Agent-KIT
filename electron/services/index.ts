@@ -190,6 +190,12 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   const mergeConflict = new MergeConflictService(ai);
   mergeConflict.setDebugLog(debugLog);
 
+  // Wire merge service dependencies
+  merge.setMergeConflictService(mergeConflict);
+  merge.setRebaseWatcher(rebaseWatcher);
+  merge.setAgentInstanceService(agentInstance);
+  merge.setLockService(lock);
+
   // Initialize Heartbeat service
   // For monitoring agent connection status
   const heartbeat = new HeartbeatService();

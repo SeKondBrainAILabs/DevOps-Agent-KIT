@@ -69,6 +69,11 @@ export class WatcherService extends BaseService {
   // Rebase watcher: when set, triggers post-commit rebase to stay in sync
   private rebaseWatcher: RebaseWatcherService | null = null;
 
+  // Contract auto-check: detect and regenerate affected contracts after each commit
+  private contractDetectionService: any = null;
+  private contractGenerationService: any = null;
+  private contractCheckInProgress: Set<string> = new Set();
+
   constructor(git: GitService, activity: ActivityService) {
     super();
     this.gitService = git;
@@ -162,6 +167,15 @@ export class WatcherService extends BaseService {
   }
 
   /**
+   * Set the contract detection and generation services for commit-level contract auto-checks.
+   */
+  setContractServices(detection: any, generation: any): void {
+    this.contractDetectionService = detection;
+    this.contractGenerationService = generation;
+    console.log('[WatcherService] Contract services configured for auto-check');
+  }
+
+  /**
    * Handle a file change event from the utility process worker.
    * Called by WorkerBridgeService when the worker detects file changes.
    */
@@ -195,7 +209,7 @@ export class WatcherService extends BaseService {
         throw new Error('Session worktree not found - use startWithPath instead');
       }
 
-      return this.startWithPath(sessionId, worktreePath);
+      await this.startWithPath(sessionId, worktreePath);
     }, 'WATCHER_START_FAILED');
   }
 
@@ -557,6 +571,36 @@ export class WatcherService extends BaseService {
           this.agentInstanceService.updateLastProcessedCommit(sessionId, commitHash);
         }
 
+        // Post-commit cross-session overlap detection
+        if (this.lockService) {
+          try {
+            // Get files changed in this commit via git status (already have this from above)
+            const changedFilePaths = (status.data?.changes || []).map((c: { path: string }) => c.path);
+            if (changedFilePaths.length > 0) {
+              const conflictsResult = await this.lockService.checkConflicts(
+                instance.repoPath, changedFilePaths, sessionId
+              );
+              if (conflictsResult.success && conflictsResult.data && conflictsResult.data.length > 0) {
+                const overlaps = conflictsResult.data.map((c: any) => ({
+                  file: c.file,
+                  committedBySession: sessionId,
+                  lockedBySession: c.session || c.sessionId,
+                }));
+                this.emitToRenderer(IPC.CROSS_SESSION_OVERLAP_DETECTED, {
+                  sessionId,
+                  repoPath: instance.repoPath,
+                  overlaps,
+                  commitHash,
+                  timestamp: new Date().toISOString(),
+                });
+                console.log(`[WatcherService] Cross-session overlap detected: ${overlaps.length} file(s) committed by ${sessionId} overlap with other sessions`);
+              }
+            }
+          } catch {
+            // Non-fatal: overlap detection is informational
+          }
+        }
+
         // Auto-push (could be configurable)
         await this.gitService.push(sessionId, instance.repoName);
 
@@ -604,6 +648,9 @@ export class WatcherService extends BaseService {
           // Non-fatal: log and continue
           console.warn(`[WatcherService] Post-commit rebase check failed:`, rebaseError);
         }
+
+        // Post-commit contract auto-check (non-fatal)
+        this.triggerCommitContractCheck(instance, commitHash).catch(() => {/* already handled inside */});
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         this.activityService.log(sessionId, 'error', `Commit failed: ${message}`);
@@ -691,6 +738,87 @@ export class WatcherService extends BaseService {
     }, 2000); // 2 second debounce for analysis
 
     this.analysisDebounceTimers.set(sessionId, timer);
+  }
+
+  /**
+   * After a successful commit, analyze the commit for contract changes and
+   * regenerate contracts for any affected features.
+   */
+  private async triggerCommitContractCheck(instance: WatcherInstance, commitHash: string): Promise<void> {
+    // Guard: services not wired
+    if (!this.contractDetectionService || !this.contractGenerationService) return;
+
+    // Guard: repo has no contract generation metadata
+    const metaFile = `${instance.worktreePath}/.devops-kit/.contract-generation-meta.json`;
+    if (!existsSync(metaFile)) return;
+
+    // Guard: prevent overlapping checks for the same session
+    const { sessionId } = instance;
+    if (this.contractCheckInProgress.has(sessionId)) return;
+    this.contractCheckInProgress.add(sessionId);
+
+    try {
+      const analysisResult = await this.contractDetectionService.analyzeCommit(instance.worktreePath, commitHash);
+      if (!analysisResult.success || !analysisResult.data || !analysisResult.data.hasContractChanges) return;
+
+      const { changes, breakingChanges } = analysisResult.data;
+      const changedFiles: string[] = changes.map((c: { file: string }) => c.file);
+
+      const effectiveRepoPath = instance.repoPath || instance.worktreePath;
+      const cachedFeatures: any[] = databaseService.getSetting(`discovered_features:${effectiveRepoPath}`, []) || [];
+      if (!cachedFeatures.length) return;
+
+      // Find features whose basePath is a parent of any changed file
+      const affectedFeatures = cachedFeatures.filter((feature: any) => {
+        const relativeFeatPath = path.relative(effectiveRepoPath, feature.basePath);
+        return changedFiles.some((f: string) => f.startsWith(relativeFeatPath + '/'));
+      });
+
+      if (affectedFeatures.length === 0) return;
+
+      console.log(`[WatcherService] Commit ${commitHash.substring(0, 7)} affects ${affectedFeatures.length} feature(s) — regenerating contracts...`);
+
+      const updatedFeatures: string[] = [];
+      for (const feature of affectedFeatures) {
+        try {
+          const result = await this.contractGenerationService.generateFeatureContract(instance.worktreePath, feature);
+          if (result.success) {
+            updatedFeatures.push(feature.name);
+          } else {
+            console.warn(`[WatcherService] Contract update failed for ${feature.name}: ${result.error?.message}`);
+          }
+        } catch (err) {
+          console.warn(`[WatcherService] Contract update failed for ${feature.name}:`, err);
+        }
+      }
+
+      if (updatedFeatures.length === 0) return;
+
+      const fileBasenames = changedFiles.map((f: string) => path.basename(f));
+      const displayFiles = fileBasenames.length > 5
+        ? `${fileBasenames.slice(0, 5).join(', ')} +${fileBasenames.length - 5} more`
+        : fileBasenames.join(', ');
+      const message = `Contracts updated for ${updatedFeatures.length} feature(s): ${updatedFeatures.join(', ')} (${changedFiles.length} files: ${displayFiles})`;
+
+      this.activityService.log(sessionId, 'info', message, {
+        type: 'contract-auto-update',
+        commitHash,
+        updatedFeatures,
+        filesChanged: changedFiles,
+        breakingChanges: breakingChanges.length,
+      });
+
+      this.emitToRenderer(IPC.CONTRACT_CHANGES_DETECTED, {
+        repoPath: instance.worktreePath,
+        commitHash,
+        updatedFeatures,
+        hasBreakingChanges: breakingChanges.length > 0,
+      });
+    } catch (err) {
+      console.error('[WatcherService] Contract auto-check error:', err);
+    } finally {
+      this.contractCheckInProgress.delete(sessionId);
+    }
   }
 
   async dispose(): Promise<void> {

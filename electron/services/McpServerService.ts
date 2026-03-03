@@ -61,6 +61,15 @@ export interface McpServiceDeps {
   };
 }
 
+export interface McpCallLogEntry {
+  timestamp: string;
+  toolName: string;
+  sessionId: string;
+  success: boolean;
+  durationMs: number;
+  error?: string;
+}
+
 export class McpServerService extends BaseService {
   private httpServer: Server | null = null;
   private mcpServer: InstanceType<typeof import('@modelcontextprotocol/sdk/server/mcp.js').McpServer> | null = null;
@@ -70,6 +79,22 @@ export class McpServerService extends BaseService {
 
   readonly sessionBinder = new McpSessionBinder();
   private deps: McpServiceDeps = {};
+
+  // MCP call log for debug observability
+  private mcpCallLog: McpCallLogEntry[] = [];
+
+  getMcpCallLog(limit = 50): McpCallLogEntry[] {
+    return this.mcpCallLog.slice(-limit);
+  }
+
+  addCallLogEntry(entry: McpCallLogEntry): void {
+    this.mcpCallLog.push(entry);
+    if (this.mcpCallLog.length > 200) {
+      this.mcpCallLog.shift();
+    }
+    // Emit real-time event to renderer
+    this.emitToRenderer('mcp:tool-called', entry);
+  }
 
   // ==========================================================================
   // DEPENDENCY SETTERS
@@ -119,7 +144,7 @@ export class McpServerService extends BaseService {
       // Register tools and resources
       const { registerTools } = await import('./mcp/tools');
       const { registerResources } = await import('./mcp/resources');
-      registerTools(this.mcpServer, this.sessionBinder, this.deps);
+      registerTools(this.mcpServer, this.sessionBinder, this.deps, this);
       registerResources(this.mcpServer, this.sessionBinder, this.deps);
 
       // Create transport

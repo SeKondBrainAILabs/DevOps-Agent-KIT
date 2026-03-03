@@ -15,7 +15,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
-import type { McpServiceDeps } from '../McpServerService';
+import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
+
+/** Interface for the McpServerService to log calls */
+interface McpCallLogger {
+  addCallLogEntry(entry: McpCallLogEntry): void;
+}
 
 /**
  * Register all MCP tools on the server instance.
@@ -27,10 +32,45 @@ import type { McpServiceDeps } from '../McpServerService';
 export function registerTools(
   server: McpServer,
   binder: McpSessionBinder,
-  deps: McpServiceDeps
+  deps: McpServiceDeps,
+  callLogger?: McpCallLogger
 ): void {
   // Cast to any to avoid TS compiler OOM from complex zod+MCP generic inference
   const srv: any = server;
+
+  /** Wrap a tool handler to log timing and success/failure */
+  function withCallLog<T extends Record<string, any>>(
+    toolName: string,
+    handler: (args: T) => Promise<any>
+  ): (args: T) => Promise<any> {
+    if (!callLogger) return handler;
+    return async (args: T) => {
+      const start = Date.now();
+      const sessionId = (args as any).session_id || 'unknown';
+      try {
+        const result = await handler(args);
+        callLogger.addCallLogEntry({
+          timestamp: new Date().toISOString(),
+          toolName,
+          sessionId,
+          success: true,
+          durationMs: Date.now() - start,
+        });
+        return result;
+      } catch (err) {
+        callLogger.addCallLogEntry({
+          timestamp: new Date().toISOString(),
+          toolName,
+          sessionId,
+          success: false,
+          durationMs: Date.now() - start,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+    };
+  }
+
   // --------------------------------------------------------------------------
   // kanvas_commit — Stage + commit + record + push (optional repo for multi-repo)
   // --------------------------------------------------------------------------
@@ -43,7 +83,7 @@ export function registerTools(
       push: z.boolean().optional().default(false).describe('Push to remote after commit'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    async ({ session_id, message, push, repo }) => {
+    withCallLog('kanvas_commit', async ({ session_id, message, push, repo }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -111,7 +151,7 @@ export function registerTools(
         const errorMsg = err instanceof Error ? err.message : 'Commit failed';
         return { content: [{ type: 'text', text: JSON.stringify({ error: errorMsg }) }] };
       }
-    }
+    })
   );
 
   // --------------------------------------------------------------------------
@@ -125,7 +165,7 @@ export function registerTools(
       message: z.string().describe('Commit message (conventional commits format preferred)'),
       push: z.boolean().optional().default(false).describe('Push to remote after each commit'),
     },
-    async ({ session_id, message, push }) => {
+    withCallLog('kanvas_commit_all', async ({ session_id, message, push }) => {
       const repos = binder.getReposForSession(session_id);
       if (repos.length === 0) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
@@ -182,7 +222,7 @@ export function registerTools(
       }
 
       return { content: [{ type: 'text', text: JSON.stringify({ commits: results }) }] };
-    }
+    })
   );
 
   // --------------------------------------------------------------------------
@@ -194,7 +234,7 @@ export function registerTools(
     {
       session_id: z.string().describe('The Kanvas session ID'),
     },
-    async ({ session_id }) => {
+    withCallLog('kanvas_get_session_info', async ({ session_id }) => {
       const session = binder.getSession(session_id);
       if (!session) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
@@ -232,7 +272,7 @@ export function registerTools(
       };
 
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    }
+    })
   );
 
   // --------------------------------------------------------------------------
@@ -247,7 +287,7 @@ export function registerTools(
       message: z.string().describe('Activity message'),
       details: z.record(z.unknown()).optional().describe('Optional structured details'),
     },
-    async ({ session_id, type, message, details }) => {
+    withCallLog('kanvas_log_activity', async ({ session_id, type, message, details }) => {
       if (!binder.getSession(session_id)) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
       }
@@ -258,7 +298,7 @@ export function registerTools(
 
       deps.activityService.log(session_id, type, message, { ...details, source: 'mcp' });
       return { content: [{ type: 'text', text: JSON.stringify({ logged: true, type, message }) }] };
-    }
+    })
   );
 
   // --------------------------------------------------------------------------
@@ -273,7 +313,7 @@ export function registerTools(
       reason: z.string().optional().describe('Reason for the lock'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    async ({ session_id, files, reason, repo }) => {
+    withCallLog('kanvas_lock_file', async ({ session_id, files, reason, repo }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -323,7 +363,7 @@ export function registerTools(
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'Lock failed' }) }] };
       }
-    }
+    })
   );
 
   // --------------------------------------------------------------------------
@@ -337,7 +377,7 @@ export function registerTools(
       files: z.array(z.string()).optional().describe('Specific files to unlock. Omit to release all.'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    async ({ session_id, files, repo }) => {
+    withCallLog('kanvas_unlock_file', async ({ session_id, files, repo }) => {
       if (!binder.getSession(session_id)) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
       }
@@ -362,7 +402,7 @@ export function registerTools(
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'Unlock failed' }) }] };
       }
-    }
+    })
   );
 
   // --------------------------------------------------------------------------
@@ -376,7 +416,7 @@ export function registerTools(
       limit: z.number().optional().default(10).describe('Max number of commits to return'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    async ({ session_id, limit, repo }) => {
+    withCallLog('kanvas_get_commit_history', async ({ session_id, limit, repo }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -396,7 +436,7 @@ export function registerTools(
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'History fetch failed' }) }] };
       }
-    }
+    })
   );
 
   // --------------------------------------------------------------------------
@@ -409,7 +449,7 @@ export function registerTools(
       session_id: z.string().describe('The Kanvas session ID'),
       summary: z.string().describe('Summary of work completed and what to review'),
     },
-    async ({ session_id, summary }) => {
+    withCallLog('kanvas_request_review', async ({ session_id, summary }) => {
       if (!binder.getSession(session_id)) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
       }
@@ -428,6 +468,6 @@ export function registerTools(
           text: JSON.stringify({ logged: true, summary, sessionId: session_id }),
         }],
       };
-    }
+    })
   );
 }

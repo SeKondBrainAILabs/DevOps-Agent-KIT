@@ -22,7 +22,7 @@ module.exports = {
   ],
   preset: 'ts-jest/presets/default-esm',
   transform: {
-    '^.+\\.tsx?$': ['ts-jest', {
+    '^.+\\.[jt]sx?$': ['ts-jest', {
       useESM: true,
       tsconfig: {
         jsx: 'react-jsx',
@@ -33,6 +33,7 @@ module.exports = {
         strict: false,
         skipLibCheck: true,
         allowSyntheticDefaultImports: true,
+        allowJs: true,
       },
     }],
   },

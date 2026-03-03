@@ -640,6 +640,8 @@ export interface MergePreview {
   untrackedBlockingFiles?: string[];
   /** Human-readable description of the blocking error */
   blockingError?: string;
+  /** Files being merged that are also locked by other active sessions */
+  crossSessionOverlaps?: Array<{ file: string; sessionId: string }>;
 }
 
 export interface MergeResult {
@@ -648,6 +650,10 @@ export interface MergeResult {
   mergeCommitHash?: string;
   filesChanged?: number;
   conflictingFiles?: string[];
+  /** Whether stashed files were successfully recovered after merge */
+  stashRecovered?: boolean;
+  /** Files that could not be recovered from stash due to unresolvable conflicts */
+  stashConflictFiles?: string[];
 }
 
 // =============================================================================

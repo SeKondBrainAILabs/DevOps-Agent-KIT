@@ -876,6 +876,13 @@ export class ASTParserService extends BaseService {
   }
 
   /**
+   * Invalidate a single file's cache entry
+   */
+  invalidateCache(filePath: string): void {
+    this.cache.delete(filePath);
+  }
+
+  /**
    * Clear the cache
    */
   clearCache(): void {

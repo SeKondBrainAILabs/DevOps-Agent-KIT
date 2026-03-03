@@ -1424,6 +1424,47 @@ export class ContractGenerationService extends BaseService {
       }
     }
 
+    // Smart scan: limit "other" files when there are many, to avoid overwhelming the LLM
+    const SMART_SCAN_OTHER_THRESHOLD = 30;
+    if (files.other.length >= SMART_SCAN_OTHER_THRESHOLD) {
+      const categorizedFiles = [
+        ...files.api,
+        ...files.schema,
+        ...files.tests.e2e,
+        ...files.tests.unit,
+        ...files.tests.integration,
+        ...files.fixtures,
+        ...files.config,
+        ...files.css,
+        ...files.prompts,
+      ];
+
+      if (categorizedFiles.length > 0) {
+        // Collect grandparent directories of categorized files (relative paths)
+        const adjacentDirs = new Set<string>();
+        for (const f of categorizedFiles) {
+          const parent = path.dirname(f);
+          const grandparent = path.dirname(parent);
+          // Skip if grandparent is the root ('.') — that would match everything
+          if (grandparent && grandparent !== '.') {
+            adjacentDirs.add(grandparent);
+          }
+        }
+
+        if (adjacentDirs.size > 0) {
+          files.other = files.other.filter((f) =>
+            [...adjacentDirs].some((dir) => f.startsWith(dir + '/'))
+          );
+        }
+      } else {
+        // No categorized files: sort by path depth (shallowest first) and cap at threshold
+        files.other = files.other
+          .slice()
+          .sort((a, b) => a.split('/').length - b.split('/').length)
+          .slice(0, SMART_SCAN_OTHER_THRESHOLD);
+      }
+    }
+
     return files;
   }
 

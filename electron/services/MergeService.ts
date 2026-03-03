@@ -30,6 +30,28 @@ async function getExeca() {
 }
 
 export class MergeService extends BaseService {
+  // Dependency references (set via setters after construction)
+  private mergeConflictService: any = null;
+  private rebaseWatcher: any = null;
+  private agentInstanceService: any = null;
+  private lockService: any = null;
+
+  setMergeConflictService(service: any): void {
+    this.mergeConflictService = service;
+  }
+
+  setRebaseWatcher(service: any): void {
+    this.rebaseWatcher = service;
+  }
+
+  setAgentInstanceService(service: any): void {
+    this.agentInstanceService = service;
+  }
+
+  setLockService(service: any): void {
+    this.lockService = service;
+  }
+
   /**
    * Execute a git command (uses dynamic import for ESM-only execa)
    */
@@ -137,6 +159,86 @@ export class MergeService extends BaseService {
   }
 
   /**
+   * Pop a pre-merge stash after successful merge.
+   * If stash pop has conflicts, attempts LLM resolution then graceful degradation.
+   */
+  private async popStashAfterMerge(
+    repoPath: string
+  ): Promise<{ stashRecovered: boolean; stashConflictFiles?: string[] }> {
+    // Check for a Kanvas pre-merge stash entry
+    const { stdout: stashList } = await this.git(['stash', 'list', '--max-count=1'], repoPath);
+    if (!stashList.includes('[Kanvas] Pre-merge stash')) {
+      return { stashRecovered: true }; // Nothing to pop
+    }
+
+    console.log(`[MergeService] Found pre-merge stash, attempting pop...`);
+
+    // Attempt stash pop
+    const { exitCode: popExit } = await this.git(['stash', 'pop'], repoPath);
+    if (popExit === 0) {
+      console.log(`[MergeService] Stash pop succeeded`);
+      return { stashRecovered: true };
+    }
+
+    // Stash pop had conflicts — try to resolve them
+    console.log(`[MergeService] Stash pop had conflicts, attempting resolution...`);
+    const { stdout: conflictOutput } = await this.git(['diff', '--name-only', '--diff-filter=U'], repoPath);
+    const conflictFiles = conflictOutput.split('\n').filter(Boolean);
+
+    if (conflictFiles.length === 0) {
+      // No actual conflicts reported, stash pop might have succeeded partially
+      return { stashRecovered: true };
+    }
+
+    // Protected files that we skip AI resolution for
+    const protectedPatterns = ['package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.env'];
+    const resolvableFiles = conflictFiles.filter(
+      (f) => !protectedPatterns.some((p) => f.endsWith(p))
+    );
+    const unresolved: string[] = [...conflictFiles.filter(
+      (f) => protectedPatterns.some((p) => f.endsWith(p))
+    )];
+
+    // Try LLM resolution for each non-protected conflict file
+    if (this.mergeConflictService && resolvableFiles.length > 0) {
+      for (const file of resolvableFiles) {
+        try {
+          const result = await this.mergeConflictService.resolveFileConflict(
+            repoPath, file, 'HEAD', 'stash'
+          );
+          if (result.success && result.data?.resolved) {
+            await this.git(['add', file], repoPath);
+            console.log(`[MergeService] LLM resolved stash conflict: ${file}`);
+          } else {
+            unresolved.push(file);
+          }
+        } catch {
+          unresolved.push(file);
+        }
+      }
+    } else {
+      unresolved.push(...resolvableFiles);
+    }
+
+    // Check if all conflicts are resolved
+    const { stdout: remaining } = await this.git(['diff', '--name-only', '--diff-filter=U'], repoPath);
+    const remainingConflicts = remaining.split('\n').filter(Boolean);
+
+    if (remainingConflicts.length === 0) {
+      console.log(`[MergeService] All stash conflicts resolved`);
+      return { stashRecovered: true };
+    }
+
+    // Unresolvable: prefer merged version, drop stash
+    console.warn(`[MergeService] ${remainingConflicts.length} stash conflicts unresolvable, using merged version`);
+    await this.git(['checkout', '--theirs', '.'], repoPath);
+    await this.git(['add', '.'], repoPath);
+    await this.git(['stash', 'drop'], repoPath);
+
+    return { stashRecovered: false, stashConflictFiles: remainingConflicts };
+  }
+
+  /**
    * Preview a merge without actually executing it
    */
   async previewMerge(
@@ -232,6 +334,32 @@ export class MergeService extends BaseService {
         await this.git(['reset', '--hard', currentHead], repoPath);
       }
 
+      // Check for cross-session file overlaps (Phase 3B)
+      let crossSessionOverlaps: Array<{ file: string; sessionId: string }> | undefined;
+      if (this.lockService && filesChanged.length > 0) {
+        try {
+          const locksResult = await this.lockService.getRepoLocks(repoPath);
+          if (locksResult.success && locksResult.data) {
+            const { locksBySession } = locksResult.data;
+            const overlaps: Array<{ file: string; sessionId: string }> = [];
+            const changedPaths = filesChanged.map((f: { path: string }) => f.path);
+            for (const [sid, lockedFiles] of Object.entries(locksBySession) as [string, string[]][]) {
+              for (const lockedFile of lockedFiles) {
+                if (changedPaths.includes(lockedFile)) {
+                  overlaps.push({ file: lockedFile, sessionId: sid });
+                }
+              }
+            }
+            if (overlaps.length > 0) {
+              crossSessionOverlaps = overlaps;
+              console.log(`[MergeService] Cross-session overlaps detected: ${overlaps.length} file(s)`);
+            }
+          }
+        } catch {
+          // Non-fatal: overlap detection is informational only
+        }
+      }
+
       return {
         sourceBranch,
         targetBranch,
@@ -244,6 +372,7 @@ export class MergeService extends BaseService {
         behindBy: behindBy || 0,
         untrackedBlockingFiles,
         blockingError,
+        crossSessionOverlaps,
       };
     }, 'MERGE_PREVIEW_FAILED');
   }
@@ -263,6 +392,8 @@ export class MergeService extends BaseService {
     } = {}
   ): Promise<IpcResult<MergeResult>> {
     return this.wrap(async () => {
+      let didStash = false;
+
       // Ensure .S9N_KIT_DevOpsAgent/ is in .gitignore of the target repo
       // This prevents agent artifacts from blocking merges
       await this.ensureAgentArtifactsIgnored(repoPath);
@@ -331,6 +462,7 @@ export class MergeService extends BaseService {
 
           const cleanResult = await this.cleanUntrackedBlockingFiles(repoPath, blockingFiles);
           if (cleanResult.success && cleanResult.data && cleanResult.data.failed.length === 0) {
+            didStash = true;
             console.log(`[MergeService] Stashed ${cleanResult.data.stashed.length} blocking files (${cleanResult.data.stashRef}), retrying merge...`);
 
             // Retry the merge after stashing
@@ -379,6 +511,49 @@ export class MergeService extends BaseService {
       // Push merged changes
       await this.git(['push', 'origin', targetBranch], repoPath);
 
+      // Auto-pop stash if we stashed files before merge
+      let stashRecovered: boolean | undefined;
+      let stashConflictFiles: string[] | undefined;
+      if (didStash) {
+        try {
+          const stashResult = await this.popStashAfterMerge(repoPath);
+          stashRecovered = stashResult.stashRecovered;
+          stashConflictFiles = stashResult.stashConflictFiles;
+        } catch (err) {
+          console.warn(`[MergeService] Stash pop failed:`, err);
+          stashRecovered = false;
+        }
+      }
+
+      // Trigger rebase checks for sibling sessions (Phase 3A)
+      if (this.rebaseWatcher && this.agentInstanceService) {
+        try {
+          const instances = this.agentInstanceService.listInstances();
+          if (instances.success && instances.data) {
+            const siblings = instances.data.filter((inst: any) => {
+              const config = inst.config;
+              return (
+                config &&
+                config.repoPath === repoPath &&
+                config.baseBranch === targetBranch &&
+                config.branchName !== sourceBranch &&
+                inst.status === 'active'
+              );
+            });
+            for (const sibling of siblings) {
+              try {
+                await this.rebaseWatcher.forceCheck(sibling.sessionId);
+                console.log(`[MergeService] Triggered rebase check for sibling session: ${sibling.sessionId}`);
+              } catch {
+                // Non-fatal: sibling may not be in rebase watcher
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[MergeService] Sibling rebase trigger failed:`, err);
+        }
+      }
+
       // Cleanup: Delete worktree if requested
       if (options.deleteWorktree && options.worktreePath) {
         await this.git(['worktree', 'remove', options.worktreePath, '--force'], repoPath);
@@ -400,6 +575,8 @@ export class MergeService extends BaseService {
         message: `Successfully merged ${sourceBranch} into ${targetBranch}`,
         mergeCommitHash,
         filesChanged,
+        stashRecovered,
+        stashConflictFiles,
       };
     }, 'MERGE_EXECUTE_FAILED');
   }

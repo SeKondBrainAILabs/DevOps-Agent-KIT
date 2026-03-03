@@ -17,6 +17,7 @@ export const IPC = {
   SESSION_CREATED: 'session:created',
   SESSION_UPDATED: 'session:updated',
   SESSION_CLOSED: 'session:closed',
+  CROSS_SESSION_OVERLAP_DETECTED: 'session:cross-overlap-detected',
 
   // ==========================================================================
   // GIT CHANNELS
@@ -409,8 +410,10 @@ export const IPC = {
   // MCP SERVER CHANNELS
   // ==========================================================================
   MCP_SERVER_STATUS: 'mcp:server-status',
+  MCP_GET_CALL_LOG: 'mcp:get-call-log',
   // Events (main → renderer)
   MCP_SERVER_STARTED: 'mcp:server-started',
+  MCP_TOOL_CALLED: 'mcp:tool-called',
 
   // ==========================================================================
   // APP CHANNELS
@@ -544,12 +547,14 @@ export const REQUEST_CHANNELS = [
   IPC.WORKER_RESTART,
   // MCP server channels
   IPC.MCP_SERVER_STATUS,
+  IPC.MCP_GET_CALL_LOG,
 ] as const;
 
 export const EVENT_CHANNELS = [
   IPC.SESSION_CREATED,
   IPC.SESSION_UPDATED,
   IPC.SESSION_CLOSED,
+  IPC.CROSS_SESSION_OVERLAP_DETECTED,
   IPC.GIT_STATUS_CHANGED,
   IPC.FILE_CHANGED,
   IPC.COMMIT_TRIGGERED,
@@ -586,4 +591,5 @@ export const EVENT_CHANNELS = [
   IPC.WORKER_STATUS_CHANGED,
   // MCP server events
   IPC.MCP_SERVER_STARTED,
+  IPC.MCP_TOOL_CALLED,
 ] as const;

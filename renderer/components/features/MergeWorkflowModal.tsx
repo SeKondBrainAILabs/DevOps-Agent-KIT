@@ -87,6 +87,8 @@ export function MergeWorkflowModal({
     message: string;
     mergeCommitHash?: string;
     filesChanged?: number;
+    stashRecovered?: boolean;
+    stashConflictFiles?: string[];
   } | null>(null);
 
   // Helper to add/update progress entries
@@ -212,7 +214,7 @@ export function MergeWorkflowModal({
         if (stashRef) {
           addProgress(`Saved to: ${stashRef}`, 'done');
         }
-        addProgress('Files safely stashed. You can recover them later with: git stash pop', 'done');
+        addProgress('Files safely stashed. They will be auto-recovered after merge.', 'done');
 
         // Reload the merge preview using the actual branch
         addProgress('Re-checking merge compatibility...', 'active');
@@ -514,7 +516,7 @@ export function MergeWorkflowModal({
                         ))}
                       </div>
                       <p className="text-xs text-yellow-600">
-                        These files will be saved to git stash and can be recovered with <code className="bg-yellow-100 px-1 rounded">git stash pop</code>
+                        These files will be safely stashed and auto-recovered after merge completes.
                       </p>
                     </div>
                   ) : hasCodeConflicts ? (
@@ -583,6 +585,26 @@ export function MergeWorkflowModal({
                             <span className="font-mono text-text-secondary flex-1 truncate">{file.path}</span>
                             <span className="text-green-500">+{file.additions}</span>
                             <span className="text-red-500">-{file.deletions}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Cross-session overlap warning */}
+                  {preview.crossSessionOverlaps && preview.crossSessionOverlaps.length > 0 && (
+                    <div className="p-3 rounded-xl border bg-orange-50 border-orange-200">
+                      <div className="flex items-center gap-2 mb-2">
+                        <svg className="w-4 h-4 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span className="text-sm font-medium text-orange-700">Files also being edited by other sessions</span>
+                      </div>
+                      <div className="bg-orange-100/50 rounded-lg p-2">
+                        {preview.crossSessionOverlaps.map((overlap) => (
+                          <div key={`${overlap.file}-${overlap.sessionId}`} className="text-xs font-mono text-orange-800 py-0.5 flex items-center justify-between">
+                            <span>{overlap.file}</span>
+                            <span className="text-orange-600 ml-2">session: {overlap.sessionId.slice(0, 8)}</span>
                           </div>
                         ))}
                       </div>
@@ -760,6 +782,26 @@ export function MergeWorkflowModal({
                 <p className="text-sm text-text-secondary mt-2">
                   {mergeResult.filesChanged} files changed
                 </p>
+              )}
+              {/* Stash recovery status */}
+              {mergeResult.stashRecovered === true && (
+                <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded-lg">
+                  <p className="text-sm text-green-700 flex items-center gap-1.5">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Stashed files recovered successfully
+                  </p>
+                </div>
+              )}
+              {mergeResult.stashRecovered === false && (
+                <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <p className="text-sm text-yellow-700 font-medium mb-1">Some stashed files could not be recovered</p>
+                  {mergeResult.stashConflictFiles?.map((f) => (
+                    <p key={f} className="text-xs font-mono text-yellow-600 pl-2">{f}</p>
+                  ))}
+                  <p className="text-xs text-yellow-600 mt-1">The merged version was kept for these files.</p>
+                </div>
               )}
             </div>
           )}

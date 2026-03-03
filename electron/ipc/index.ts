@@ -1283,6 +1283,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return { success: true, data: services.mcpServer.getStatus() };
   });
 
+  ipcMain.handle(IPC.MCP_GET_CALL_LOG, async (_, limit?: number) => {
+    return { success: true, data: services.mcpServer.getMcpCallLog(limit) };
+  });
+
   // ==========================================================================
   // APP HANDLERS
   // ==========================================================================
