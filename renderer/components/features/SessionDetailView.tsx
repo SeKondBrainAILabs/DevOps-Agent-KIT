@@ -206,10 +206,8 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
           message: resultMessage,
         });
 
-        // Show popup for failures or warnings
+        // Show popup only for failures; success always auto-clears
         if (!rebaseResult.data.success) {
-          setShowErrorPopup(true);
-        } else if (resultMessage.toLowerCase().includes('warning') || resultMessage.toLowerCase().includes('conflict')) {
           setShowErrorPopup(true);
         } else {
           // Clear success message after 5 seconds
