@@ -467,7 +467,8 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   });
 
   ipcMain.handle(IPC.GIT_PERFORM_REBASE, async (_, repoPath: string, baseBranch: string) => {
-    const result = await services.git.performRebase(repoPath, baseBranch);
+    // Always use AI-powered rebase so conflicts are resolved automatically
+    const result = await services.git.performRebaseWithAI(repoPath, baseBranch, services.mergeConflict);
 
     // Log activity for rebase operations
     try {
