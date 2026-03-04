@@ -13,7 +13,7 @@ interface RegisteredAgent extends AgentInfo {
   lastHeartbeat?: string;
 }
 
-interface AgentState {
+export interface AgentState {
   agents: Map<string, RegisteredAgent>;
   reportedSessions: Map<string, SessionReport>;
   recentActivity: AgentActivityReport[];
@@ -21,9 +21,11 @@ interface AgentState {
   selectedAgentType: string | null;  // For grouped agent view
   selectedSessionId: string | null;  // For session detail view
   viewedCommitCounts: Map<string, number>;  // sessionId → commitCount at last view
+  lastRebaseTimes: Map<string, { success: boolean; timestamp: string; message: string }>;
   isInitialized: boolean;
 
   // Actions
+  setLastRebaseTime: (sessionId: string, data: { success: boolean; timestamp: string; message: string }) => void;
   setAgents: (agents: RegisteredAgent[]) => void;
   addAgent: (agent: RegisteredAgent) => void;
   removeAgent: (agentId: string) => void;
@@ -51,7 +53,15 @@ export const useAgentStore = create<AgentState>((set) => ({
   selectedAgentType: null,
   selectedSessionId: null,
   viewedCommitCounts: new Map(),
+  lastRebaseTimes: new Map(),
   isInitialized: false,
+
+  setLastRebaseTime: (sessionId, data) =>
+    set((state) => {
+      const newMap = new Map(state.lastRebaseTimes);
+      newMap.set(sessionId, data);
+      return { lastRebaseTimes: newMap };
+    }),
 
   setAgents: (agents) =>
     set({

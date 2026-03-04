@@ -634,12 +634,15 @@ export class WatcherService extends BaseService {
               const checkResult = await this.gitService.checkRemoteChanges(repoPath, baseBranch);
               if (checkResult.success && checkResult.data && checkResult.data.behind > 0) {
                 console.log(`[WatcherService] Direct post-commit rebase: ${checkResult.data.behind} commits behind ${baseBranch}`);
-                const rebaseResult = await this.gitService.rebase(repoPath, `origin/${baseBranch}`);
+                // Use AI rebase through rebaseWatcher so conflicts are auto-resolved
+                const rebaseResult = this.rebaseWatcher
+                  ? await this.rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch)
+                  : await this.gitService.rebase(repoPath, `origin/${baseBranch}`).then(r => ({ success: r.success && !!r.data?.success, message: r.data?.message || r.error?.message || '' }));
                 if (rebaseResult.success) {
                   console.log(`[WatcherService] Direct post-commit rebase: synced with ${baseBranch}`);
                   this.terminalLogService?.log('info', `Post-commit rebase: synced with ${baseBranch}`, { sessionId, source: 'Watcher' });
                 } else {
-                  console.warn(`[WatcherService] Direct post-commit rebase failed:`, rebaseResult.error);
+                  console.warn(`[WatcherService] Direct post-commit rebase failed:`, rebaseResult.message);
                 }
               }
             }

@@ -477,6 +477,44 @@ export class RebaseWatcherService extends BaseService {
   }
 
   /**
+   * Perform a one-shot AI rebase for a session path without requiring a registered watcher.
+   * Used by WatcherService post-commit fallback so AI rebase is always used.
+   */
+  async performRebaseForPath(
+    sessionId: string,
+    repoPath: string,
+    baseBranch: string
+  ): Promise<{ success: boolean; message: string }> {
+    // If the session is already registered, delegate to its state (respects isPaused/isRebasing)
+    const existing = this.watchedSessions.get(sessionId);
+    if (existing) {
+      return this.performAutoRebase(existing);
+    }
+
+    // Otherwise create a transient state for this single rebase
+    const state: WatchState = {
+      config: {
+        sessionId,
+        repoPath,
+        baseBranch,
+        currentBranch: '',
+        rebaseFrequency: 'on-demand',
+        pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
+      },
+      intervalId: null,
+      lastChecked: null,
+      lastRemoteCommit: null,
+      isRebasing: false,
+      isPaused: false,
+      behindCount: 1,
+      aheadCount: 0,
+      lastAutoRebaseAt: null,
+      lastRebaseResult: null,
+    };
+    return this.performAutoRebase(state);
+  }
+
+  /**
    * Check if enough time has passed since the last auto-rebase (throttle guard)
    */
   private isAutoRebaseDue(state: WatchState, throttleMs: number): boolean {

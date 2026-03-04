@@ -365,6 +365,18 @@ function SessionRow({
   // Extract trailing suffix like "-mr4c", "-l63a", "-UXUPG" from branch name
   const suffix = branch.match(/-([a-zA-Z0-9]{3,5})$/)?.[1] || branch.slice(-5);
   const timeAgo = session.updated ? getTimeAgo(new Date(session.updated)) : null;
+  const lastRebaseInfo = useAgentStore((state) => state.lastRebaseTimes.get(session.sessionId));
+  const syncedAgo = lastRebaseInfo ? getTimeAgo(new Date(lastRebaseInfo.timestamp)) : null;
+  // Color: green < 2h, yellow < 24h, red >= 24h, gray = never
+  const syncColor = !lastRebaseInfo
+    ? 'text-text-secondary'
+    : !lastRebaseInfo.success
+      ? 'text-red-400'
+      : (Date.now() - new Date(lastRebaseInfo.timestamp).getTime()) < 2 * 3600 * 1000
+        ? 'text-green-500'
+        : (Date.now() - new Date(lastRebaseInfo.timestamp).getTime()) < 24 * 3600 * 1000
+          ? 'text-yellow-500'
+          : 'text-orange-400';
 
   // New commits since last viewed
   const viewedCount = useAgentStore((state) => state.viewedCommitCounts.get(session.sessionId));
@@ -404,9 +416,15 @@ function SessionRow({
             +{newCommits}
           </span>
         )}
-        {timeAgo && (
-          <span className="text-[10px] text-text-secondary flex-shrink-0 group-hover:hidden">{timeAgo}</span>
-        )}
+        {/* Last sync indicator — green/yellow/orange based on staleness */}
+        <span
+          className={`text-[10px] flex-shrink-0 group-hover:hidden ${syncColor}`}
+          title={lastRebaseInfo
+            ? `Last synced: ${new Date(lastRebaseInfo.timestamp).toLocaleString()} — ${lastRebaseInfo.message}`
+            : 'Not yet synced this session'}
+        >
+          {syncedAgo ? `↕ ${syncedAgo}` : timeAgo || ''}
+        </span>
         {/* Merge & Delete buttons — visible on hover */}
         <span className={`flex items-center gap-0.5 flex-shrink-0 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
           <button

@@ -56,7 +56,7 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
   const [settings, setSettings] = useState<AgentSettings>({
     branchName: '',
     baseBranch: 'main',
-    rebaseFrequency: 'on-demand',
+    rebaseFrequency: 'daily',
     autoCommit: true,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     contextPreservation: DEFAULT_CONTEXT_PRESERVATION,

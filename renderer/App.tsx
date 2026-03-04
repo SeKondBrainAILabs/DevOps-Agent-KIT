@@ -59,6 +59,27 @@ export default function App(): React.ReactElement {
   // Conflict resolution store
   const showConflictDialog = useConflictStore((state) => state.showDialog);
 
+  // Track last rebase time per session
+  const setLastRebaseTime = useAgentStore((state) => state.setLastRebaseTime);
+
+  useEffect(() => {
+    const unsubStatus = window.api?.rebaseWatcher?.onStatusChanged?.((data) => {
+      if (data?.lastRebaseResult?.timestamp) {
+        setLastRebaseTime(data.sessionId, data.lastRebaseResult);
+      }
+    });
+    const unsubCompleted = window.api?.rebaseWatcher?.onAutoRebaseCompleted?.((data) => {
+      if (data?.sessionId) {
+        setLastRebaseTime(data.sessionId, {
+          success: data.success,
+          timestamp: new Date().toISOString(),
+          message: data.message || '',
+        });
+      }
+    });
+    return () => { unsubStatus?.(); unsubCompleted?.(); };
+  }, [setLastRebaseTime]);
+
   // Subscribe to rebase/merge error events
   useEffect(() => {
     const unsubscribe = window.api?.conflict?.onRebaseErrorDetected?.((data) => {
