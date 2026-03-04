@@ -22,6 +22,12 @@ export interface RebaseWatchConfig {
   pollIntervalMs: number;
 }
 
+// Minimum interval between automatic rebases per frequency to prevent thrashing
+const AUTO_REBASE_THROTTLE_MS: Record<string, number> = {
+  daily: 60 * 60 * 1000,       // at most once per hour for 'daily'
+  weekly: 24 * 60 * 60 * 1000, // at most once per 24h for 'weekly'
+};
+
 // Watch state for tracking
 interface WatchState {
   config: RebaseWatchConfig;
@@ -32,6 +38,7 @@ interface WatchState {
   isPaused: boolean;
   behindCount: number;
   aheadCount: number;
+  lastAutoRebaseAt: Date | null;  // last time a periodic auto-rebase ran
   lastRebaseResult: {
     success: boolean;
     message: string;
@@ -142,6 +149,21 @@ export class RebaseWatcherService extends BaseService {
         behindCount: behind,
         newCommits: behind - previousBehind,
       });
+
+      // Trigger periodic auto-rebase for daily/weekly frequencies
+      const freq = state.config.rebaseFrequency;
+      const shouldAutoRebase =
+        (freq === 'daily' && this.isAutoRebaseDue(state, AUTO_REBASE_THROTTLE_MS.daily)) ||
+        (freq === 'weekly' && this.isAutoRebaseDue(state, AUTO_REBASE_THROTTLE_MS.weekly));
+
+      if (shouldAutoRebase) {
+        console.log(`[RebaseWatcher] Scheduling auto-rebase for ${sessionId} (frequency: ${freq})`);
+        state.lastAutoRebaseAt = new Date();
+        // Run async, don't block the status handler
+        this.performAutoRebase(state).catch((err) =>
+          console.error(`[RebaseWatcher] Auto-rebase error for ${sessionId}:`, err)
+        );
+      }
     }
   }
 
@@ -157,9 +179,9 @@ export class RebaseWatcherService extends BaseService {
         await this.stopWatching(sessionId);
       }
 
-      // Only watch if frequency is 'on-demand'
-      if (config.rebaseFrequency !== 'on-demand') {
-        console.log(`[RebaseWatcher] Skipping watch for ${sessionId} - frequency is ${config.rebaseFrequency}`);
+      // Skip only if explicitly set to 'never'
+      if (config.rebaseFrequency === 'never') {
+        console.log(`[RebaseWatcher] Skipping watch for ${sessionId} - frequency is 'never'`);
         return;
       }
 
@@ -176,6 +198,7 @@ export class RebaseWatcherService extends BaseService {
           isPaused: false,
           behindCount: 0,
           aheadCount: 0,
+          lastAutoRebaseAt: null,
           lastRebaseResult: null,
         };
         this.watchedSessions.set(sessionId, state);
@@ -198,6 +221,7 @@ export class RebaseWatcherService extends BaseService {
         isPaused: false,
         behindCount: initialStatus.behind,
         aheadCount: initialStatus.ahead,
+        lastAutoRebaseAt: null,
         lastRebaseResult: null,
       };
 
@@ -404,8 +428,15 @@ export class RebaseWatcherService extends BaseService {
       // Update last known commit
       state.lastRemoteCommit = status.lastCommit;
 
-      // Only auto-rebase if explicitly forced (user-triggered), not during polling
-      if (forceRebase && status.behind > 0) {
+      // Determine whether to auto-rebase based on frequency
+      const freq = config.rebaseFrequency;
+      const shouldAutoRebase = forceRebase ||
+        (freq === 'daily' && this.isAutoRebaseDue(state, AUTO_REBASE_THROTTLE_MS.daily)) ||
+        (freq === 'weekly' && this.isAutoRebaseDue(state, AUTO_REBASE_THROTTLE_MS.weekly));
+
+      if (shouldAutoRebase && status.behind > 0) {
+        console.log(`[RebaseWatcher] Auto-rebasing ${config.sessionId} (frequency: ${freq})`);
+        state.lastAutoRebaseAt = new Date();
         await this.performAutoRebase(state);
       }
 
@@ -443,6 +474,14 @@ export class RebaseWatcherService extends BaseService {
     }
 
     return { behind, ahead, lastCommit };
+  }
+
+  /**
+   * Check if enough time has passed since the last auto-rebase (throttle guard)
+   */
+  private isAutoRebaseDue(state: WatchState, throttleMs: number): boolean {
+    if (!state.lastAutoRebaseAt) return true;
+    return Date.now() - state.lastAutoRebaseAt.getTime() >= throttleMs;
   }
 
   /**
