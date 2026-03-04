@@ -196,6 +196,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   merge.setAgentInstanceService(agentInstance);
   merge.setLockService(lock);
 
+  // Wire mergeConflict into rebaseWatcher so AI resolution is actually used
+  rebaseWatcher.setMergeConflictService(mergeConflict);
+
   // Initialize Heartbeat service
   // For monitoring agent connection status
   const heartbeat = new HeartbeatService();
@@ -300,6 +303,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
 
   // Connect commit analysis service to watcher for enhanced commit messages
   watcher.setCommitAnalysisService(commitAnalysis);
+
+  // Connect contract services to watcher for post-commit contract auto-checks
+  watcher.setContractServices(contractDetection, contractGeneration);
 
   services = {
     session,

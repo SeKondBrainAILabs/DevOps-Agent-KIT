@@ -511,9 +511,11 @@ export class GitService extends BaseService {
         };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        // Capture stderr from execa if available
+        // Capture both stdout and stderr from execa — git outputs CONFLICT lines to stdout
         const stderr = (error as { stderr?: string })?.stderr || '';
-        const rawError = stderr ? `${errorMsg}\n\nstderr:\n${stderr}` : errorMsg;
+        const stdout = (error as { stdout?: string })?.stdout || '';
+        const rawParts = [errorMsg, stderr && `stderr:\n${stderr}`, stdout && `stdout:\n${stdout}`].filter(Boolean);
+        const rawError = rawParts.join('\n\n');
         console.error(`[GitService] Rebase failed:`, rawError);
 
         // Abort the rebase to clean up
@@ -525,8 +527,9 @@ export class GitService extends BaseService {
         }
 
         // Provide user-friendly error messages while preserving raw detail
+        const fullOutput = `${errorMsg} ${stderr} ${stdout}`;
         let userMessage = 'Rebase failed';
-        if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
+        if (fullOutput.includes('CONFLICT') || fullOutput.includes('conflict')) {
           userMessage = 'Rebase failed due to merge conflicts. Please resolve manually.';
         } else if (errorMsg.includes('exit code')) {
           userMessage = 'Rebase failed - there may be conflicts or the branch is out of sync.';
