@@ -565,33 +565,10 @@ export class MergeConflictService extends BaseService {
       });
       console.log(`[MergeConflict] Resolving: ${filePath} (category: ${analysis?.conflictCategory || triage?.conflictCategory || 'unknown'}, confidence: ${analysis?.confidence ?? triage?.confidence ?? '?'})`);
 
-      // Safety check: protected files
-      if (this.isProtectedFile(filePath)) {
-        console.log(`[MergeConflict] SKIPPED (protected file): ${filePath}`);
-        this.debugLog?.warn('MergeConflict', `Skipping protected file`, { filePath });
-        return {
-          file: filePath,
-          resolved: false,
-          skippedReason: `Protected file — requires manual resolution: ${path.basename(filePath)}`,
-          analysis,
-        };
-      }
-
-      // Confidence check
+      const isProtected = this.isProtectedFile(filePath);
       const confidence = analysis?.confidence ?? triage?.confidence ?? 0.85;
-      if (confidence < this.confidenceThreshold) {
-        console.log(`[MergeConflict] SKIPPED (low confidence ${confidence} < ${this.confidenceThreshold}): ${filePath}`);
-        this.debugLog?.warn('MergeConflict', `Skipping low-confidence conflict`, {
-          filePath, confidence, threshold: this.confidenceThreshold,
-        });
-        return {
-          file: filePath,
-          resolved: false,
-          skippedReason: `Low confidence (${(confidence * 100).toFixed(0)}%) — requires manual review`,
-          analysis,
-        };
-      }
 
+      // Read the file first so we can attempt deterministic resolution before any blocks
       const fileResult = await this.readConflictedFile(repoPath, filePath);
       if (!fileResult.success || !fileResult.data) {
         return {
@@ -613,7 +590,7 @@ export class MergeConflictService extends BaseService {
         };
       }
 
-      // Try deterministic resolution first (no LLM cost)
+      // Try deterministic resolution first (no LLM — safe even for protected files)
       const category = analysis?.conflictCategory || triage?.conflictCategory;
       if (category) {
         const deterministicResult = this.tryDeterministicResolve(
@@ -631,6 +608,32 @@ export class MergeConflictService extends BaseService {
             analysis,
           };
         }
+      }
+
+      // Safety check: protected files block LLM-based resolution (deterministic already tried above)
+      if (isProtected) {
+        console.log(`[MergeConflict] SKIPPED (protected file, deterministic failed): ${filePath}`);
+        this.debugLog?.warn('MergeConflict', `Skipping protected file after deterministic attempt`, { filePath });
+        return {
+          file: filePath,
+          resolved: false,
+          skippedReason: `Protected file — requires manual resolution: ${path.basename(filePath)}`,
+          analysis,
+        };
+      }
+
+      // Confidence check: block LLM if confidence too low
+      if (confidence < this.confidenceThreshold) {
+        console.log(`[MergeConflict] SKIPPED (low confidence ${confidence} < ${this.confidenceThreshold}): ${filePath}`);
+        this.debugLog?.warn('MergeConflict', `Skipping low-confidence conflict`, {
+          filePath, confidence, threshold: this.confidenceThreshold,
+        });
+        return {
+          file: filePath,
+          resolved: false,
+          skippedReason: `Low confidence (${(confidence * 100).toFixed(0)}%) — requires manual review`,
+          analysis,
+        };
       }
 
       // Get commit context for both branches
