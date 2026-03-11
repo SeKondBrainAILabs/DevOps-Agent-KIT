@@ -32,13 +32,61 @@ export function useAgentSubscription(): void {
       if (result.success && result.data) {
         setAgents(result.data);
       }
-      // Always mark as initialized, even if no agents
-      setInitialized(true);
     }).catch((err) => {
       console.error('Failed to load agents:', err);
-      // Still mark as initialized to show empty state instead of skeleton
-      setInitialized(true);
     });
+
+    // Load persisted Kanvas instances and populate sessions from the store.
+    // This eliminates the race condition where emitStoredSessions() fires
+    // before the renderer's event listeners are ready (S9N-925 fix).
+    const loadStoredInstances = async () => {
+      try {
+        const result = await window.api?.instance?.list?.();
+        if (result?.success && result.data) {
+          for (const inst of result.data) {
+            if (!inst.sessionId) continue;
+            const shortId = inst.sessionId.replace('sess_', '').slice(0, 8);
+            const agentId = `kanvas-${inst.config.agentType}-${shortId}`;
+            const repoName = inst.config.repoPath?.split('/').pop() || 'unknown';
+
+            addAgent({
+              agentId,
+              agentType: inst.config.agentType,
+              agentName: `${inst.config.agentType.charAt(0).toUpperCase()}${inst.config.agentType.slice(1)} (${repoName})`,
+              version: '1.0.0',
+              pid: 0,
+              startedAt: inst.createdAt,
+              repoPath: inst.config.repoPath,
+              capabilities: ['code-generation', 'file-editing'],
+              sessions: [inst.sessionId],
+              lastHeartbeat: new Date().toISOString(),
+              isAlive: inst.status === 'running' || inst.status === 'active',
+            });
+
+            addReportedSession({
+              sessionId: inst.sessionId,
+              agentId,
+              agentType: inst.config.agentType,
+              task: inst.config.taskDescription || inst.config.branchName || `${inst.config.agentType} session`,
+              branchName: inst.config.branchName,
+              baseBranch: inst.config.baseBranch,
+              worktreePath: inst.worktreePath || inst.config.repoPath,
+              repoPath: inst.config.repoPath,
+              status: inst.status === 'running' ? 'active' : 'idle',
+              created: inst.createdAt,
+              updated: new Date().toISOString(),
+              commitCount: 0,
+            });
+          }
+          console.log(`[useAgentSubscription] Loaded ${result.data.length} stored instance(s)`);
+        }
+      } catch (err) {
+        console.error('Failed to load stored instances:', err);
+      } finally {
+        setInitialized(true);
+      }
+    };
+    loadStoredInstances();
 
     // Subscribe to agent registered events
     const unsubRegistered = window.api.agent.onRegistered((agent) => {

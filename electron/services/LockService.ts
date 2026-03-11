@@ -18,6 +18,7 @@ import type {
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
+import os from 'os';
 
 // Store locks per repository in .S9N_KIT_DevOpsAgent/locks.json
 const LOCKS_FILENAME = 'locks.json';
@@ -25,6 +26,12 @@ const KANVAS_DIR = '.S9N_KIT_DevOpsAgent';
 
 // Default lock timeout: 24 hours of inactivity
 const DEFAULT_LOCK_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+// Session lock directory (matches SessionService)
+const SESSION_LOCK_DIR = path.join(os.homedir(), '.devops-agent', 'session-locks');
+
+// Stale session lock TTL: 1 hour (for crashed sessions)
+const STALE_SESSION_LOCK_TTL_MS = 60 * 60 * 1000;
 
 export class LockService extends BaseService {
   // In-memory cache of locks: repoPath -> filePath -> lock
@@ -34,7 +41,101 @@ export class LockService extends BaseService {
   private sessionLocks: Map<string, FileLock> = new Map();
 
   async initialize(): Promise<void> {
-    console.log('[LockService] Initialized');
+    // Clean up stale session lock files from crashed sessions
+    await this.cleanupStaleSessionLocks();
+    console.log('[LockService] Initialized (stale lock cleanup complete)');
+  }
+
+  /**
+   * Scan ~/.devops-agent/session-locks/ for stale .lock files from crashed sessions.
+   * Removes locks that haven't been updated within the TTL threshold.
+   */
+  private async cleanupStaleSessionLocks(): Promise<void> {
+    try {
+      if (!existsSync(SESSION_LOCK_DIR)) return;
+
+      const files = await fs.readdir(SESSION_LOCK_DIR);
+      const lockFiles = files.filter((f) => f.endsWith('.lock'));
+      if (lockFiles.length === 0) return;
+
+      const now = Date.now();
+      let cleaned = 0;
+
+      for (const lockFile of lockFiles) {
+        const lockPath = path.join(SESSION_LOCK_DIR, lockFile);
+        try {
+          const stat = await fs.stat(lockPath);
+          const age = now - stat.mtimeMs;
+
+          if (age > STALE_SESSION_LOCK_TTL_MS) {
+            // Read lock to log what we're cleaning
+            try {
+              const content = await fs.readFile(lockPath, 'utf8');
+              const lockData = JSON.parse(content);
+              console.log(`[LockService] Removing stale session lock: ${lockFile} (session: ${lockData.sessionId || 'unknown'}, age: ${Math.round(age / 60000)}min)`);
+            } catch {
+              console.log(`[LockService] Removing stale session lock: ${lockFile} (age: ${Math.round(age / 60000)}min)`);
+            }
+
+            await fs.unlink(lockPath);
+            cleaned++;
+          }
+        } catch (err) {
+          console.warn(`[LockService] Could not check lock file ${lockFile}:`, err);
+        }
+      }
+
+      if (cleaned > 0) {
+        console.log(`[LockService] Cleaned up ${cleaned} stale session lock(s)`);
+      }
+    } catch (err) {
+      console.warn('[LockService] Error during stale lock cleanup:', err);
+    }
+  }
+
+  /**
+   * Clean up git worktree lock files (.git/worktrees/<name>/locked) for stale worktrees.
+   * Called during repo cleanup to remove git-internal locks blocking worktree operations.
+   */
+  async cleanupGitWorktreeLocks(repoPath: string): Promise<number> {
+    try {
+      const gitWorktreesDir = path.join(repoPath, '.git', 'worktrees');
+      if (!existsSync(gitWorktreesDir)) return 0;
+
+      const entries = await fs.readdir(gitWorktreesDir);
+      let cleaned = 0;
+
+      for (const entry of entries) {
+        const lockFile = path.join(gitWorktreesDir, entry, 'locked');
+        if (existsSync(lockFile)) {
+          try {
+            // Check if the worktree path still exists
+            const gitdirPath = path.join(gitWorktreesDir, entry, 'gitdir');
+            let worktreeExists = false;
+            if (existsSync(gitdirPath)) {
+              const worktreePath = (await fs.readFile(gitdirPath, 'utf8')).trim();
+              const actualPath = path.resolve(path.dirname(gitdirPath), worktreePath, '..');
+              worktreeExists = existsSync(actualPath);
+            }
+
+            if (!worktreeExists) {
+              await fs.unlink(lockFile);
+              cleaned++;
+              console.log(`[LockService] Removed stale git worktree lock: ${entry}/locked`);
+            }
+          } catch {
+            // Skip unreadable entries
+          }
+        }
+      }
+
+      if (cleaned > 0) {
+        console.log(`[LockService] Cleaned ${cleaned} stale git worktree lock(s) in ${repoPath}`);
+      }
+      return cleaned;
+    } catch {
+      return 0;
+    }
   }
 
   /**
