@@ -8,7 +8,7 @@
  * 3. Code-level conflicts - offer Auto-Fix (LLM) or manual resolution
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { MergePreview, BranchInfo } from '../../../shared/types';
 
 /** Log merge errors to the persistent DebugLogService via IPC */
@@ -91,6 +91,9 @@ export function MergeWorkflowModal({
     stashConflictFiles?: string[];
   } | null>(null);
 
+  // Track whether auto-fix has been triggered for current preview
+  const autoFixTriggered = useRef(false);
+
   // Helper to add/update progress entries
   const addProgress = useCallback((message: string, status: ProgressEntry['status'] = 'active', detail?: string) => {
     setProgressLog((prev) => [...prev, { message, status, detail }]);
@@ -117,6 +120,9 @@ export function MergeWorkflowModal({
       setActualBranch(sourceBranch);
       return;
     }
+
+    // Sync target branch from prop each time modal opens — useState only sets initial value once
+    setTargetBranch(initialTargetBranch);
 
     const init = async () => {
       // Step 1: Resolve the ACTUAL active branch from the worktree
@@ -155,7 +161,7 @@ export function MergeWorkflowModal({
     };
 
     init();
-  }, [isOpen, sourceBranch, targetBranch, repoPath, worktreePath]);
+  }, [isOpen, sourceBranch, initialTargetBranch, repoPath, worktreePath]);
 
   const loadPreviewWithBranch = async (branch: string) => {
     setLoading(true);
@@ -181,7 +187,7 @@ export function MergeWorkflowModal({
   /**
    * Handle stashing untracked blocking files, then reload preview
    */
-  const handleStashAndRetry = async () => {
+  const handleStashAndRetry = useCallback(async () => {
     if (!preview?.untrackedBlockingFiles?.length) return;
 
     setStep('resolving');
@@ -247,12 +253,12 @@ export function MergeWorkflowModal({
       setErrorWithLog(err instanceof Error ? err.message : 'Failed during stash operation');
       setStep('error');
     }
-  };
+  }, [preview, repoPath, actualBranch, targetBranch, addProgress, updateLastProgress, setErrorWithLog]);
 
   /**
    * Handle AI auto-fix for code-level conflicts
    */
-  const handleAutoFix = async () => {
+  const handleAutoFix = useCallback(async () => {
     setStep('resolving');
     setProgressLog([]);
 
@@ -330,7 +336,43 @@ export function MergeWorkflowModal({
       setErrorWithLog(err instanceof Error ? err.message : 'Auto-fix failed');
       setStep('error');
     }
-  };
+  }, [sessionId, repoPath, targetBranch, actualBranch, addProgress, updateLastProgress, setErrorWithLog]);
+
+  // Reset auto-fix trigger when modal closes
+  const autoStashTriggered = useRef(false);
+  useEffect(() => {
+    if (!isOpen) {
+      autoFixTriggered.current = false;
+      autoStashTriggered.current = false;
+    }
+  }, [isOpen]);
+
+  // Auto-stash untracked blocking files (e.g. .DS_Store) so merge proceeds autonomously
+  useEffect(() => {
+    if (
+      preview?.untrackedBlockingFiles?.length &&
+      step === 'preview' &&
+      !loading &&
+      !autoStashTriggered.current
+    ) {
+      autoStashTriggered.current = true;
+      handleStashAndRetry();
+    }
+  }, [preview, step, loading, handleStashAndRetry]);
+
+  // Auto-trigger AI fix when conflicts detected and no untracked blockers
+  useEffect(() => {
+    if (
+      preview?.hasConflicts &&
+      !preview.untrackedBlockingFiles?.length &&
+      step === 'preview' &&
+      !loading &&
+      !autoFixTriggered.current
+    ) {
+      autoFixTriggered.current = true;
+      handleAutoFix();
+    }
+  }, [preview, step, loading, handleAutoFix]);
 
   const handleExecuteMerge = async () => {
     setStep('executing');
@@ -384,7 +426,7 @@ export function MergeWorkflowModal({
 
   // Determine if there are untracked blocking files vs code-level conflicts
   const hasUntrackedBlocking = preview?.untrackedBlockingFiles && preview.untrackedBlockingFiles.length > 0;
-  const hasCodeConflicts = preview?.hasConflicts && preview.conflictingFiles.length > 0 && !hasUntrackedBlocking;
+  const hasCodeConflicts = preview?.hasConflicts && !hasUntrackedBlocking;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

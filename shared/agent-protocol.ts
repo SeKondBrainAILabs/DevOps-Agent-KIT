@@ -223,6 +223,7 @@ export const CONTRACTS_PATHS = {
   unit: 'House_Rules_Contracts/UNIT_TESTS_CONTRACT.md',
   integration: 'House_Rules_Contracts/INTEGRATION_TESTS_CONTRACT.md',
   fixtures: 'House_Rules_Contracts/FIXTURES_CONTRACT.md',
+  seed: 'House_Rules_Contracts/SEED_DATA_CONTRACT.md',
 } as const;
 
 // MCP config file (auto-generated per session for MCP-capable agents)

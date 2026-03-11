@@ -1332,7 +1332,8 @@ ${DEVOPS_KIT_DIR}/
       worktreePath?: string;
       agentType?: AgentType;
       task?: string;
-    }
+    },
+    commitChanges = true
   ): Promise<IpcResult<AgentInstance>> {
     const shortSessionId = sessionId.replace('sess_', '').slice(0, 8);
     this.terminalLogService?.logSystem(`Starting restart for session ${shortSessionId}...`, sessionId);
@@ -1378,15 +1379,19 @@ ${DEVOPS_KIT_DIR}/
           };
         }
 
-        // Commit any pending changes in the worktree before creating new session
+        // Optionally commit any pending changes before creating new session
         const worktreePath = sessionData.worktreePath || config.repoPath;
-        this.terminalLogService?.info(`Checking for uncommitted changes...`, sessionId, 'Restart');
-        const commitResult = await this.commitPendingChangesOnRestart(sessionId, worktreePath);
-        if (commitResult.committed) {
-          console.log(`[AgentInstanceService] Committed pending changes: ${commitResult.message}`);
-          this.terminalLogService?.info(`Committed pending changes: ${commitResult.message}`, sessionId, 'Restart');
+        if (commitChanges) {
+          this.terminalLogService?.info(`Checking for uncommitted changes...`, sessionId, 'Restart');
+          const commitResult = await this.commitPendingChangesOnRestart(sessionId, worktreePath);
+          if (commitResult.committed) {
+            console.log(`[AgentInstanceService] Committed pending changes: ${commitResult.message}`);
+            this.terminalLogService?.info(`Committed pending changes: ${commitResult.message}`, sessionId, 'Restart');
+          } else {
+            this.terminalLogService?.info(`No uncommitted changes found`, sessionId, 'Restart');
+          }
         } else {
-          this.terminalLogService?.info(`No uncommitted changes found`, sessionId, 'Restart');
+          this.terminalLogService?.info(`Skipping commit — user chose to discard uncommitted changes`, sessionId, 'Restart');
         }
 
         // Create new instance with the config
@@ -1434,14 +1439,18 @@ ${DEVOPS_KIT_DIR}/
       console.log(`[AgentInstanceService] Restarting session ${sessionId} in ${worktreePath}`);
       this.terminalLogService?.info(`Found stored instance, restarting in ${worktreePath}`, sessionId, 'Restart');
 
-      // Check for uncommitted changes and commit them
-      this.terminalLogService?.info(`Checking for uncommitted changes...`, sessionId, 'Restart');
-      const commitResult = await this.commitPendingChangesOnRestart(sessionId, worktreePath);
-      if (commitResult.committed) {
-        console.log(`[AgentInstanceService] Committed pending changes: ${commitResult.message}`);
-        this.terminalLogService?.info(`Committed pending changes: ${commitResult.message}`, sessionId, 'Restart');
+      // Check for uncommitted changes and optionally commit them
+      if (commitChanges) {
+        this.terminalLogService?.info(`Checking for uncommitted changes...`, sessionId, 'Restart');
+        const commitResult = await this.commitPendingChangesOnRestart(sessionId, worktreePath);
+        if (commitResult.committed) {
+          console.log(`[AgentInstanceService] Committed pending changes: ${commitResult.message}`);
+          this.terminalLogService?.info(`Committed pending changes: ${commitResult.message}`, sessionId, 'Restart');
+        } else {
+          this.terminalLogService?.info(`No uncommitted changes found`, sessionId, 'Restart');
+        }
       } else {
-        this.terminalLogService?.info(`No uncommitted changes found`, sessionId, 'Restart');
+        this.terminalLogService?.info(`Skipping commit — user chose to discard uncommitted changes`, sessionId, 'Restart');
       }
 
       // Clean up old session files from .S9N_KIT_DevOpsAgent

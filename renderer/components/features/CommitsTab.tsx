@@ -31,22 +31,53 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
       const repoPath = session.worktreePath || session.repoPath;
       const baseBranch = session.baseBranch || 'main';
 
-      if (window.api?.git?.getCommitHistory && repoPath) {
-        const result = await window.api.git.getCommitHistory(repoPath, baseBranch, 50, session.branchName);
-        if (result.success && result.data) {
+      if (!window.api?.git?.getCommitHistory || !repoPath) {
+        setError('Commit history API not available');
+        return;
+      }
+
+      // Resolve the actual current branch from the worktree (may differ from session.branchName)
+      let resolvedBranch = session.branchName;
+      if (repoPath && window.api?.merge?.resolveActiveBranch) {
+        try {
+          const branchResult = await window.api.merge.resolveActiveBranch(repoPath);
+          if (branchResult.success && branchResult.data) {
+            resolvedBranch = branchResult.data;
+          }
+        } catch {
+          // Fall back to session.branchName
+        }
+      }
+
+      // Try with resolved branch first; if empty results, fall back to no branch filter
+      const result = await window.api.git.getCommitHistory(repoPath, baseBranch, 100, resolvedBranch);
+      if (result.success && result.data) {
+        if (result.data.length > 0) {
           setCommits(result.data.map(c => ({ ...c, expanded: false })));
-        } else if (result.error) {
+          return;
+        }
+        // Empty — might be because baseBranch isn't a local ref; try origin/baseBranch
+        const fallbackResult = await window.api.git.getCommitHistory(repoPath, `origin/${baseBranch}`, 100, resolvedBranch);
+        if (fallbackResult.success && fallbackResult.data) {
+          setCommits(fallbackResult.data.map(c => ({ ...c, expanded: false })));
+        } else {
+          setCommits([]);
+        }
+      } else if (result.error) {
+        // Try origin/baseBranch as fallback
+        const fallbackResult = await window.api.git.getCommitHistory(repoPath, `origin/${baseBranch}`, 100, resolvedBranch);
+        if (fallbackResult.success && fallbackResult.data) {
+          setCommits(fallbackResult.data.map(c => ({ ...c, expanded: false })));
+        } else {
           setError(result.error.message || 'Failed to load commits');
         }
-      } else {
-        setError('Commit history API not available');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load commits');
     } finally {
       setLoading(false);
     }
-  }, [session.worktreePath, session.repoPath, session.baseBranch]);
+  }, [session.worktreePath, session.repoPath, session.baseBranch, session.branchName]);
 
   useEffect(() => {
     loadCommits();

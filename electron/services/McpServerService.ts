@@ -6,9 +6,13 @@
  * via a proper tool interface.
  *
  * Transport: Streamable HTTP (POST /mcp, GET /mcp for SSE, DELETE /mcp)
+ *
+ * Uses stateful mode: each client connection gets its own transport + server
+ * instance to avoid SDK restriction on reusing stateless transports across requests.
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { randomUUID } from 'crypto';
 import type { Server } from 'http';
 import { BaseService } from './BaseService';
 import { McpSessionBinder } from './mcp/session-binder';
@@ -72,10 +76,14 @@ export interface McpCallLogEntry {
 
 export class McpServerService extends BaseService {
   private httpServer: Server | null = null;
-  private mcpServer: InstanceType<typeof import('@modelcontextprotocol/sdk/server/mcp.js').McpServer> | null = null;
-  private transport: InstanceType<typeof import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport> | null = null;
   private port: number | null = null;
   private startedAt: string | null = null;
+
+  // Per-connection transports (stateful mode) — keyed by mcp-session-id
+  private transports = new Map<
+    string,
+    InstanceType<typeof import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport>
+  >();
 
   readonly sessionBinder = new McpSessionBinder();
   private deps: McpServiceDeps = {};
@@ -134,34 +142,24 @@ export class McpServerService extends BaseService {
       const detectPort = (await import('detect-port')).default;
       this.port = await detectPort(MCP_DEFAULT_PORT_START);
 
-      // Create MCP server instance
-      const McpServerClass = await getMcpServer();
-      this.mcpServer = new McpServerClass({
-        name: 'kanvas',
-        version: '1.0.0',
-      });
-
-      // Register tools and resources
-      const { registerTools } = await import('./mcp/tools');
-      const { registerResources } = await import('./mcp/resources');
-      registerTools(this.mcpServer, this.sessionBinder, this.deps, this);
-      registerResources(this.mcpServer, this.sessionBinder, this.deps);
-
-      // Create transport
-      const TransportClass = await getTransport();
-      this.transport = new TransportClass({
-        sessionIdGenerator: undefined, // Use default UUID generator
-      });
-
-      // Connect MCP server to transport
-      await this.mcpServer.connect(this.transport);
+      // Pre-load SDK classes so handleRequest doesn't need to await them
+      await getMcpServer();
+      await getTransport();
 
       // Create HTTP server
-      this.httpServer = createServer((req, res) => this.handleRequest(req, res));
+      this.httpServer = createServer((req, res) => {
+        this.handleRequest(req, res).catch((err) => {
+          console.error('[McpServerService] Unhandled request error:', err);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Internal server error' }));
+          }
+        });
+      });
 
       // Start listening
       await new Promise<void>((resolve, reject) => {
-        this.httpServer!.listen(this.port, MCP_SERVER_HOST, () => {
+        this.httpServer!.listen(this.port!, MCP_SERVER_HOST, () => {
           this.startedAt = new Date().toISOString();
           console.log(`[McpServerService] MCP server listening on http://${MCP_SERVER_HOST}:${this.port}/mcp`);
           resolve();
@@ -182,22 +180,14 @@ export class McpServerService extends BaseService {
   }
 
   async dispose(): Promise<void> {
-    if (this.transport) {
+    // Close all active transports
+    for (const [sessionId, transport] of this.transports) {
       try {
-        await this.transport.close();
+        await transport.close();
       } catch {
-        // Ignore close errors
+        // Ignore
       }
-      this.transport = null;
-    }
-
-    if (this.mcpServer) {
-      try {
-        await this.mcpServer.close();
-      } catch {
-        // Ignore close errors
-      }
-      this.mcpServer = null;
+      this.transports.delete(sessionId);
     }
 
     if (this.httpServer) {
@@ -217,7 +207,7 @@ export class McpServerService extends BaseService {
   // HTTP REQUEST HANDLER
   // ==========================================================================
 
-  private handleRequest(req: IncomingMessage, res: ServerResponse): void {
+  private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Only handle /mcp path
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     if (url.pathname !== '/mcp') {
@@ -229,7 +219,7 @@ export class McpServerService extends BaseService {
     // CORS headers for local development
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -237,15 +227,66 @@ export class McpServerService extends BaseService {
       return;
     }
 
-    // Delegate to transport
-    if (!this.transport) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'MCP server not ready' }));
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+    // Route to existing session transport
+    if (sessionId && this.transports.has(sessionId)) {
+      await this.transports.get(sessionId)!.handleRequest(req, res);
       return;
     }
 
-    // The StreamableHTTPServerTransport handles POST (RPC), GET (SSE), DELETE (close)
-    this.transport.handleRequest(req, res);
+    // New connection — only POST (initialize) can create a new session
+    if (req.method === 'POST' && !sessionId) {
+      await this.createSessionAndHandle(req, res);
+      return;
+    }
+
+    // Unknown session or invalid request
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Bad Request: No valid session' }));
+  }
+
+  private async createSessionAndHandle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const McpServerClass = _McpServer!;
+    const TransportClass = _StreamableHTTPServerTransport!;
+
+    // Create per-connection MCP server + transport (stateful mode)
+    const mcpServer = new McpServerClass({
+      name: 'kanvas',
+      version: '1.0.0',
+    });
+
+    const transport = new TransportClass({
+      sessionIdGenerator: () => randomUUID(),
+    });
+
+    // Register tools and resources on this server instance
+    const { registerTools } = await import('./mcp/tools');
+    const { registerResources } = await import('./mcp/resources');
+    registerTools(mcpServer, this.sessionBinder, this.deps, this);
+    registerResources(mcpServer, this.sessionBinder, this.deps);
+
+    // Connect server to transport
+    await mcpServer.connect(transport);
+
+    // Track transport; clean up when session closes
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid) {
+        this.transports.delete(sid);
+        console.log(`[McpServerService] Session closed: ${sid} (${this.transports.size} active)`);
+      }
+    };
+
+    // Handle the initial request — session ID header will be set in the response
+    await transport.handleRequest(req, res);
+
+    // After handling, store by the session ID the transport assigned
+    const sid = transport.sessionId;
+    if (sid) {
+      this.transports.set(sid, transport);
+      console.log(`[McpServerService] New session: ${sid} (${this.transports.size} active)`);
+    }
   }
 
   // ==========================================================================
@@ -266,7 +307,7 @@ export class McpServerService extends BaseService {
       port: this.port,
       url: this.getUrl(),
       isRunning: this.httpServer !== null && this.httpServer.listening,
-      connectionCount: this.sessionBinder.getConnectionCount(),
+      connectionCount: this.transports.size,
       startedAt: this.startedAt,
     };
   }

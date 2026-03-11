@@ -527,8 +527,8 @@ const api = {
       worktreePath?: string;
       agentType?: string;
       task?: string;
-    }): Promise<IpcResult<AgentInstance>> =>
-      ipcRenderer.invoke(IPC.INSTANCE_RESTART, sessionId, sessionData),
+    }, commitChanges?: boolean): Promise<IpcResult<AgentInstance>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_RESTART, sessionId, sessionData, commitChanges),
 
     clearAll: (): Promise<IpcResult<{ count: number }>> =>
       ipcRenderer.invoke(IPC.INSTANCE_CLEAR_ALL),
@@ -1048,6 +1048,68 @@ const api = {
       }) => callback(result);
       ipcRenderer.on(IPC.CONTRACT_GENERATION_COMPLETE, handler);
       return () => ipcRenderer.removeListener(IPC.CONTRACT_GENERATION_COMPLETE, handler);
+    },
+  },
+
+  // ==========================================================================
+  // SEED DATA API
+  // Generate seed contracts, merge into execution plan, and execute
+  // ==========================================================================
+  seedData: {
+    generateFeature: (repoPath: string, feature: unknown): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SEED_GENERATE_FEATURE, repoPath, feature),
+
+    generateAll: (repoPath: string, features: unknown[]): Promise<IpcResult<unknown[]>> =>
+      ipcRenderer.invoke(IPC.SEED_GENERATE_ALL, repoPath, features),
+
+    mergePlan: (repoPath: string): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SEED_MERGE_PLAN, repoPath),
+
+    execute: (repoPath: string): Promise<IpcResult<{ status: string; executed: number; skipped: number; errors: string[] }>> =>
+      ipcRenderer.invoke(IPC.SEED_EXECUTE, repoPath),
+
+    getStatus: (): Promise<IpcResult<{ executing: boolean }>> =>
+      ipcRenderer.invoke(IPC.SEED_GET_STATUS),
+
+    getPlan: (repoPath: string): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SEED_GET_PLAN, repoPath),
+
+    onProgress: (callback: (progress: {
+      total: number;
+      completed: number;
+      currentTable: string;
+      currentFeature: string;
+      errors: string[];
+    }) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, progress: {
+        total: number;
+        completed: number;
+        currentTable: string;
+        currentFeature: string;
+        errors: string[];
+      }) => callback(progress);
+      ipcRenderer.on(IPC.SEED_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC.SEED_PROGRESS, handler);
+    },
+  },
+
+  // ==========================================================================
+  // STARTUP / PORT DISCOVERY API
+  // ==========================================================================
+  startup: {
+    discoverPorts: (services: Array<{ name: string; preferredPort?: number }>): Promise<IpcResult<Array<{ serviceName: string; port: number; preferredPort?: number }>>> =>
+      ipcRenderer.invoke(IPC.STARTUP_DISCOVER_PORTS, services),
+
+    getPorts: (): Promise<IpcResult<Array<{ serviceName: string; port: number; preferredPort?: number }>>> =>
+      ipcRenderer.invoke(IPC.STARTUP_GET_PORTS),
+
+    getStatus: (): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke(IPC.STARTUP_GET_STATUS),
+
+    onStatusChanged: (callback: (status: unknown) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, status: unknown) => callback(status);
+      ipcRenderer.on(IPC.STARTUP_STATUS_CHANGED, handler);
+      return () => ipcRenderer.removeListener(IPC.STARTUP_STATUS_CHANGED, handler);
     },
   },
 

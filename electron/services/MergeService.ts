@@ -327,11 +327,16 @@ export class MergeService extends BaseService {
       } catch {
         hasConflicts = true;
         canMerge = false;
+        // Still try to get conflicting files from the index
+        try {
+          const { stdout } = await this.git(['diff', '--name-only', '--diff-filter=U'], repoPath);
+          conflictingFiles = stdout.split('\n').filter(Boolean);
+        } catch { /* ignore */ }
       } finally {
         // Always abort the test merge
-        await this.git(['merge', '--abort'], repoPath);
+        await this.git(['merge', '--abort'], repoPath).catch(() => {});
         // Reset to original state
-        await this.git(['reset', '--hard', currentHead], repoPath);
+        await this.git(['reset', '--hard', currentHead], repoPath).catch(() => {});
       }
 
       // Check for cross-session file overlaps (Phase 3B)

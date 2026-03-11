@@ -171,11 +171,8 @@ async function createWindow(): Promise<void> {
     mainWindow.webContents.loadURL(`data:text/html,<html><body style="background:#fff;color:#000;font-family:sans-serif;padding:40px;"><h1>Failed to load app</h1><pre>${error}</pre><p>__dirname: ${__dirname}</p></body></html>`);
   }
 
-  // Open DevTools only when explicitly requested (Cmd+Option+I)
-  // Uncomment below line to auto-open DevTools in development
-  // if (process.env.NODE_ENV === 'development') {
-  //   mainWindow.webContents.openDevTools();
-  // }
+  // Open DevTools for debugging (always open to diagnose white screen)
+  mainWindow.webContents.openDevTools();
 
   // Open external links in browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

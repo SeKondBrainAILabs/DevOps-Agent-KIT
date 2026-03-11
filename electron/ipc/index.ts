@@ -348,11 +348,11 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     worktreePath?: string;
     agentType?: string;
     task?: string;
-  }) => {
+  }, commitChanges?: boolean) => {
     // Stop old watcher
     await services.watcher.stop(sessionId).catch(() => {});
 
-    const result = await services.agentInstance.restartInstance(sessionId, sessionData);
+    const result = await services.agentInstance.restartInstance(sessionId, sessionData, commitChanges);
 
     // Start watcher for new session (use worktree path if available)
     if (result.success && result.data?.sessionId) {
@@ -1309,12 +1309,14 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 }
 
 /**
- * Start file watchers for all existing sessions
+ * Start file watchers for all existing sessions and auto-restart active ones
  */
 async function startWatchersForExistingSessions(services: Services): Promise<void> {
   const result = services.agentInstance.listInstances();
   if (result.success && result.data) {
     console.log(`[IPC] Starting watchers for ${result.data.length} existing sessions`);
+    const activeSessions: string[] = [];
+
     for (const instance of result.data) {
       // Use worktree path if available, otherwise fallback to repo path
       const watchPath = instance.worktreePath || instance.config?.repoPath;
@@ -1324,21 +1326,48 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
           console.warn(`[IPC] Failed to start file watcher for session ${instance.sessionId}:`, err);
         });
 
-        // Start rebase watcher if configured for on-demand rebase
+        // Start rebase watcher for all non-never frequencies
         const rebaseFrequency = instance.config?.rebaseFrequency || 'never';
-        if (rebaseFrequency === 'on-demand' && instance.config?.baseBranch) {
+        if (rebaseFrequency !== 'never' && instance.config?.baseBranch) {
           services.rebaseWatcher.startWatching({
             sessionId: instance.sessionId,
             repoPath: watchPath,
             baseBranch: instance.config.baseBranch,
             currentBranch: instance.config.branchName,
-            rebaseFrequency: 'on-demand',
-            pollIntervalMs: 60000, // Check every 60 seconds
+            rebaseFrequency: rebaseFrequency as 'on-demand' | 'daily' | 'weekly',
+            pollIntervalMs: 60000,
           }).catch((err) => {
             console.warn(`[IPC] Failed to start rebase watcher for session ${instance.sessionId}:`, err);
           });
         }
+
+        // Track sessions that were active — will auto-restart after watchers settle
+        if (instance.status === 'active') {
+          activeSessions.push(instance.sessionId);
+        }
       }
+    }
+
+    // Auto-restart sessions that were active when the app was last closed
+    if (activeSessions.length > 0) {
+      console.log(`[IPC] Auto-restarting ${activeSessions.length} previously active session(s)`);
+      setTimeout(async () => {
+        for (const sessionId of activeSessions) {
+          try {
+            const restart = await services.agentInstance.restartInstance(sessionId, undefined, true);
+            if (restart.success && restart.data?.sessionId) {
+              const watchPath = restart.data.worktreePath || restart.data.config?.repoPath;
+              if (watchPath) {
+                services.watcher.startWithPath(restart.data.sessionId, watchPath).catch(() => {});
+              }
+              console.log(`[IPC] Auto-restarted session ${sessionId} -> ${restart.data.sessionId}`);
+              services.terminalLog.logSystem(`Auto-restarted session on app launch`, restart.data.sessionId);
+            }
+          } catch (err) {
+            console.warn(`[IPC] Auto-restart failed for session ${sessionId}:`, err);
+          }
+        }
+      }, 2000); // Wait 2s for watchers to initialise before restarting
     }
 
     // Run crash recovery - process any unprocessed commits from while app was closed
@@ -1366,6 +1395,48 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
       }
     }, 2000); // Delay to let watchers start first
   }
+  // ==========================================================================
+  // SEED DATA HANDLERS
+  // ==========================================================================
+  ipcMain.handle(IPC.SEED_GENERATE_FEATURE, async (_, repoPath: string, feature: unknown) => {
+    return services.seedDataExecution.generateFeatureSeedContract(repoPath, feature as any);
+  });
+
+  ipcMain.handle(IPC.SEED_GENERATE_ALL, async (_, repoPath: string, features: unknown[]) => {
+    return services.seedDataExecution.generateAllSeedContracts(repoPath, features as any);
+  });
+
+  ipcMain.handle(IPC.SEED_MERGE_PLAN, async (_, repoPath: string) => {
+    return services.seedDataExecution.mergeSeedContracts(repoPath);
+  });
+
+  ipcMain.handle(IPC.SEED_EXECUTE, async (_, repoPath: string) => {
+    return services.seedDataExecution.executeSeedPlan(repoPath);
+  });
+
+  ipcMain.handle(IPC.SEED_GET_STATUS, async () => {
+    return services.seedDataExecution.getSeedStatus();
+  });
+
+  ipcMain.handle(IPC.SEED_GET_PLAN, async (_, repoPath: string) => {
+    return services.seedDataExecution.getSeedPlan(repoPath);
+  });
+
+  // ==========================================================================
+  // STARTUP / PORT DISCOVERY HANDLERS
+  // ==========================================================================
+  ipcMain.handle(IPC.STARTUP_DISCOVER_PORTS, async (_, servicesConfig: unknown[]) => {
+    return services.seedDataExecution.discoverPorts(servicesConfig as any);
+  });
+
+  ipcMain.handle(IPC.STARTUP_GET_PORTS, async () => {
+    return services.seedDataExecution.getPorts();
+  });
+
+  ipcMain.handle(IPC.STARTUP_GET_STATUS, async () => {
+    return services.seedDataExecution.getStartupStatus();
+  });
+
   console.log('[IPC] All IPC handlers registered successfully');
 }
 

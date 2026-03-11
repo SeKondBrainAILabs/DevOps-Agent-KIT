@@ -416,6 +416,29 @@ export const IPC = {
   MCP_TOOL_CALLED: 'mcp:tool-called',
 
   // ==========================================================================
+  // SEED DATA CHANNELS
+  // Generate seed contracts, merge into execution plan, and execute
+  // ==========================================================================
+  SEED_GENERATE_FEATURE: 'seed:generate-feature',
+  SEED_GENERATE_ALL: 'seed:generate-all',
+  SEED_MERGE_PLAN: 'seed:merge-plan',
+  SEED_EXECUTE: 'seed:execute',
+  SEED_GET_STATUS: 'seed:get-status',
+  SEED_GET_PLAN: 'seed:get-plan',
+  // Events
+  SEED_PROGRESS: 'seed:progress',
+
+  // ==========================================================================
+  // STARTUP CHANNELS
+  // Port discovery and startup orchestration
+  // ==========================================================================
+  STARTUP_DISCOVER_PORTS: 'startup:discover-ports',
+  STARTUP_GET_PORTS: 'startup:get-ports',
+  STARTUP_GET_STATUS: 'startup:get-status',
+  // Events
+  STARTUP_STATUS_CHANGED: 'startup:status-changed',
+
+  // ==========================================================================
   // APP CHANNELS
   // ==========================================================================
   APP_GET_VERSION: 'app:getVersion',
@@ -548,6 +571,17 @@ export const REQUEST_CHANNELS = [
   // MCP server channels
   IPC.MCP_SERVER_STATUS,
   IPC.MCP_GET_CALL_LOG,
+  // Seed data channels
+  IPC.SEED_GENERATE_FEATURE,
+  IPC.SEED_GENERATE_ALL,
+  IPC.SEED_MERGE_PLAN,
+  IPC.SEED_EXECUTE,
+  IPC.SEED_GET_STATUS,
+  IPC.SEED_GET_PLAN,
+  // Startup channels
+  IPC.STARTUP_DISCOVER_PORTS,
+  IPC.STARTUP_GET_PORTS,
+  IPC.STARTUP_GET_STATUS,
 ] as const;
 
 export const EVENT_CHANNELS = [
@@ -592,4 +626,8 @@ export const EVENT_CHANNELS = [
   // MCP server events
   IPC.MCP_SERVER_STARTED,
   IPC.MCP_TOOL_CALLED,
+  // Seed data events
+  IPC.SEED_PROGRESS,
+  // Startup events
+  IPC.STARTUP_STATUS_CHANGED,
 ] as const;

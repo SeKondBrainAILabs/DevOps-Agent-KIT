@@ -92,7 +92,7 @@ interface SessionDetailViewProps {
   session: SessionReport;
   onBack: () => void;
   onDelete?: (sessionId: string) => void;
-  onRestart?: (sessionId: string, session: SessionReport) => Promise<void>;
+  onRestart?: (sessionId: string, session: SessionReport, commitChanges: boolean) => Promise<void>;
 }
 
 export function SessionDetailView({ session, onBack, onDelete, onRestart }: SessionDetailViewProps): React.ReactElement {
@@ -102,6 +102,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showErrorPopup, setShowErrorPopup] = useState(false);
@@ -157,12 +158,13 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     }
   };
 
-  const handleRestart = async () => {
+  const handleRestart = async (commitChanges: boolean) => {
     if (restarting) return;
+    setShowRestartConfirm(false);
     setRestarting(true);
     setRestartError(null);
     try {
-      await onRestart?.(session.sessionId, session);
+      await onRestart?.(session.sessionId, session, commitChanges);
     } catch (error) {
       setRestartError(error instanceof Error ? error.message : 'Failed to restart session');
       setRestarting(false);
@@ -394,7 +396,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                   onClick={handleEditBaseBranch}
                   disabled={loadingBranches}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-mono text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors"
-                  title="Click to change base branch for rebasing"
+                  title="Target branch — used for rebase (sync) and merge. Click to change."
                 >
                   {loadingBranches ? '...' : (session.baseBranch || 'main')}
                   <svg className="w-3 h-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -420,22 +422,45 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
               </button>
             </div>
 
-            {onRestart && (
+            {onRestart && !showRestartConfirm && !restarting && (
               <button
-                onClick={handleRestart}
-                disabled={restarting}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                  ${restarting
-                    ? 'bg-kanvas-blue text-white cursor-wait'
-                    : 'bg-surface-secondary text-text-primary hover:bg-surface-tertiary'
-                  }`}
-                title={restarting ? 'Restarting...' : 'Restart session (commits pending changes)'}
+                onClick={() => setShowRestartConfirm(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors bg-surface-secondary text-text-primary hover:bg-surface-tertiary"
+                title="Restart session"
               >
-                <svg className={`w-4 h-4 ${restarting ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                     d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                {restarting ? 'Restarting...' : 'Restart'}
+                Restart
+              </button>
+            )}
+            {onRestart && showRestartConfirm && !restarting && (
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-text-secondary mr-1">Commit changes?</span>
+                <button
+                  onClick={() => handleRestart(true)}
+                  className="px-2 py-1 rounded text-xs font-medium bg-kanvas-blue text-white hover:bg-kanvas-blue/80 transition-colors"
+                  title="Commit uncommitted changes, then restart"
+                >Yes</button>
+                <button
+                  onClick={() => handleRestart(false)}
+                  className="px-2 py-1 rounded text-xs font-medium bg-surface-tertiary text-text-primary hover:bg-red-50 hover:text-red-600 transition-colors"
+                  title="Discard uncommitted changes and restart"
+                >No</button>
+                <button
+                  onClick={() => setShowRestartConfirm(false)}
+                  className="px-2 py-1 rounded text-xs text-text-secondary hover:text-text-primary transition-colors"
+                >✕</button>
+              </div>
+            )}
+            {onRestart && restarting && (
+              <button disabled className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-kanvas-blue text-white cursor-wait">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Restarting...
               </button>
             )}
             {onDelete && (

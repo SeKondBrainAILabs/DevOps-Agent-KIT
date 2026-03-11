@@ -145,7 +145,7 @@ export default function App(): React.ReactElement {
   };
 
   // Handle session restart - reinitializes repo, creates new session with same config
-  const handleRestartSession = async (sessionId: string, session?: SessionReport): Promise<void> => {
+  const handleRestartSession = async (sessionId: string, session?: SessionReport, commitChanges = true): Promise<void> => {
     try {
       // Pass session data so restart can work even without stored AgentInstance
       // (e.g., for sessions created outside the Kanvas wizard via CLI)
@@ -158,7 +158,7 @@ export default function App(): React.ReactElement {
         task: session.task,
       } : undefined;
 
-      const result = await window.api.instance?.restart?.(sessionId, sessionData);
+      const result = await window.api.instance?.restart?.(sessionId, sessionData, commitChanges);
       if (result?.success && result.data) {
         // Remove old session from store
         removeReportedSession(sessionId);

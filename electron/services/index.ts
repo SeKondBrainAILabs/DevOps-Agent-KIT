@@ -30,6 +30,7 @@ import { VersionService } from './VersionService';
 import { AutoUpdateService } from './AutoUpdateService';
 import { WorkerBridgeService } from './WorkerBridgeService';
 import { McpServerService } from './McpServerService';
+import { SeedDataExecutionService } from './SeedDataExecutionService';
 import { databaseService } from './DatabaseService';
 import {
   initializeAnalysisServices,
@@ -70,6 +71,7 @@ export interface Services {
   autoUpdate: AutoUpdateService;
   workerBridge: WorkerBridgeService;
   mcpServer: McpServerService;
+  seedDataExecution: SeedDataExecutionService;
   // Analysis services (Phase 1)
   astParser: ASTParserService;
   repositoryAnalysis: RepositoryAnalysisService;
@@ -273,6 +275,12 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   await mcpServer.initialize();
   console.log('[Services] MCP server initialized on port', mcpServer.getPort());
 
+  // Initialize Seed Data Execution service
+  // For seed data contract generation, merging, execution, and port discovery
+  const seedDataExecution = new SeedDataExecutionService();
+  seedDataExecution.setMainWindow(mainWindow);
+  console.log('[Services] Seed data execution service initialized');
+
   // Pass MCP URL to AgentInstanceService for .mcp.json generation
   agentInstance.setMcpServerUrl(mcpServer.getUrl());
 
@@ -334,6 +342,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     autoUpdate,
     workerBridge,
     mcpServer,
+    seedDataExecution,
     // Analysis services (Phase 1)
     astParser: analysisServices.astParser,
     repositoryAnalysis: analysisServices.repositoryAnalysis,
@@ -419,6 +428,7 @@ export { VersionService } from './VersionService';
 export { AutoUpdateService } from './AutoUpdateService';
 export { WorkerBridgeService } from './WorkerBridgeService';
 export { McpServerService } from './McpServerService';
+export { SeedDataExecutionService } from './SeedDataExecutionService';
 export { databaseService } from './DatabaseService';
 // Analysis services (Phase 1 + Phase 2 + Phase 3)
 export {

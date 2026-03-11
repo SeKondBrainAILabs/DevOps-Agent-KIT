@@ -418,7 +418,7 @@ export interface KanvasConfig {
  * - admin: Admin capabilities - what can be administered for this feature
  * - sql: Reusable SQL queries, stored procedures, performance hints
  */
-export type ContractType = 'api' | 'schema' | 'events' | 'css' | 'features' | 'infra' | 'integrations' | 'e2e' | 'unit' | 'integration' | 'fixtures' | 'admin' | 'sql' | 'prompts';
+export type ContractType = 'api' | 'schema' | 'events' | 'css' | 'features' | 'infra' | 'integrations' | 'e2e' | 'unit' | 'integration' | 'fixtures' | 'admin' | 'sql' | 'prompts' | 'seed';
 
 export type ContractStatus = 'active' | 'modified' | 'deprecated' | 'breaking' | 'beta';
 
@@ -573,6 +573,86 @@ export interface AdminField {
   validation?: string;
 }
 
+/**
+ * Seed Data Contract - defines seed/fixture data for a feature
+ * Used for database seeding, test data generation, and startup initialization
+ */
+export interface SeedDataContract extends Contract {
+  type: 'seed';
+  tables: string[];
+  records: SeedRecord[];
+  order: number;
+  idempotent: boolean;
+  environment: SeedEnvironment[];
+}
+
+export type SeedEnvironment = 'dev' | 'staging' | 'test' | 'production';
+
+export interface SeedRecord {
+  table: string;
+  data: Record<string, unknown>[];
+  dependencies: string[]; // Table names this record depends on
+  idempotencyKey?: string; // Column(s) used for upsert
+}
+
+/**
+ * Merged seed execution plan — output of merging all per-feature seed contracts
+ */
+export interface SeedExecutionPlan {
+  metadata: {
+    generatedAt: string;
+    totalOperations: number;
+    totalTables: number;
+    totalFeatures: number;
+    checksum: string;
+    schemaValidation?: {
+      valid: boolean;
+      warnings: string[];
+      errors: string[];
+    };
+  };
+  operations: SeedOperation[];
+  rollback: SeedRollbackStep[];
+}
+
+export interface SeedOperation {
+  table: string;
+  data: Record<string, unknown>[];
+  featureSource: string;
+  dependencies: string[];
+  checksum: string;
+  idempotencyKey?: string;
+  environment: SeedEnvironment[];
+}
+
+export interface SeedRollbackStep {
+  table: string;
+  action: 'truncate' | 'delete-where';
+  featureSource: string;
+}
+
+/**
+ * Startup port binding — discovered free ports for services
+ */
+export interface PortBinding {
+  serviceName: string;
+  port: number;
+  preferredPort?: number;
+}
+
+export interface StartupStatus {
+  status: 'pending' | 'discovering-ports' | 'seeding' | 'ready' | 'failed';
+  ports: PortBinding[];
+  seedProgress?: {
+    total: number;
+    completed: number;
+    currentTable: string;
+    currentFeature: string;
+    errors: string[];
+  };
+  error?: string;
+}
+
 export type AnyContract =
   | APIContract
   | SchemaContract
@@ -581,7 +661,8 @@ export type AnyContract =
   | FeaturesContract
   | InfraContract
   | IntegrationsContract
-  | AdminContract;
+  | AdminContract
+  | SeedDataContract;
 
 /**
  * Contract file change detection result

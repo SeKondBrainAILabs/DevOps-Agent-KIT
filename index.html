@@ -17,6 +17,10 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Debug sentinel: stays visible if module bundle never executes -->
+    <div id="js-sentinel" style="position:fixed;inset:0;background:#1a1a2e;color:#e94560;font-family:monospace;font-size:18px;display:flex;align-items:center;justify-content:center;z-index:99998">
+      JS bundle did not execute — script not loaded or CSP blocked
+    </div>
     <script type="module" src="/renderer/index.tsx"></script>
   </body>
 </html>
