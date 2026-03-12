@@ -678,6 +678,19 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
               >
                 {isSaving ? 'Saving...' : 'Save Settings'}
               </button>
+
+              {/* Replay Onboarding */}
+              <button
+                onClick={async () => {
+                  await window.api?.config?.set?.('onboardingCompleted', false);
+                  const { useUIStore: uiStore } = await import('../../store/uiStore');
+                  uiStore.getState().setShowOnboarding(true);
+                  onClose();
+                }}
+                className="w-full mt-2 py-2 px-4 rounded border border-border text-sm text-text-secondary hover:text-text-primary hover:border-kanvas-blue/50 transition-colors"
+              >
+                Replay Onboarding Guide
+              </button>
             </>
           )}
 

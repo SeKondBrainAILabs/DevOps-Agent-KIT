@@ -20,6 +20,7 @@ const defaultConfig: AppConfig = {
   recentProjects: [],
   autoWatch: true,
   autoPush: true,
+  onboardingCompleted: false,
 };
 
 const defaultBranchSettings: BranchManagementSettings = {

@@ -19,6 +19,7 @@ import { CloseSessionDialog } from './components/features/CloseSessionDialog';
 import { SettingsModal } from './components/features/SettingsModal';
 import { CreateAgentWizard } from './components/features/CreateAgentWizard';
 import { RebaseMergeErrorDialog } from './components/features/RebaseMergeErrorDialog';
+import { OnboardingModal } from './components/features/OnboardingModal';
 import { useAgentStore, selectAgentList, selectSessionById } from './store/agentStore';
 import { useUIStore } from './store/uiStore';
 import { useConflictStore } from './store/conflictStore';
@@ -48,6 +49,8 @@ export default function App(): React.ReactElement {
     setShowSettingsModal,
     showCreateAgentWizard,
     setShowCreateAgentWizard,
+    showOnboarding,
+    setShowOnboarding,
   } = useUIStore();
 
   // Subscribe to agent events from main process
@@ -108,6 +111,17 @@ export default function App(): React.ReactElement {
       window.api.agent.initialize('.');
     }
   }, []);
+
+  // Check onboarding status on mount
+  useEffect(() => {
+    window.api?.config?.get?.('onboardingCompleted').then((result) => {
+      if (result?.success && !result.data) {
+        setShowOnboarding(true);
+      }
+    }).catch(() => {
+      // If config read fails, don't block — just skip onboarding
+    });
+  }, [setShowOnboarding]);
 
   // Keyboard shortcuts
   useKeyboardShortcuts([
@@ -235,6 +249,11 @@ export default function App(): React.ReactElement {
 
       {showCreateAgentWizard && (
         <CreateAgentWizard onClose={() => setShowCreateAgentWizard(false)} />
+      )}
+
+      {/* Onboarding - shown on first launch */}
+      {showOnboarding && (
+        <OnboardingModal onClose={() => setShowOnboarding(false)} />
       )}
 
       {/* Rebase/Merge Error Dialog - shown when conflict is detected */}
