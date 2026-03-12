@@ -4,7 +4,7 @@
 
 Kanvas monitors Claude, Cursor, Copilot, Cline, Aider, Warp, and other AI agents working on your codebase. It handles git operations, prevents conflicts, tracks changes, generates contracts, and keeps multiple agents coordinated — all from a single desktop app.
 
-Version: **2.2.0**
+Version: **2.3.0**
 
 ---
 
@@ -50,6 +50,9 @@ Output goes to `release/`.
 ---
 
 ## Features
+
+### First-Time Onboarding
+Guided 4-step walkthrough on first launch — covers what Kanvas is, how sessions and worktrees work, the rebase/merge/ship workflow, and getting started. Can be replayed anytime from Settings.
 
 ### Multi-Agent Dashboard
 Monitor multiple AI agents across repositories from a single interface. See agent status, heartbeats, and activity in real time. Supports Claude, Cursor, Copilot, Cline, Aider, and Warp.
@@ -245,8 +248,8 @@ Releases are built automatically by GitHub Actions when a version tag is pushed:
 # 1. Bump version in package.json
 # 2. Commit and push
 # 3. Tag and push
-git tag v2.2.0
-git push origin v2.2.0
+git tag v2.3.0
+git push origin v2.3.0
 ```
 
 The release workflow builds for macOS (DMG + ZIP), Windows (NSIS + portable), and Linux (AppImage + deb), then publishes to GitHub Releases.
