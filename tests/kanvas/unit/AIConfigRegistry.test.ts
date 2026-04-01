@@ -129,7 +129,7 @@ describe.skip('AIConfigRegistry', () => {
       mockFs.existsSync.mockImplementation((p) => {
         return String(p).includes('modes') || String(p).includes('ai-models.yaml');
       });
-      mockFs.readFileSync.mockImplementation((p) => {
+      (mockFs.readFileSync as jest.Mock<any>).mockImplementation((p: any) => {
         if (String(p).includes('test_mode.yaml')) {
           return yaml.dump(mockModeConfig);
         }

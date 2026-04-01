@@ -7,15 +7,13 @@ import React from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { UniversalCommitsView } from '../../../renderer/components/features/UniversalCommitsView';
 import { mockApi } from '../setup';
-import { useAgentStore } from '../../../renderer/store/agentStore';
 import type { SessionReport } from '../../../shared/agent-protocol';
 
-// Mock the store
-jest.mock('../../../renderer/store/agentStore');
-const mockUseAgentStore = useAgentStore as jest.MockedFunction<typeof useAgentStore>;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnySelector = (state: any) => any;
+// Mock the store — stable _storeState object prevents infinite re-render loops
+let _storeState: any = {};
+jest.mock('../../../renderer/store/agentStore', () => ({
+  useAgentStore: (selector: (state: any) => any) => selector(_storeState),
+}));
 
 describe('UniversalCommitsView', () => {
   const mockSessions: SessionReport[] = [
@@ -89,17 +87,16 @@ describe('UniversalCommitsView', () => {
     ],
   };
 
+  // Stable references outside beforeEach to prevent infinite re-renders
+  const stableSessionsMap = new Map(mockSessions.map(s => [s.sessionId, s]));
+
   beforeEach(() => {
     jest.clearAllMocks();
 
-    // Setup store mock
-    const sessionsMap = new Map(mockSessions.map(s => [s.sessionId, s]));
-    mockUseAgentStore.mockImplementation((selector: AnySelector) => {
-      const state = { reportedSessions: sessionsMap };
-      return selector(state);
-    });
+    // Set store state with stable Map reference
+    _storeState = { reportedSessions: stableSessionsMap };
 
-    // Setup API mocks
+    // Setup API mocks — use mockResolvedValue to avoid re-creating promises
     mockApi.git.getCommitHistory
       .mockImplementation((repoPath: string) => {
         if (repoPath === '/test/worktree-1') {
@@ -214,8 +211,9 @@ describe('UniversalCommitsView', () => {
       render(<UniversalCommitsView />);
 
       await waitFor(() => {
-        expect(screen.getByText('Add authentication')).toBeInTheDocument();
-        expect(screen.getByText('Fix API bug')).toBeInTheDocument();
+        // Session names appear in both filter dropdown and commit tags
+        expect(screen.getAllByText('Add authentication').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Fix API bug').length).toBeGreaterThan(0);
       });
     });
 
@@ -363,23 +361,21 @@ describe('UniversalCommitsView', () => {
       render(<UniversalCommitsView />);
 
       await waitFor(() => {
-        // Claude sessions should have orange styling
-        const claudeTag = screen.getByText('Add authentication');
-        expect(claudeTag.className).toContain('orange');
+        // Find the styled tag spans (not the select options)
+        const claudeTags = screen.getAllByText('Add authentication');
+        const claudeTag = claudeTags.find(el => el.tagName === 'SPAN');
+        expect(claudeTag?.className).toContain('orange');
 
-        // Cursor sessions should have purple styling
-        const cursorTag = screen.getByText('Fix API bug');
-        expect(cursorTag.className).toContain('purple');
+        const cursorTags = screen.getAllByText('Fix API bug');
+        const cursorTag = cursorTags.find(el => el.tagName === 'SPAN');
+        expect(cursorTag?.className).toContain('purple');
       });
     });
   });
 
   describe('No Sessions', () => {
     it('should handle case when no sessions exist', async () => {
-      mockUseAgentStore.mockImplementation((selector: AnySelector) => {
-        const state = { reportedSessions: new Map() };
-        return selector(state);
-      });
+      _storeState = { reportedSessions: new Map() };
 
       render(<UniversalCommitsView />);
 

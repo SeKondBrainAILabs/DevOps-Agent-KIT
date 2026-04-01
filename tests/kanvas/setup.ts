@@ -120,6 +120,7 @@ const mockApi = {
   shell: {
     openExternal: jest.fn() as MockFn,
     openPath: jest.fn() as MockFn,
+    openTerminal: jest.fn() as MockFn,
   },
   dialog: {
     showOpenDialog: createMockFn({ canceled: false, filePaths: ['/test/path'] }),

@@ -5,14 +5,15 @@
 
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
-// Mock execa module
+// Mock execa module — provide both default and named execa to handle all import patterns
+const mockExecaFn = jest.fn();
 jest.mock('execa', () => ({
-  execa: jest.fn(),
+  __esModule: true,
+  default: mockExecaFn,
+  execa: mockExecaFn,
 }));
 
-// Import execa mock
-import { execa } from 'execa';
-const mockedExeca = execa as jest.MockedFunction<typeof execa>;
+const mockedExeca = mockExecaFn as jest.MockedFunction<any>;
 
 // Import the GitService class
 import { GitService } from '../../../electron/services/GitService';
@@ -29,12 +30,8 @@ describe('GitService Commit Methods', () => {
     const mockRepoPath = '/test/repo';
     const mockBaseBranch = 'main';
 
-    it('should return empty array when no commits since branch creation', async () => {
-      // Mock branch --show-current
-      mockedExeca.mockResolvedValueOnce({ stdout: 'feature-branch' } as never);
-      // Mock merge-base
-      mockedExeca.mockResolvedValueOnce({ stdout: 'abc123def' } as never);
-      // Mock git log - empty
+    it('should return empty array when no commits', async () => {
+      // git log returns empty
       mockedExeca.mockResolvedValueOnce({ stdout: '' } as never);
 
       const result = await gitService.getCommitHistory(mockRepoPath, mockBaseBranch);
@@ -44,19 +41,12 @@ describe('GitService Commit Methods', () => {
     });
 
     it('should parse commit history with stats correctly', async () => {
-      const mockBranchOutput = 'feature-branch';
-      const mockMergeBase = 'abc123';
-      // Stats line should immediately follow commit info (how git log --shortstat outputs)
       const mockLogOutput = `def456|def456|feat: add new feature|John Doe|2026-01-21T10:00:00Z
  3 files changed, 120 insertions(+), 30 deletions(-)
 ghi789|ghi789|fix: bug fix|Jane Smith|2026-01-21T09:00:00Z
  1 file changed, 5 insertions(+)`;
 
-      // Mock branch --show-current
-      mockedExeca.mockResolvedValueOnce({ stdout: mockBranchOutput } as never);
-      // Mock merge-base
-      mockedExeca.mockResolvedValueOnce({ stdout: mockMergeBase } as never);
-      // Mock git log
+      // git log
       mockedExeca.mockResolvedValueOnce({ stdout: mockLogOutput } as never);
 
       const result = await gitService.getCommitHistory(mockRepoPath, mockBaseBranch);
@@ -88,8 +78,6 @@ ghi789|ghi789|fix: bug fix|Jane Smith|2026-01-21T09:00:00Z
     it('should handle commits without stats line', async () => {
       const mockLogOutput = `abc123|abc123|docs: update readme|Developer|2026-01-21T08:00:00Z`;
 
-      mockedExeca.mockResolvedValueOnce({ stdout: 'feature' } as never);
-      mockedExeca.mockResolvedValueOnce({ stdout: 'base123' } as never);
       mockedExeca.mockResolvedValueOnce({ stdout: mockLogOutput } as never);
 
       const result = await gitService.getCommitHistory(mockRepoPath, mockBaseBranch);
@@ -105,29 +93,24 @@ ghi789|ghi789|fix: bug fix|Jane Smith|2026-01-21T09:00:00Z
       });
     });
 
-    it('should fall back when merge-base fails', async () => {
-      mockedExeca.mockResolvedValueOnce({ stdout: 'feature' } as never);
-      // First merge-base fails
-      mockedExeca.mockRejectedValueOnce(new Error('no merge base'));
-      // Second merge-base also fails
-      mockedExeca.mockRejectedValueOnce(new Error('no merge base'));
-      // Git log with limit
+    it('should use branchName for range when provided', async () => {
       mockedExeca.mockResolvedValueOnce({ stdout: '' } as never);
 
-      const result = await gitService.getCommitHistory(mockRepoPath, mockBaseBranch);
+      await gitService.getCommitHistory(mockRepoPath, mockBaseBranch, 50, 'feature-branch');
 
-      expect(result.success).toBe(true);
-      expect(result.data).toEqual([]);
+      // Should call git log with baseBranch..branchName range
+      expect(mockedExeca).toHaveBeenCalledWith(
+        'git',
+        expect.arrayContaining(['main..feature-branch']),
+        expect.any(Object)
+      );
     });
 
     it('should respect limit parameter', async () => {
-      mockedExeca.mockResolvedValueOnce({ stdout: 'feature' } as never);
-      mockedExeca.mockResolvedValueOnce({ stdout: 'base123' } as never);
       mockedExeca.mockResolvedValueOnce({ stdout: '' } as never);
 
       await gitService.getCommitHistory(mockRepoPath, mockBaseBranch, 10);
 
-      // Check that the git log command included the limit
       expect(mockedExeca).toHaveBeenCalledWith(
         'git',
         expect.arrayContaining(['-10']),
