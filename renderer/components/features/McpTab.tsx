@@ -19,14 +19,14 @@ interface McpTabProps {
 }
 
 const TOOL_COLORS: Record<string, string> = {
-  kanvas_commit: 'text-green-400',
-  kanvas_commit_all: 'text-green-400',
-  kanvas_lock_file: 'text-yellow-400',
-  kanvas_unlock_file: 'text-yellow-400',
-  kanvas_get_session_info: 'text-blue-400',
-  kanvas_log_activity: 'text-purple-400',
-  kanvas_get_commit_history: 'text-blue-400',
-  kanvas_request_review: 'text-cyan-400',
+  kit_commit: 'text-green-400',
+  kit_commit_all: 'text-green-400',
+  kit_lock_file: 'text-yellow-400',
+  kit_unlock_file: 'text-yellow-400',
+  kit_get_session_info: 'text-blue-400',
+  kit_log_activity: 'text-purple-400',
+  kit_get_commit_history: 'text-blue-400',
+  kit_request_review: 'text-cyan-400',
 };
 
 export function McpTab({ sessionId }: McpTabProps): React.ReactElement {

@@ -117,15 +117,15 @@ describe('MCP Tools', () => {
   }
 
   // ==========================================================================
-  // kanvas_commit
+  // kit_commit
   // ==========================================================================
-  describe('kanvas_commit', () => {
+  describe('kit_commit', () => {
     it('should register the tool', () => {
-      expect(registeredTools.has('kanvas_commit')).toBe(true);
+      expect(registeredTools.has('kit_commit')).toBe(true);
     });
 
     it('should commit successfully', async () => {
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: 'sess_test_123',
         message: 'feat: add new feature',
         push: false,
@@ -140,7 +140,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: 'unknown_sess',
         message: 'test',
       });
@@ -150,7 +150,7 @@ describe('MCP Tools', () => {
     });
 
     it('should record commit in database', async () => {
-      await callTool('kanvas_commit', {
+      await callTool('kit_commit', {
         session_id: 'sess_test_123',
         message: 'feat: test commit',
       });
@@ -164,7 +164,7 @@ describe('MCP Tools', () => {
     });
 
     it('should push when requested', async () => {
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: 'sess_test_123',
         message: 'feat: push test',
         push: true,
@@ -176,7 +176,7 @@ describe('MCP Tools', () => {
     });
 
     it('should not push by default', async () => {
-      await callTool('kanvas_commit', {
+      await callTool('kit_commit', {
         session_id: 'sess_test_123',
         message: 'feat: no push',
       });
@@ -185,7 +185,7 @@ describe('MCP Tools', () => {
     });
 
     it('should log activity for commit', async () => {
-      await callTool('kanvas_commit', {
+      await callTool('kit_commit', {
         session_id: 'sess_test_123',
         message: 'feat: activity test',
       });
@@ -200,11 +200,11 @@ describe('MCP Tools', () => {
   });
 
   // ==========================================================================
-  // kanvas_get_session_info
+  // kit_get_session_info
   // ==========================================================================
-  describe('kanvas_get_session_info', () => {
+  describe('kit_get_session_info', () => {
     it('should return session info with agent details', async () => {
-      const result = await callTool('kanvas_get_session_info', {
+      const result = await callTool('kit_get_session_info', {
         session_id: 'sess_test_123',
       });
 
@@ -216,7 +216,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_get_session_info', {
+      const result = await callTool('kit_get_session_info', {
         session_id: 'unknown_sess',
       });
 
@@ -226,11 +226,11 @@ describe('MCP Tools', () => {
   });
 
   // ==========================================================================
-  // kanvas_log_activity
+  // kit_log_activity
   // ==========================================================================
-  describe('kanvas_log_activity', () => {
+  describe('kit_log_activity', () => {
     it('should log info activity', async () => {
-      const result = await callTool('kanvas_log_activity', {
+      const result = await callTool('kit_log_activity', {
         session_id: 'sess_test_123',
         type: 'info',
         message: 'Started working on feature',
@@ -247,7 +247,7 @@ describe('MCP Tools', () => {
     });
 
     it('should log warning activity', async () => {
-      await callTool('kanvas_log_activity', {
+      await callTool('kit_log_activity', {
         session_id: 'sess_test_123',
         type: 'warning',
         message: 'Potential issue detected',
@@ -262,7 +262,7 @@ describe('MCP Tools', () => {
     });
 
     it('should log error activity', async () => {
-      await callTool('kanvas_log_activity', {
+      await callTool('kit_log_activity', {
         session_id: 'sess_test_123',
         type: 'error',
         message: 'Build failed',
@@ -277,7 +277,7 @@ describe('MCP Tools', () => {
     });
 
     it('should log git activity', async () => {
-      await callTool('kanvas_log_activity', {
+      await callTool('kit_log_activity', {
         session_id: 'sess_test_123',
         type: 'git',
         message: 'Rebased on main',
@@ -292,7 +292,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_log_activity', {
+      const result = await callTool('kit_log_activity', {
         session_id: 'unknown_sess',
         type: 'info',
         message: 'test',
@@ -304,11 +304,11 @@ describe('MCP Tools', () => {
   });
 
   // ==========================================================================
-  // kanvas_lock_file
+  // kit_lock_file
   // ==========================================================================
-  describe('kanvas_lock_file', () => {
+  describe('kit_lock_file', () => {
     it('should lock files successfully', async () => {
-      const result = await callTool('kanvas_lock_file', {
+      const result = await callTool('kit_lock_file', {
         session_id: 'sess_test_123',
         files: ['src/index.ts', 'src/utils.ts'],
         reason: 'Implementing feature',
@@ -330,7 +330,7 @@ describe('MCP Tools', () => {
         }],
       });
 
-      const result = await callTool('kanvas_lock_file', {
+      const result = await callTool('kit_lock_file', {
         session_id: 'sess_test_123',
         files: ['src/index.ts'],
       });
@@ -342,7 +342,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_lock_file', {
+      const result = await callTool('kit_lock_file', {
         session_id: 'unknown_sess',
         files: ['test.ts'],
       });
@@ -353,11 +353,11 @@ describe('MCP Tools', () => {
   });
 
   // ==========================================================================
-  // kanvas_unlock_file
+  // kit_unlock_file
   // ==========================================================================
-  describe('kanvas_unlock_file', () => {
+  describe('kit_unlock_file', () => {
     it('should unlock specific files', async () => {
-      const result = await callTool('kanvas_unlock_file', {
+      const result = await callTool('kit_unlock_file', {
         session_id: 'sess_test_123',
         files: ['src/index.ts'],
       });
@@ -368,7 +368,7 @@ describe('MCP Tools', () => {
     });
 
     it('should release all locks when no files specified', async () => {
-      const result = await callTool('kanvas_unlock_file', {
+      const result = await callTool('kit_unlock_file', {
         session_id: 'sess_test_123',
       });
 
@@ -379,7 +379,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_unlock_file', {
+      const result = await callTool('kit_unlock_file', {
         session_id: 'unknown_sess',
       });
 
@@ -389,11 +389,11 @@ describe('MCP Tools', () => {
   });
 
   // ==========================================================================
-  // kanvas_get_commit_history
+  // kit_get_commit_history
   // ==========================================================================
-  describe('kanvas_get_commit_history', () => {
+  describe('kit_get_commit_history', () => {
     it('should return commit history', async () => {
-      const result = await callTool('kanvas_get_commit_history', {
+      const result = await callTool('kit_get_commit_history', {
         session_id: 'sess_test_123',
       });
 
@@ -403,7 +403,7 @@ describe('MCP Tools', () => {
     });
 
     it('should respect limit parameter', async () => {
-      await callTool('kanvas_get_commit_history', {
+      await callTool('kit_get_commit_history', {
         session_id: 'sess_test_123',
         limit: 5,
       });
@@ -412,7 +412,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_get_commit_history', {
+      const result = await callTool('kit_get_commit_history', {
         session_id: 'unknown_sess',
       });
 
@@ -422,11 +422,11 @@ describe('MCP Tools', () => {
   });
 
   // ==========================================================================
-  // kanvas_request_review
+  // kit_request_review
   // ==========================================================================
-  describe('kanvas_request_review', () => {
+  describe('kit_request_review', () => {
     it('should log review request activity', async () => {
-      const result = await callTool('kanvas_request_review', {
+      const result = await callTool('kit_request_review', {
         session_id: 'sess_test_123',
         summary: 'Implemented user auth with JWT tokens',
       });
@@ -438,7 +438,7 @@ describe('MCP Tools', () => {
     });
 
     it('should log activity with review details', async () => {
-      await callTool('kanvas_request_review', {
+      await callTool('kit_request_review', {
         session_id: 'sess_test_123',
         summary: 'Added tests for auth',
       });
@@ -452,7 +452,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_request_review', {
+      const result = await callTool('kit_request_review', {
         session_id: 'unknown_sess',
         summary: 'test',
       });
@@ -475,7 +475,7 @@ describe('MCP Tools', () => {
     });
 
     it('should commit to specific repo when repo param is provided', async () => {
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: 'sess_multi_001',
         message: 'feat: update shared lib',
         repo: 'shared-lib',
@@ -488,7 +488,7 @@ describe('MCP Tools', () => {
     });
 
     it('should default to primary repo when no repo param', async () => {
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: 'sess_multi_001',
         message: 'feat: primary change',
       });
@@ -499,7 +499,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown repo name', async () => {
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: 'sess_multi_001',
         message: 'test',
         repo: 'nonexistent-repo',
@@ -510,7 +510,7 @@ describe('MCP Tools', () => {
     });
 
     it('should get commit history for specific repo', async () => {
-      await callTool('kanvas_get_commit_history', {
+      await callTool('kit_get_commit_history', {
         session_id: 'sess_multi_001',
         repo: 'shared-lib',
         limit: 5,
@@ -524,7 +524,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return repos in session info for multi-repo session', async () => {
-      const result = await callTool('kanvas_get_session_info', {
+      const result = await callTool('kit_get_session_info', {
         session_id: 'sess_multi_001',
       });
 
@@ -536,7 +536,7 @@ describe('MCP Tools', () => {
     });
 
     it('should lock files in specific repo', async () => {
-      const result = await callTool('kanvas_lock_file', {
+      const result = await callTool('kit_lock_file', {
         session_id: 'sess_multi_001',
         files: ['src/utils.ts'],
         repo: 'shared-lib',
@@ -553,11 +553,11 @@ describe('MCP Tools', () => {
   });
 
   // ==========================================================================
-  // kanvas_commit_all
+  // kit_commit_all
   // ==========================================================================
-  describe('kanvas_commit_all', () => {
+  describe('kit_commit_all', () => {
     it('should register the tool', () => {
-      expect(registeredTools.has('kanvas_commit_all')).toBe(true);
+      expect(registeredTools.has('kit_commit_all')).toBe(true);
     });
 
     it('should commit across all repos in session', async () => {
@@ -566,7 +566,7 @@ describe('MCP Tools', () => {
         { repoName: 'lib-a', worktreePath: '/tmp/wt-primary/libs/lib-a', role: 'secondary' },
       ]);
 
-      const result = await callTool('kanvas_commit_all', {
+      const result = await callTool('kit_commit_all', {
         session_id: 'sess_multi_002',
         message: 'feat: cross-repo update',
         push: false,
@@ -580,7 +580,7 @@ describe('MCP Tools', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callTool('kanvas_commit_all', {
+      const result = await callTool('kit_commit_all', {
         session_id: 'unknown_sess',
         message: 'test',
       });
@@ -594,7 +594,7 @@ describe('MCP Tools', () => {
         { repoName: 'primary', worktreePath: '/tmp/wt-push', role: 'primary' },
       ]);
 
-      const result = await callTool('kanvas_commit_all', {
+      const result = await callTool('kit_commit_all', {
         session_id: 'sess_multi_003',
         message: 'feat: push all',
         push: true,

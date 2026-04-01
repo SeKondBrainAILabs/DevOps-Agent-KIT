@@ -804,7 +804,7 @@ ${DEVOPS_KIT_DIR}/
 
   /**
    * Create .mcp.json in worktree root for MCP-capable agents (claude, cline)
-   * Allows agents to auto-discover the Kanvas MCP server
+   * Allows agents to auto-discover the KIT MCP server
    */
   private async createMcpConfigFile(worktreePath: string): Promise<void> {
     if (!this.mcpServerUrl) return;
@@ -812,7 +812,7 @@ ${DEVOPS_KIT_DIR}/
     try {
       const mcpConfig = {
         mcpServers: {
-          kanvas: {
+          kit: {
             type: 'streamable-http',
             url: this.mcpServerUrl,
           },
@@ -840,7 +840,7 @@ ${DEVOPS_KIT_DIR}/
       const settingsPath = join(claudeDir, 'settings.json');
       const settings = {
         mcpServers: {
-          kanvas: {
+          kit: {
             type: 'streamable-http',
             url: this.mcpServerUrl,
           },

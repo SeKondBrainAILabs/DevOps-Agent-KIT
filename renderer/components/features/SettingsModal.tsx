@@ -993,14 +993,14 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 </p>
                 <div className="bg-surface-tertiary rounded-lg divide-y divide-border text-sm">
                   {[
-                    { name: 'kanvas_commit', desc: 'Stage, commit, record, and optionally push' },
-                    { name: 'kanvas_commit_all', desc: 'Commit across all repos in multi-repo session' },
-                    { name: 'kanvas_lock_file', desc: 'Declare file edit intent (conflict detection)' },
-                    { name: 'kanvas_unlock_file', desc: 'Release file locks' },
-                    { name: 'kanvas_get_session_info', desc: 'Session config and metadata' },
-                    { name: 'kanvas_log_activity', desc: 'Log to Kanvas dashboard timeline' },
-                    { name: 'kanvas_get_commit_history', desc: 'Recent commits for session branch' },
-                    { name: 'kanvas_request_review', desc: 'Signal work ready for review' },
+                    { name: 'kit_commit', desc: 'Stage, commit, record, and optionally push' },
+                    { name: 'kit_commit_all', desc: 'Commit across all repos in multi-repo session' },
+                    { name: 'kit_lock_file', desc: 'Declare file edit intent (conflict detection)' },
+                    { name: 'kit_unlock_file', desc: 'Release file locks' },
+                    { name: 'kit_get_session_info', desc: 'Session config and metadata' },
+                    { name: 'kit_log_activity', desc: 'Log to KIT dashboard timeline' },
+                    { name: 'kit_get_commit_history', desc: 'Recent commits for session branch' },
+                    { name: 'kit_request_review', desc: 'Signal work ready for review' },
                   ].map((tool) => (
                     <div key={tool.name} className="px-3 py-2 flex items-center gap-3">
                       <span className="font-mono text-accent text-xs">{tool.name}</span>
@@ -1226,11 +1226,11 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                       <label className="text-xs text-gray-500 uppercase tracking-wide">~/.claude/settings.json</label>
                       <div className="bg-surface-tertiary rounded-lg p-3 relative">
                         <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
-{JSON.stringify({ mcpServers: { kanvas: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
+{JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
                         </pre>
                         <button
                           onClick={() => {
-                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kanvas: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2));
+                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2));
                             setMcpJsonCopied('global');
                             setTimeout(() => setMcpJsonCopied(null), 2000);
                           }}
@@ -1246,11 +1246,11 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                       <label className="text-xs text-gray-500 uppercase tracking-wide">.mcp.json (project root)</label>
                       <div className="bg-surface-tertiary rounded-lg p-3 relative">
                         <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
-{JSON.stringify({ mcpServers: { kanvas: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
+{JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
                         </pre>
                         <button
                           onClick={() => {
-                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kanvas: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2));
+                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2));
                             setMcpJsonCopied('mcp');
                             setTimeout(() => setMcpJsonCopied(null), 2000);
                           }}

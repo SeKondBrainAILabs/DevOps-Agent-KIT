@@ -75,6 +75,13 @@ export interface McpServiceDeps {
   databaseService?: {
     recordCommit: (sessionId: string, hash: string, message: string, filesChanged: number) => void;
     recordSessionEvent: (sessionId: string, type: string, data: Record<string, unknown>) => void;
+    getSetting: (key: string, defaultValue?: any) => any;
+  };
+  contractDetectionService?: {
+    analyzeCommit: (worktreePath: string, commitHash: string) => Promise<any>;
+  };
+  contractGenerationService?: {
+    generateFeatureContract: (worktreePath: string, feature: any) => Promise<any>;
   };
 }
 
@@ -106,6 +113,11 @@ export class McpServerService extends BaseService {
 
   readonly sessionBinder = new McpSessionBinder();
   private deps: McpServiceDeps = {};
+
+  // Track last activity per transport for stale session cleanup
+  private lastActivity = new Map<string, number>();
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
   // MCP call log for debug observability
   private mcpCallLog: McpCallLogEntry[] = [];
@@ -145,6 +157,14 @@ export class McpServerService extends BaseService {
 
   setDatabaseService(svc: McpServiceDeps['databaseService']): void {
     this.deps.databaseService = svc;
+  }
+
+  setContractDetectionService(svc: McpServiceDeps['contractDetectionService']): void {
+    this.deps.contractDetectionService = svc;
+  }
+
+  setContractGenerationService(svc: McpServiceDeps['contractGenerationService']): void {
+    this.deps.contractGenerationService = svc;
   }
 
   getDeps(): McpServiceDeps {
@@ -187,6 +207,9 @@ export class McpServerService extends BaseService {
         this.httpServer!.on('error', reject);
       });
 
+      // Start stale session cleanup timer
+      this.cleanupTimer = setInterval(() => this.cleanupStaleSessions(), 60_000);
+
       // Emit to renderer
       this.emitToRenderer('mcp:server-started', {
         port: this.port,
@@ -200,6 +223,13 @@ export class McpServerService extends BaseService {
   }
 
   async dispose(): Promise<void> {
+    // Stop cleanup timer
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    this.lastActivity.clear();
+
     // Close all active transports (streamable HTTP)
     for (const [sessionId, transport] of this.transports) {
       try {
@@ -259,6 +289,7 @@ export class McpServerService extends BaseService {
     if (url.pathname === '/messages' && req.method === 'POST') {
       const sseSessionId = url.searchParams.get('sessionId');
       if (sseSessionId && this.sseTransports.has(sseSessionId)) {
+        this.lastActivity.set(sseSessionId, Date.now());
         await this.sseTransports.get(sseSessionId)!.handlePostMessage(req, res);
         return;
       }
@@ -278,6 +309,7 @@ export class McpServerService extends BaseService {
 
     // Route to existing session transport
     if (sessionId && this.transports.has(sessionId)) {
+      this.lastActivity.set(sessionId, Date.now());
       await this.transports.get(sessionId)!.handleRequest(req, res);
       return;
     }
@@ -299,7 +331,7 @@ export class McpServerService extends BaseService {
 
     // Create per-connection MCP server + transport (stateful mode)
     const mcpServer = new McpServerClass({
-      name: 'kanvas',
+      name: 'kit',
       version: '1.0.0',
     });
 
@@ -321,6 +353,7 @@ export class McpServerService extends BaseService {
       const sid = transport.sessionId;
       if (sid) {
         this.transports.delete(sid);
+        this.lastActivity.delete(sid);
         console.log(`[McpServerService] Session closed: ${sid} (${this.transports.size} active)`);
       }
     };
@@ -332,6 +365,7 @@ export class McpServerService extends BaseService {
     const sid = transport.sessionId;
     if (sid) {
       this.transports.set(sid, transport);
+      this.lastActivity.set(sid, Date.now());
       console.log(`[McpServerService] New session: ${sid} (${this.transports.size} active)`);
     }
   }
@@ -345,7 +379,7 @@ export class McpServerService extends BaseService {
     const SseTransportClass = _SSEServerTransport!;
 
     const mcpServer = new McpServerClass({
-      name: 'kanvas',
+      name: 'kit',
       version: '1.0.0',
     });
 
@@ -364,15 +398,43 @@ export class McpServerService extends BaseService {
     const sid = (transport as any)._sessionId as string;
     if (sid) {
       this.sseTransports.set(sid, transport);
+      this.lastActivity.set(sid, Date.now());
       console.log(`[McpServerService] SSE session opened: ${sid} (${this.sseTransports.size} active)`);
     }
 
     transport.onclose = () => {
       if (sid) {
         this.sseTransports.delete(sid);
+        this.lastActivity.delete(sid);
         console.log(`[McpServerService] SSE session closed: ${sid} (${this.sseTransports.size} active)`);
       }
     };
+  }
+
+  /** Remove transports that haven't seen any activity within the timeout window */
+  private cleanupStaleSessions(): void {
+    const now = Date.now();
+    const timeout = McpServerService.SESSION_TIMEOUT_MS;
+    let cleaned = 0;
+
+    for (const [sid, lastTime] of this.lastActivity) {
+      if (now - lastTime > timeout) {
+        if (this.transports.has(sid)) {
+          try { this.transports.get(sid)!.close?.(); } catch { /* ignore */ }
+          this.transports.delete(sid);
+        }
+        if (this.sseTransports.has(sid)) {
+          try { this.sseTransports.get(sid)!.close?.(); } catch { /* ignore */ }
+          this.sseTransports.delete(sid);
+        }
+        this.lastActivity.delete(sid);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`[McpServerService] Cleaned ${cleaned} stale session(s) (${this.transports.size + this.sseTransports.size} active)`);
+    }
   }
 
   // ==========================================================================
@@ -406,7 +468,8 @@ export class McpServerService extends BaseService {
     if (target === 'claude-desktop') {
       return join(homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
     }
-    return join(homedir(), '.claude', 'settings.json');
+    // Claude Code CLI reads MCP config from ~/.claude.json (per-project structure)
+    return join(homedir(), '.claude.json');
   }
 
   private async readJsonFile(filePath: string): Promise<Record<string, unknown>> {
@@ -431,6 +494,29 @@ export class McpServerService extends BaseService {
     return `http://${MCP_SERVER_HOST}:${this.port}/sse`;
   }
 
+  /**
+   * Resolve the full path to npx, ensuring Node 18+ is used.
+   * Claude Desktop may pick an old nvm version (e.g. Node 16) from PATH,
+   * which crashes mcp-remote due to missing ReadableStream global.
+   */
+  private resolveNpxPath(): string {
+    try {
+      // Use the current process's node to find npx in the same bin dir
+      const binDir = require('path').dirname(process.execPath);
+      const npxCandidate = join(binDir, 'npx');
+      if (existsSync(npxCandidate)) {
+        return npxCandidate;
+      }
+      // Fallback: resolve from shell
+      const { execSync } = require('child_process');
+      const resolved = execSync('which npx', { encoding: 'utf-8' }).trim();
+      if (resolved) return resolved;
+    } catch {
+      // ignore
+    }
+    return 'npx';
+  }
+
   async installMcpConfig(target: McpInstallTarget): Promise<{ success: boolean; path: string; error?: string }> {
     const url = target === 'claude-desktop' ? this.getSseUrl() : this.getUrl();
     if (!url) {
@@ -440,23 +526,45 @@ export class McpServerService extends BaseService {
     const configPath = this.getConfigPath(target);
     try {
       const settings = await this.readJsonFile(configPath);
-      const mcpServers = (settings.mcpServers as Record<string, unknown>) || {};
 
       if (target === 'claude-desktop') {
-        // Claude Desktop only supports stdio — use mcp-remote as a bridge to our SSE endpoint
-        mcpServers.kanvas = {
-          command: 'npx',
+        // Claude Desktop: top-level mcpServers with stdio bridge
+        const mcpServers = (settings.mcpServers as Record<string, unknown>) || {};
+        const npxPath = this.resolveNpxPath();
+        const nodeBinDir = require('path').dirname(npxPath);
+        mcpServers.kit = {
+          command: npxPath,
           args: ['-y', 'mcp-remote', url],
+          env: {
+            PATH: `${nodeBinDir}:/usr/local/bin:/usr/bin:/bin`,
+          },
         };
+        settings.mcpServers = mcpServers;
       } else {
-        // Claude Code supports streamable-http natively
-        mcpServers.kanvas = { type: 'streamable-http', url };
+        // Claude Code CLI: per-project mcpServers in ~/.claude.json
+        // Also install globally so it works for any project opened in this repo
+        const projects = (settings.projects as Record<string, any>) || {};
+        // Install for all registered sessions' repo paths
+        const allSessions = this.sessionBinder.listSessions();
+        const repoPaths = new Set<string>();
+        for (const session of allSessions) {
+          repoPaths.add(session.worktreePath);
+        }
+        // Also install a global-level entry (some Claude Code versions support this)
+        if (!settings.mcpServers) settings.mcpServers = {};
+        (settings.mcpServers as Record<string, unknown>).kit = { type: 'http', url };
+
+        for (const repoPath of repoPaths) {
+          if (!projects[repoPath]) projects[repoPath] = {};
+          if (!projects[repoPath].mcpServers) projects[repoPath].mcpServers = {};
+          projects[repoPath].mcpServers.kit = { type: 'http', url };
+        }
+        settings.projects = projects;
       }
 
-      settings.mcpServers = mcpServers;
       await this.writeJsonFile(configPath, settings);
 
-      console.log(`[McpServerService] Installed Kanvas MCP config to ${configPath} (${target})`);
+      console.log(`[McpServerService] Installed KIT MCP config to ${configPath} (${target})`);
       return { success: true, path: configPath };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -469,13 +577,27 @@ export class McpServerService extends BaseService {
     const configPath = this.getConfigPath(target);
     try {
       const settings = await this.readJsonFile(configPath);
-      const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
-      if (mcpServers && 'kanvas' in mcpServers) {
-        delete mcpServers.kanvas;
-        settings.mcpServers = mcpServers;
-        await this.writeJsonFile(configPath, settings);
-        console.log(`[McpServerService] Removed Kanvas from ${target} config`);
+
+      if (target === 'claude-desktop') {
+        const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
+        if (mcpServers && 'kit' in mcpServers) {
+          delete mcpServers.kit;
+          settings.mcpServers = mcpServers;
+        }
+      } else {
+        // Claude Code: remove from top-level and all project entries
+        const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
+        if (mcpServers && 'kit' in mcpServers) delete mcpServers.kit;
+        const projects = settings.projects as Record<string, any> | undefined;
+        if (projects) {
+          for (const proj of Object.values(projects)) {
+            if (proj?.mcpServers?.kit) delete proj.mcpServers.kit;
+          }
+        }
       }
+
+      await this.writeJsonFile(configPath, settings);
+      console.log(`[McpServerService] Removed KIT from ${target} config`);
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -487,16 +609,33 @@ export class McpServerService extends BaseService {
     const configPath = this.getConfigPath(target);
     try {
       const settings = await this.readJsonFile(configPath);
-      const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
-      const kanvas = mcpServers?.kanvas as { url?: string; args?: string[] } | undefined;
+      let kit: { url?: string; args?: string[]; type?: string } | undefined;
 
-      if (!kanvas) {
+      if (target === 'claude-desktop') {
+        const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
+        kit = mcpServers?.kit as typeof kit;
+      } else {
+        // Claude Code: check top-level mcpServers first, then any project entry
+        const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
+        kit = mcpServers?.kit as typeof kit;
+        if (!kit) {
+          const projects = settings.projects as Record<string, any> | undefined;
+          if (projects) {
+            for (const proj of Object.values(projects)) {
+              if (proj?.mcpServers?.kit) {
+                kit = proj.mcpServers.kit;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      if (!kit) {
         return { installed: false, path: configPath, currentUrl: null, portMismatch: false };
       }
 
-      // Claude Desktop uses stdio with mcp-remote: extract URL from args
-      // Claude Code uses direct URL
-      const currentUrl = kanvas.url || kanvas.args?.find(a => a.startsWith('http')) || null;
+      const currentUrl = kit.url || kit.args?.find(a => a.startsWith('http')) || null;
       const liveUrl = target === 'claude-desktop' ? this.getSseUrl() : this.getUrl();
       const portMismatch = !!liveUrl && !!currentUrl && currentUrl !== liveUrl;
 

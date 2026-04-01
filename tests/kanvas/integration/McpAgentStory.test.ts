@@ -168,7 +168,7 @@ describe('MCP Agent Story - Integration', () => {
   describe('Story: Setup → First Commit', () => {
     it('should complete full setup-to-commit flow', async () => {
       // 1. Read session info
-      const infoResult = await callTool('kanvas_get_session_info', {
+      const infoResult = await callTool('kit_get_session_info', {
         session_id: SESSION_ID,
       });
       const info = parseResult(infoResult);
@@ -177,7 +177,7 @@ describe('MCP Agent Story - Integration', () => {
       expect(info.agentType).toBe('claude');
 
       // 2. Lock files
-      const lockResult = await callTool('kanvas_lock_file', {
+      const lockResult = await callTool('kit_lock_file', {
         session_id: SESSION_ID,
         files: ['src/auth.ts', 'src/utils.ts'],
         reason: 'Implementing auth feature',
@@ -189,7 +189,7 @@ describe('MCP Agent Story - Integration', () => {
       expect(lockDeclarations[0].files).toEqual(['src/auth.ts', 'src/utils.ts']);
 
       // 3. Commit
-      const commitResult = await callTool('kanvas_commit', {
+      const commitResult = await callTool('kit_commit', {
         session_id: SESSION_ID,
         message: 'feat: add user authentication',
         push: false,
@@ -204,7 +204,7 @@ describe('MCP Agent Story - Integration', () => {
       expect(dbCommits[0].message).toBe('feat: add user authentication');
 
       // 4. Unlock files
-      const unlockResult = await callTool('kanvas_unlock_file', {
+      const unlockResult = await callTool('kit_unlock_file', {
         session_id: SESSION_ID,
       });
       const unlockData = parseResult(unlockResult);
@@ -219,14 +219,14 @@ describe('MCP Agent Story - Integration', () => {
   describe('Story: Multi-Commit Workflow', () => {
     it('should handle multiple commits with activity logging and review', async () => {
       // 1. Commit A
-      const commitA = await callTool('kanvas_commit', {
+      const commitA = await callTool('kit_commit', {
         session_id: SESSION_ID,
         message: 'feat: add login form',
       });
       expect(parseResult(commitA).commitHash).toBeDefined();
 
       // 2. Log activity
-      const logResult = await callTool('kanvas_log_activity', {
+      const logResult = await callTool('kit_log_activity', {
         session_id: SESSION_ID,
         type: 'info',
         message: 'Login form tests passing, moving to API integration',
@@ -234,14 +234,14 @@ describe('MCP Agent Story - Integration', () => {
       expect(parseResult(logResult).logged).toBe(true);
 
       // 3. Commit B
-      const commitB = await callTool('kanvas_commit', {
+      const commitB = await callTool('kit_commit', {
         session_id: SESSION_ID,
         message: 'feat: add login API endpoint',
       });
       expect(parseResult(commitB).commitHash).toBeDefined();
 
       // 4. Get history (should show 2 commits)
-      const historyResult = await callTool('kanvas_get_commit_history', {
+      const historyResult = await callTool('kit_get_commit_history', {
         session_id: SESSION_ID,
       });
       const history = parseResult(historyResult);
@@ -250,7 +250,7 @@ describe('MCP Agent Story - Integration', () => {
       expect(history.commits[1].message).toBe('feat: add login API endpoint');
 
       // 5. Request review
-      const reviewResult = await callTool('kanvas_request_review', {
+      const reviewResult = await callTool('kit_request_review', {
         session_id: SESSION_ID,
         summary: 'Implemented login form and API endpoint with JWT auth',
       });
@@ -272,7 +272,7 @@ describe('MCP Agent Story - Integration', () => {
       binder.registerSession(SESSION_B, tempDir + '-other');
 
       // Session A locks src/index.ts
-      const lockA = await callTool('kanvas_lock_file', {
+      const lockA = await callTool('kit_lock_file', {
         session_id: SESSION_ID,
         files: ['src/index.ts'],
       });
@@ -288,7 +288,7 @@ describe('MCP Agent Story - Integration', () => {
         }],
       });
 
-      const lockB = await callTool('kanvas_lock_file', {
+      const lockB = await callTool('kit_lock_file', {
         session_id: SESSION_B,
         files: ['src/index.ts'],
       });
@@ -305,7 +305,7 @@ describe('MCP Agent Story - Integration', () => {
   // ==========================================================================
   describe('Story: Session Discovery', () => {
     it('should provide session metadata for agent discovery', async () => {
-      const result = await callTool('kanvas_get_session_info', {
+      const result = await callTool('kit_get_session_info', {
         session_id: SESSION_ID,
       });
 
@@ -390,13 +390,13 @@ describe('MCP Agent Story - Integration', () => {
   describe('Story: Error Handling', () => {
     it('should return clean errors for unknown sessions across all tools', async () => {
       const tools = [
-        { name: 'kanvas_commit', args: { session_id: 'unknown', message: 'test' } },
-        { name: 'kanvas_get_session_info', args: { session_id: 'unknown' } },
-        { name: 'kanvas_log_activity', args: { session_id: 'unknown', type: 'info', message: 'test' } },
-        { name: 'kanvas_lock_file', args: { session_id: 'unknown', files: ['test.ts'] } },
-        { name: 'kanvas_unlock_file', args: { session_id: 'unknown' } },
-        { name: 'kanvas_get_commit_history', args: { session_id: 'unknown' } },
-        { name: 'kanvas_request_review', args: { session_id: 'unknown', summary: 'test' } },
+        { name: 'kit_commit', args: { session_id: 'unknown', message: 'test' } },
+        { name: 'kit_get_session_info', args: { session_id: 'unknown' } },
+        { name: 'kit_log_activity', args: { session_id: 'unknown', type: 'info', message: 'test' } },
+        { name: 'kit_lock_file', args: { session_id: 'unknown', files: ['test.ts'] } },
+        { name: 'kit_unlock_file', args: { session_id: 'unknown' } },
+        { name: 'kit_get_commit_history', args: { session_id: 'unknown' } },
+        { name: 'kit_request_review', args: { session_id: 'unknown', summary: 'test' } },
       ];
 
       for (const { name, args } of tools) {
@@ -412,7 +412,7 @@ describe('MCP Agent Story - Integration', () => {
         error: { message: 'Nothing to commit, working tree clean' },
       });
 
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: SESSION_ID,
         message: 'feat: empty commit',
       });
@@ -424,7 +424,7 @@ describe('MCP Agent Story - Integration', () => {
     it('should handle push failure non-fatally', async () => {
       deps.gitService.push.mockRejectedValueOnce(new Error('Remote rejected'));
 
-      const result = await callTool('kanvas_commit', {
+      const result = await callTool('kit_commit', {
         session_id: SESSION_ID,
         message: 'feat: push will fail',
         push: true,

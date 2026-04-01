@@ -68,13 +68,14 @@ export interface McpReviewResult {
 // =============================================================================
 
 export const MCP_TOOLS = {
-  COMMIT: 'kanvas_commit',
-  GET_SESSION_INFO: 'kanvas_get_session_info',
-  LOG_ACTIVITY: 'kanvas_log_activity',
-  LOCK_FILE: 'kanvas_lock_file',
-  UNLOCK_FILE: 'kanvas_unlock_file',
-  GET_COMMIT_HISTORY: 'kanvas_get_commit_history',
-  REQUEST_REVIEW: 'kanvas_request_review',
+  COMMIT: 'kit_commit',
+  COMMIT_ALL: 'kit_commit_all',
+  GET_SESSION_INFO: 'kit_get_session_info',
+  LOG_ACTIVITY: 'kit_log_activity',
+  LOCK_FILE: 'kit_lock_file',
+  UNLOCK_FILE: 'kit_unlock_file',
+  GET_COMMIT_HISTORY: 'kit_get_commit_history',
+  REQUEST_REVIEW: 'kit_request_review',
 } as const;
 
 // =============================================================================
@@ -82,10 +83,10 @@ export const MCP_TOOLS = {
 // =============================================================================
 
 export const MCP_RESOURCES = {
-  SESSION_INFO: 'kanvas://session/{session_id}/info',
-  HOUSERULES: 'kanvas://session/{session_id}/houserules',
-  CONTRACTS: 'kanvas://session/{session_id}/contracts',
-  COMMITS: 'kanvas://session/{session_id}/commits',
+  SESSION_INFO: 'kit://session/{session_id}/info',
+  HOUSERULES: 'kit://session/{session_id}/houserules',
+  CONTRACTS: 'kit://session/{session_id}/contracts',
+  COMMITS: 'kit://session/{session_id}/commits',
 } as const;
 
 // =============================================================================
