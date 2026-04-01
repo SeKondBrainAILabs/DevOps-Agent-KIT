@@ -2,7 +2,7 @@
 
 **Desktop dashboard for managing AI coding agents across your repositories**
 
-Kanvas monitors Claude, Cursor, Copilot, Cline, Aider, Warp, and other AI agents working on your codebase. It handles git operations, prevents conflicts, tracks changes, generates contracts, and keeps multiple agents coordinated — all from a single desktop app.
+DevOps Agent monitors Claude, Cursor, Copilot, Cline, Aider, Warp, and other AI agents working on your codebase. It handles git operations, prevents conflicts, tracks changes, generates contracts, and keeps multiple agents coordinated — all from a single desktop app.
 
 Version: **2.2.0**
 
