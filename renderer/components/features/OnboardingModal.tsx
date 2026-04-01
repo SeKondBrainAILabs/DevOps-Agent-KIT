@@ -69,7 +69,7 @@ const STEPS: OnboardingStep[] = [
       </svg>
     ),
     items: [
-      { icon: '🔄', title: 'Auto-rebase', desc: 'Daily or on-demand rebase keeps your branch current — conflicts flagged early' },
+      { icon: '🔄', title: 'Auto-rebase', desc: 'After every commit or on a schedule — keeps your branch current, conflicts flagged early' },
       { icon: '🔀', title: 'Merge workflow', desc: 'Preview changes, resolve conflicts, then merge back to main or development' },
       { icon: '🛡️', title: 'Protected files', desc: 'Lock files and package.json get deterministic resolution — no surprises' },
       { icon: '📊', title: 'Commit history', desc: 'Browse all commits across sessions in the universal commits view' },

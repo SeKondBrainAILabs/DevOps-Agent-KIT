@@ -600,7 +600,7 @@ export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.Re
                   <div className="flex flex-wrap gap-2">
                     {[
                       { value: 'never', label: 'Never' },
-                      { value: 'on-demand', label: 'On-demand' },
+                      { value: 'on-demand', label: 'After every commit' },
                       { value: 'daily', label: 'Daily' },
                       { value: 'weekly', label: 'Weekly' },
                     ].map(option => (
