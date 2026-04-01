@@ -443,10 +443,13 @@ export class McpServerService extends BaseService {
       const mcpServers = (settings.mcpServers as Record<string, unknown>) || {};
 
       if (target === 'claude-desktop') {
-        // Claude Desktop expects { url: "http://...sse" } — no type field
-        mcpServers.kanvas = { url };
+        // Claude Desktop only supports stdio — use mcp-remote as a bridge to our SSE endpoint
+        mcpServers.kanvas = {
+          command: 'npx',
+          args: ['-y', 'mcp-remote', url],
+        };
       } else {
-        // Claude Code expects { type: "streamable-http", url: "http://...mcp" }
+        // Claude Code supports streamable-http natively
         mcpServers.kanvas = { type: 'streamable-http', url };
       }
 
@@ -485,13 +488,15 @@ export class McpServerService extends BaseService {
     try {
       const settings = await this.readJsonFile(configPath);
       const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
-      const kanvas = mcpServers?.kanvas as { url?: string } | undefined;
+      const kanvas = mcpServers?.kanvas as { url?: string; args?: string[] } | undefined;
 
       if (!kanvas) {
         return { installed: false, path: configPath, currentUrl: null, portMismatch: false };
       }
 
-      const currentUrl = kanvas.url || null;
+      // Claude Desktop uses stdio with mcp-remote: extract URL from args
+      // Claude Code uses direct URL
+      const currentUrl = kanvas.url || kanvas.args?.find(a => a.startsWith('http')) || null;
       const liveUrl = target === 'claude-desktop' ? this.getSseUrl() : this.getUrl();
       const portMismatch = !!liveUrl && !!currentUrl && currentUrl !== liveUrl;
 
