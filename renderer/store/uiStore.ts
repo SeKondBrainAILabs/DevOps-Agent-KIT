@@ -22,6 +22,7 @@ interface UIState {
   showCloseSessionDialog: boolean;
   showSettingsModal: boolean;
   showCreateAgentWizard: boolean;
+  showOnboarding: boolean;
   closeSessionId: string | null;
 
   // Split pane
@@ -36,6 +37,7 @@ interface UIState {
   setShowCloseSessionDialog: (show: boolean, sessionId?: string) => void;
   setShowSettingsModal: (show: boolean) => void;
   setShowCreateAgentWizard: (show: boolean) => void;
+  setShowOnboarding: (show: boolean) => void;
   setMainSplitPosition: (position: number) => void;
 }
 
@@ -53,6 +55,7 @@ export const useUIStore = create<UIState>((set) => ({
   showCloseSessionDialog: false,
   showSettingsModal: false,
   showCreateAgentWizard: false,
+  showOnboarding: false,
   closeSessionId: null,
 
   // Split pane
@@ -76,6 +79,8 @@ export const useUIStore = create<UIState>((set) => ({
   setShowSettingsModal: (show) => set({ showSettingsModal: show }),
 
   setShowCreateAgentWizard: (show) => set({ showCreateAgentWizard: show }),
+
+  setShowOnboarding: (show) => set({ showOnboarding: show }),
 
   setMainSplitPosition: (position) => set({ mainSplitPosition: position }),
 }));

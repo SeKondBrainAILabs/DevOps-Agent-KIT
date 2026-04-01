@@ -2,10 +2,10 @@
  * MCP Resource Handlers
  *
  * Registers 4 resources:
- * - kanvas://session/{session_id}/info
- * - kanvas://session/{session_id}/houserules
- * - kanvas://session/{session_id}/contracts
- * - kanvas://session/{session_id}/commits
+ * - kit://session/{session_id}/info
+ * - kit://session/{session_id}/houserules
+ * - kit://session/{session_id}/contracts
+ * - kit://session/{session_id}/commits
  */
 
 import { existsSync, readFileSync, readdirSync } from 'fs';
@@ -28,7 +28,7 @@ export function registerResources(
   // --------------------------------------------------------------------------
   server.resource(
     'session-info',
-    'kanvas://session/{session_id}/info',
+    'kit://session/{session_id}/info',
     { description: 'Session metadata and configuration (JSON)' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
@@ -75,7 +75,7 @@ export function registerResources(
   // --------------------------------------------------------------------------
   server.resource(
     'houserules',
-    'kanvas://session/{session_id}/houserules',
+    'kit://session/{session_id}/houserules',
     { description: 'House rules for the session repository (Markdown)' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
@@ -110,7 +110,7 @@ export function registerResources(
   // --------------------------------------------------------------------------
   server.resource(
     'contracts',
-    'kanvas://session/{session_id}/contracts',
+    'kit://session/{session_id}/contracts',
     { description: 'Contracts directory listing for the session repository (JSON)' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
@@ -149,7 +149,7 @@ export function registerResources(
   // --------------------------------------------------------------------------
   server.resource(
     'commits',
-    'kanvas://session/{session_id}/commits',
+    'kit://session/{session_id}/commits',
     { description: 'Recent commit history for the session branch (JSON)' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
@@ -186,9 +186,9 @@ export function registerResources(
 }
 
 /**
- * Extract session_id from a kanvas://session/{session_id}/... URI.
+ * Extract session_id from a kit://session/{session_id}/... URI.
  */
 function extractSessionId(uriHref: string): string | null {
-  const match = uriHref.match(/kanvas:\/\/session\/([^/]+)\//);
+  const match = uriHref.match(/kit:\/\/session\/([^/]+)\//);
   return match ? match[1] : null;
 }

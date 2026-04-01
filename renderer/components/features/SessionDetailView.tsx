@@ -13,8 +13,9 @@ import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from 
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { CommitsTab } from './CommitsTab';
+import { McpTab } from './McpTab';
 
-type DetailTab = 'prompt' | 'activity' | 'commits' | 'files' | 'contracts' | 'terminal';
+type DetailTab = 'prompt' | 'activity' | 'commits' | 'files' | 'contracts' | 'terminal' | 'mcp';
 
 // Threshold for switching to virtualized rendering
 const VIRTUALIZATION_LINE_THRESHOLD = 100;
@@ -485,7 +486,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
 
         {/* Tabs */}
         <div className="flex gap-2 flex-wrap">
-          {(['prompt', 'activity', 'commits', 'terminal', 'files', 'contracts'] as DetailTab[]).map((tab) => (
+          {(['prompt', 'activity', 'commits', 'terminal', 'files', 'contracts', 'mcp'] as DetailTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -495,7 +496,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                   : 'bg-surface-secondary text-text-secondary hover:text-text-primary'
                 }`}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab === 'mcp' ? 'MCP' : tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
         </div>
@@ -536,6 +537,9 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
         )}
         {activeTab === 'terminal' && (
           <TerminalTab sessionId={session.sessionId} />
+        )}
+        {activeTab === 'mcp' && (
+          <McpTab sessionId={session.sessionId} />
         )}
       </div>
     </div>

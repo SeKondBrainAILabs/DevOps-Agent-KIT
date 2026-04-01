@@ -27,6 +27,7 @@ jest.mock('../../../renderer/store/agentStore', () => ({
       setSelectedSession: jest.fn(),
       removeReportedSession: mockRemoveReportedSession,
       viewedCommitCounts: mockViewedCommitCounts,
+      lastRebaseTimes: new Map(),
     };
     return selector(state);
   },

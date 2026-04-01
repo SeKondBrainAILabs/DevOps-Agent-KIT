@@ -439,6 +439,13 @@ export class MergeService extends BaseService {
         }
       }
 
+      // Clean up any stale merge state from a previous interrupted attempt
+      const { stdout: mergeHead } = await this.git(['rev-parse', '--verify', 'MERGE_HEAD'], repoPath);
+      if (mergeHead) {
+        console.log(`[MergeService] Cleaning up stale merge-in-progress before starting new merge`);
+        await this.git(['merge', '--abort'], repoPath);
+      }
+
       // Get current branch
       const { stdout: currentBranch } = await this.git(['branch', '--show-current'], repoPath);
 
@@ -450,8 +457,19 @@ export class MergeService extends BaseService {
         }
       }
 
-      // Pull latest changes
-      await this.git(['pull', 'origin', targetBranch], repoPath);
+      // Pull latest changes — check result to avoid merging on a dirty state
+      const pullResult = await this.git(['pull', 'origin', targetBranch], repoPath);
+      if (pullResult.exitCode !== 0) {
+        console.error(`[MergeService] Pull failed:`, pullResult.stderr);
+        await this.git(['merge', '--abort'], repoPath);
+        if (currentBranch !== targetBranch) {
+          await this.git(['checkout', currentBranch], repoPath);
+        }
+        return {
+          success: false,
+          message: `Failed to pull latest ${targetBranch}: ${pullResult.stderr || 'unknown error'}. Please try again.`,
+        };
+      }
 
       // Perform the merge
       let mergeResult = await this.git(
@@ -494,6 +512,11 @@ export class MergeService extends BaseService {
 
         // Abort the merge
         await this.git(['merge', '--abort'], repoPath);
+
+        // Switch back to original branch so repo isn't left on targetBranch
+        if (currentBranch !== targetBranch) {
+          await this.git(['checkout', currentBranch], repoPath);
+        }
 
         return {
           success: false,

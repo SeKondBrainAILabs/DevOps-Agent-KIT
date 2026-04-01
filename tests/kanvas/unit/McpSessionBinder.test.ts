@@ -22,7 +22,7 @@ describe('McpSessionBinder', () => {
       binder.registerSession('sess_abc', '/tmp/worktree-abc');
       const session = binder.getSession('sess_abc');
       expect(session).toBeDefined();
-      expect(session!.kanvasSessionId).toBe('sess_abc');
+      expect(session!.kitSessionId).toBe('sess_abc');
       expect(session!.worktreePath).toBe('/tmp/worktree-abc');
       expect(session!.registeredAt).toBeDefined();
     });
@@ -57,7 +57,7 @@ describe('McpSessionBinder', () => {
 
       const sessions = binder.listSessions();
       expect(sessions).toHaveLength(2);
-      expect(sessions.map(s => s.kanvasSessionId).sort()).toEqual(['sess_a', 'sess_b']);
+      expect(sessions.map(s => s.kitSessionId).sort()).toEqual(['sess_a', 'sess_b']);
     });
   });
 
@@ -79,7 +79,7 @@ describe('McpSessionBinder', () => {
   });
 
   describe('bind / unbind MCP sessions', () => {
-    it('should bind an MCP session to a Kanvas session', () => {
+    it('should bind an MCP session to a KIT session', () => {
       binder.registerSession('sess_abc', '/tmp/worktree');
       const result = binder.bind('mcp_transport_1', 'sess_abc');
 
@@ -87,7 +87,7 @@ describe('McpSessionBinder', () => {
       expect(binder.resolveBinding('mcp_transport_1')).toBe('sess_abc');
     });
 
-    it('should return false when binding to unknown Kanvas session', () => {
+    it('should return false when binding to unknown KIT session', () => {
       const result = binder.bind('mcp_transport_1', 'unknown_sess');
       expect(result).toBe(false);
     });

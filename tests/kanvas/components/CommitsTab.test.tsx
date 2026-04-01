@@ -306,7 +306,8 @@ describe('CommitsTab', () => {
         expect(mockApi.git.getCommitHistory).toHaveBeenCalledWith(
           '/test/worktree',
           'main',
-          50
+          100,
+          'feature-branch'
         );
       });
     });
@@ -323,7 +324,8 @@ describe('CommitsTab', () => {
         expect(mockApi.git.getCommitHistory).toHaveBeenCalledWith(
           '/test/repo',
           'main',
-          50
+          100,
+          'feature-branch'
         );
       });
     });
@@ -340,7 +342,8 @@ describe('CommitsTab', () => {
         expect(mockApi.git.getCommitHistory).toHaveBeenCalledWith(
           expect.any(String),
           'develop',
-          50
+          100,
+          'feature-branch'
         );
       });
     });

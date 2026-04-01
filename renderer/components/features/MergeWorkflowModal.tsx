@@ -430,9 +430,9 @@ export function MergeWorkflowModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="p-4 border-b border-border">
+        <div className="p-4 border-b border-border flex-shrink-0">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold text-text-primary">Merge Workflow</h2>
@@ -512,7 +512,7 @@ export function MergeWorkflowModal({
         </div>
 
         {/* Content */}
-        <div className="p-4 overflow-auto max-h-[50vh]">
+        <div className="p-4 overflow-y-auto flex-1 min-h-0">
           {/* Step 1: Preview */}
           {step === 'preview' && (
             <div>

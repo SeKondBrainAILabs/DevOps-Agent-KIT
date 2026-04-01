@@ -104,15 +104,15 @@ export function AgentList(): React.ReactElement {
 
     for (const session of sessions) {
       const agentType = (session.agentType || 'custom') as AgentType;
-      const repoPath = session.repoPath || session.worktreePath || 'Unknown';
+      const repoPath = (session.repoPath || session.worktreePath || 'Unknown').replace(/\/+$/, '');
       const repoName = repoPath.split('/').pop() || repoPath;
       const isActive = session.status === 'active';
 
-      // Find or create repo
-      let repo = repos.get(repoPath);
+      // Find or create repo — group by name so worktrees of the same repo merge
+      let repo = repos.get(repoName);
       if (!repo) {
         repo = { repoName, repoPath, agents: [], totalSessions: 0 };
-        repos.set(repoPath, repo);
+        repos.set(repoName, repo);
       }
       repo.totalSessions++;
 

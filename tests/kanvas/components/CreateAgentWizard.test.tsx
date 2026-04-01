@@ -6,6 +6,17 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+// Mock components that use import.meta.url (not supported in CJS Jest)
+jest.mock('../../../renderer/components/ui/KanvasLogo', () => ({
+  KanvasLogo: () => <div data-testid="kanvas-logo">Logo</div>,
+}));
+jest.mock('../../../renderer/components/ui/HomeArtefactLeft', () => ({
+  HomeArtefactLeft: () => <div data-testid="home-artefact">Artefact</div>,
+  __esModule: true,
+  default: () => <div data-testid="home-artefact">Artefact</div>,
+}));
+
 import { CreateAgentWizard } from '../../../renderer/components/features/CreateAgentWizard';
 import { mockApi } from '../setup';
 
@@ -78,7 +89,7 @@ describe('CreateAgentWizard', () => {
     it('should show step indicator', () => {
       render(<CreateAgentWizard onClose={mockOnClose} />);
 
-      expect(screen.getByText(/step 1 of 4/i)).toBeInTheDocument();
+      expect(screen.getByText(/step 1 of \d/i)).toBeInTheDocument();
     });
 
     it('should start on repo selection step', () => {

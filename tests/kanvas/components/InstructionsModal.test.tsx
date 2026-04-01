@@ -175,15 +175,21 @@ Implement user authentication
       expect(screen.getByRole('button', { name: /terminal/i })).toBeInTheDocument();
     });
 
-    it('should log repo path when Terminal is clicked', async () => {
-      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+    it('should call openTerminal when Terminal is clicked', async () => {
+      const mockOpenTerminal = jest.fn().mockResolvedValue(undefined);
+      (window as any).api = {
+        ...(window as any).api,
+        shell: {
+          ...(window as any).api?.shell,
+          openTerminal: mockOpenTerminal,
+        },
+      };
       const user = userEvent.setup();
       render(<InstructionsModal instance={defaultInstance} onClose={mockOnClose} />);
 
       await user.click(screen.getByRole('button', { name: /terminal/i }));
 
-      expect(consoleSpy).toHaveBeenCalledWith('Open terminal at:', defaultInstance.config.repoPath);
-      consoleSpy.mockRestore();
+      expect(mockOpenTerminal).toHaveBeenCalledWith(defaultInstance.config.repoPath);
     });
   });
 

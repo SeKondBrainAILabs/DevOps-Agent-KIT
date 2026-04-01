@@ -379,6 +379,9 @@ ${DEVOPS_KIT_DIR}/
         if (!gitignore.includes(MCP_CONFIG_FILE)) {
           gitignore += `\n# MCP server config (auto-generated per session)\n${MCP_CONFIG_FILE}\n`;
         }
+        if (!gitignore.includes('.claude/settings.json')) {
+          gitignore += '\n# Claude Code project settings (auto-generated per session)\n.claude/settings.json\n';
+        }
         await writeFile(gitignorePath, gitignore);
       } catch {
         // Ignore gitignore errors
@@ -801,7 +804,7 @@ ${DEVOPS_KIT_DIR}/
 
   /**
    * Create .mcp.json in worktree root for MCP-capable agents (claude, cline)
-   * Allows agents to auto-discover the Kanvas MCP server
+   * Allows agents to auto-discover the KIT MCP server
    */
   private async createMcpConfigFile(worktreePath: string): Promise<void> {
     if (!this.mcpServerUrl) return;
@@ -809,7 +812,7 @@ ${DEVOPS_KIT_DIR}/
     try {
       const mcpConfig = {
         mcpServers: {
-          kanvas: {
+          kit: {
             type: 'streamable-http',
             url: this.mcpServerUrl,
           },
@@ -821,6 +824,32 @@ ${DEVOPS_KIT_DIR}/
       console.log(`[AgentInstanceService] Created ${MCP_CONFIG_FILE} at ${configPath}`);
     } catch (error) {
       console.warn(`[AgentInstanceService] Could not create ${MCP_CONFIG_FILE}: ${error}`);
+    }
+  }
+
+  /**
+   * Create .claude/settings.json in worktree root for Claude Code project-level MCP discovery.
+   * Belt-and-suspenders: works alongside .mcp.json for maximum compatibility.
+   */
+  private async createClaudeProjectSettings(worktreePath: string): Promise<void> {
+    if (!this.mcpServerUrl) return;
+
+    try {
+      const claudeDir = join(worktreePath, '.claude');
+      await mkdir(claudeDir, { recursive: true });
+      const settingsPath = join(claudeDir, 'settings.json');
+      const settings = {
+        mcpServers: {
+          kit: {
+            type: 'streamable-http',
+            url: this.mcpServerUrl,
+          },
+        },
+      };
+      await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+      console.log(`[AgentInstanceService] Created .claude/settings.json at ${settingsPath}`);
+    } catch (error) {
+      console.warn(`[AgentInstanceService] Could not create .claude/settings.json: ${error}`);
     }
   }
 
@@ -1057,10 +1086,11 @@ ${DEVOPS_KIT_DIR}/
       await this.copyContractsToWorktree(worktreePath, instance.config.repoPath);
     }
 
-    // Create .mcp.json for MCP-capable agents
+    // Create .mcp.json and .claude/settings.json for MCP-capable agents
     const mcpAgents = ['claude', 'cline'];
     if (mcpAgents.includes(instance.config.agentType)) {
       await this.createMcpConfigFile(worktreePath);
+      await this.createClaudeProjectSettings(worktreePath);
     }
 
     return { success: true };
@@ -1845,6 +1875,39 @@ ${DEVOPS_KIT_DIR}/
     const windows = BrowserWindow.getAllWindows();
     for (const win of windows) {
       win.webContents.send('instance:status-changed', instance);
+    }
+  }
+
+  /**
+   * Regenerate prompts for all stored instances using the latest template.
+   * Ensures prompt updates (e.g. tool renames) propagate to existing sessions.
+   */
+  refreshStoredPrompts(): void {
+    let updated = false;
+    for (const instance of this.instances.values()) {
+      if (!instance.sessionId || !instance.config) continue;
+      const vars: InstructionVars = {
+        repoPath: instance.worktreePath || instance.config.repoPath,
+        repoName: instance.config.repoPath.split('/').pop() || 'unknown',
+        branchName: instance.config.branchName,
+        sessionId: instance.sessionId,
+        taskDescription: instance.config.taskDescription || '',
+        systemPrompt: instance.config.systemPrompt || '',
+        contextPreservation: instance.config.contextPreservation || '',
+        rebaseFrequency: instance.config.rebaseFrequency || 'never',
+        mcpUrl: this.mcpServerUrl || undefined,
+        multiRepoEntries: instance.multiRepoEntries,
+        commitScope: instance.config.multiRepo?.commitScope,
+      };
+      instance.instructions = getAgentInstructions(instance.config.agentType, vars);
+      if (instance.config.agentType === 'claude') {
+        instance.prompt = generateClaudePrompt(vars);
+      }
+      updated = true;
+    }
+    if (updated) {
+      this.saveInstances();
+      console.log(`[AgentInstanceService] Refreshed prompts for ${this.instances.size} stored instances`);
     }
   }
 

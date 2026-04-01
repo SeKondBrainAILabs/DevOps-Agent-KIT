@@ -67,6 +67,21 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   // MCP server state
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
   const [mcpCopied, setMcpCopied] = useState(false);
+  const [claudeCodeConfig, setClaudeCodeConfig] = useState<{
+    installed: boolean;
+    path: string;
+    currentUrl: string | null;
+    portMismatch: boolean;
+  } | null>(null);
+  const [claudeDesktopConfig, setClaudeDesktopConfig] = useState<{
+    installed: boolean;
+    path: string;
+    currentUrl: string | null;
+    portMismatch: boolean;
+  } | null>(null);
+  const [isInstallingMcp, setIsInstallingMcp] = useState<string | null>(null);
+  const [manualSetupOpen, setManualSetupOpen] = useState(false);
+  const [mcpJsonCopied, setMcpJsonCopied] = useState<string | null>(null);
 
   // Version management state
   const [selectedRepoPath, setSelectedRepoPath] = useState<string>('');
@@ -351,7 +366,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-secondary border border-border rounded-lg w-full max-w-lg animate-slide-up">
+      <div className="bg-surface-secondary border border-border rounded-lg w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col animate-slide-up">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
           <h2 className="text-lg font-semibold text-gray-100">Settings</h2>
@@ -412,6 +427,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
               window.api?.mcp?.status?.().then((result) => {
                 if (result?.success && result.data) setMcpStatus(result.data);
               });
+              // Check Claude Code + Desktop config status
+              window.api?.mcp?.checkClaudeCodeConfig?.().then((result) => {
+                if (result?.success && result.data) setClaudeCodeConfig(result.data);
+              });
+              window.api?.mcp?.checkClaudeDesktopConfig?.().then((result) => {
+                if (result?.success && result.data) setClaudeDesktopConfig(result.data);
+              });
             }}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === 'mcp'
@@ -442,7 +464,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
         </div>
 
         {/* Content */}
-        <div className="p-4 space-y-4">
+        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
           {activeTab === 'general' && config && (
             <>
               {/* Repo Version Management */}
@@ -677,6 +699,19 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 disabled={isSaving}
               >
                 {isSaving ? 'Saving...' : 'Save Settings'}
+              </button>
+
+              {/* Replay Onboarding */}
+              <button
+                onClick={async () => {
+                  await window.api?.config?.set?.('onboardingCompleted', false);
+                  const { useUIStore: uiStore } = await import('../../store/uiStore');
+                  uiStore.getState().setShowOnboarding(true);
+                  onClose();
+                }}
+                className="w-full mt-2 py-2 px-4 rounded border border-border text-sm text-text-secondary hover:text-text-primary hover:border-kanvas-blue/50 transition-colors"
+              >
+                Replay Onboarding Guide
               </button>
             </>
           )}
@@ -958,14 +993,14 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 </p>
                 <div className="bg-surface-tertiary rounded-lg divide-y divide-border text-sm">
                   {[
-                    { name: 'kanvas_commit', desc: 'Stage, commit, record, and optionally push' },
-                    { name: 'kanvas_commit_all', desc: 'Commit across all repos in multi-repo session' },
-                    { name: 'kanvas_lock_file', desc: 'Declare file edit intent (conflict detection)' },
-                    { name: 'kanvas_unlock_file', desc: 'Release file locks' },
-                    { name: 'kanvas_get_session_info', desc: 'Session config and metadata' },
-                    { name: 'kanvas_log_activity', desc: 'Log to Kanvas dashboard timeline' },
-                    { name: 'kanvas_get_commit_history', desc: 'Recent commits for session branch' },
-                    { name: 'kanvas_request_review', desc: 'Signal work ready for review' },
+                    { name: 'kit_commit', desc: 'Stage, commit, record, and optionally push' },
+                    { name: 'kit_commit_all', desc: 'Commit across all repos in multi-repo session' },
+                    { name: 'kit_lock_file', desc: 'Declare file edit intent (conflict detection)' },
+                    { name: 'kit_unlock_file', desc: 'Release file locks' },
+                    { name: 'kit_get_session_info', desc: 'Session config and metadata' },
+                    { name: 'kit_log_activity', desc: 'Log to KIT dashboard timeline' },
+                    { name: 'kit_get_commit_history', desc: 'Recent commits for session branch' },
+                    { name: 'kit_request_review', desc: 'Signal work ready for review' },
                   ].map((tool) => (
                     <div key={tool.name} className="px-3 py-2 flex items-center gap-3">
                       <span className="font-mono text-accent text-xs">{tool.name}</span>
@@ -977,39 +1012,275 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
 
               <div className="border-t border-border my-4" />
 
-              {/* .mcp.json info */}
+              {/* Agent MCP Setup */}
               <div className="space-y-3">
-                <h3 className="text-sm font-medium text-gray-200">Agent Configuration</h3>
+                <h3 className="text-sm font-medium text-gray-200">Agent Setup</h3>
                 <p className="text-xs text-gray-400">
-                  When you create an agent instance, Kanvas writes a <code className="font-mono text-accent">.mcp.json</code> file in the worktree so agents auto-discover this server.
+                  One-click install for supported tools. For other agents (Cursor, Cline), use Manual Setup below to copy the JSON config.
                 </p>
-                {mcpStatus?.url && (
-                  <div className="bg-surface-tertiary rounded-lg p-3">
-                    <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto">
-{JSON.stringify({
-  mcpServers: {
-    kanvas: {
-      type: 'streamable-http',
-      url: mcpStatus.url,
-    },
-  },
-}, null, 2)}
-                    </pre>
+
+                {/* Claude Code row */}
+                {(() => {
+                  const cfg = claudeCodeConfig;
+                  const isInstalled = cfg?.installed && !cfg?.portMismatch;
+                  const isMismatch = cfg?.installed && cfg?.portMismatch;
+                  return (
+                    <div className={`rounded-lg p-3 text-sm ${
+                      isInstalled ? 'bg-green-500/10 border border-green-500/30'
+                        : isMismatch ? 'bg-yellow-500/10 border border-yellow-500/30'
+                        : 'bg-surface-tertiary border border-border'
+                    }`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-200 font-medium">Claude Code</span>
+                          <span className="text-xs text-gray-500 font-mono">~/.claude/settings.json</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {isInstalled && (
+                            <>
+                              <span className="text-green-400 text-xs flex items-center gap-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                                Installed
+                              </span>
+                              <button
+                                onClick={async () => {
+                                  await window.api?.mcp?.uninstallClaudeCode?.();
+                                  const result = await window.api?.mcp?.checkClaudeCodeConfig?.();
+                                  if (result?.success && result.data) setClaudeCodeConfig(result.data);
+                                  setMessage({ type: 'success', text: 'Removed from Claude Code' });
+                                }}
+                                className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                              >
+                                Remove
+                              </button>
+                            </>
+                          )}
+                          {isMismatch && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-code');
+                                try {
+                                  await window.api?.mcp?.installClaudeCode?.();
+                                  const check = await window.api?.mcp?.checkClaudeCodeConfig?.();
+                                  if (check?.success && check.data) setClaudeCodeConfig(check.data);
+                                  setMessage({ type: 'success', text: 'Claude Code config updated' });
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-code'}
+                              className="text-xs bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-code' ? 'Updating...' : 'Update Port'}
+                            </button>
+                          )}
+                          {!cfg?.installed && mcpStatus?.isRunning && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-code');
+                                try {
+                                  const result = await window.api?.mcp?.installClaudeCode?.();
+                                  if (result?.success) {
+                                    setMessage({ type: 'success', text: 'Installed for Claude Code' });
+                                  } else {
+                                    setMessage({ type: 'error', text: `Failed: ${(result as any)?.error?.message || 'Unknown'}` });
+                                  }
+                                  const check = await window.api?.mcp?.checkClaudeCodeConfig?.();
+                                  if (check?.success && check.data) setClaudeCodeConfig(check.data);
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-code'}
+                              className="text-xs bg-accent/20 text-accent hover:bg-accent/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-code' ? 'Installing...' : 'Install'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {isMismatch && (
+                        <p className="text-xs text-yellow-400/70 mt-1">
+                          Port changed: {cfg?.currentUrl} &rarr; {mcpStatus?.url}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Claude Desktop row */}
+                {(() => {
+                  const cfg = claudeDesktopConfig;
+                  const isInstalled = cfg?.installed && !cfg?.portMismatch;
+                  const isMismatch = cfg?.installed && cfg?.portMismatch;
+                  return (
+                    <div className={`rounded-lg p-3 text-sm ${
+                      isInstalled ? 'bg-green-500/10 border border-green-500/30'
+                        : isMismatch ? 'bg-yellow-500/10 border border-yellow-500/30'
+                        : 'bg-surface-tertiary border border-border'
+                    }`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-200 font-medium">Claude Desktop</span>
+                          <span className="text-xs text-gray-500 font-mono truncate max-w-[180px]">claude_desktop_config.json</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {isInstalled && (
+                            <>
+                              <span className="text-green-400 text-xs flex items-center gap-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                                Installed
+                              </span>
+                              <button
+                                onClick={async () => {
+                                  await window.api?.mcp?.uninstallClaudeDesktop?.();
+                                  const result = await window.api?.mcp?.checkClaudeDesktopConfig?.();
+                                  if (result?.success && result.data) setClaudeDesktopConfig(result.data);
+                                  setMessage({ type: 'success', text: 'Removed from Claude Desktop' });
+                                }}
+                                className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                              >
+                                Remove
+                              </button>
+                            </>
+                          )}
+                          {isMismatch && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-desktop');
+                                try {
+                                  await window.api?.mcp?.installClaudeDesktop?.();
+                                  const check = await window.api?.mcp?.checkClaudeDesktopConfig?.();
+                                  if (check?.success && check.data) setClaudeDesktopConfig(check.data);
+                                  setMessage({ type: 'success', text: 'Claude Desktop config updated' });
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-desktop'}
+                              className="text-xs bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-desktop' ? 'Updating...' : 'Update Port'}
+                            </button>
+                          )}
+                          {!cfg?.installed && mcpStatus?.isRunning && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-desktop');
+                                try {
+                                  const result = await window.api?.mcp?.installClaudeDesktop?.();
+                                  if (result?.success) {
+                                    setMessage({ type: 'success', text: 'Installed for Claude Desktop' });
+                                  } else {
+                                    setMessage({ type: 'error', text: `Failed: ${(result as any)?.error?.message || 'Unknown'}` });
+                                  }
+                                  const check = await window.api?.mcp?.checkClaudeDesktopConfig?.();
+                                  if (check?.success && check.data) setClaudeDesktopConfig(check.data);
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-desktop'}
+                              className="text-xs bg-accent/20 text-accent hover:bg-accent/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-desktop' ? 'Installing...' : 'Install'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {isMismatch && (
+                        <p className="text-xs text-yellow-400/70 mt-1">
+                          Port changed: {cfg?.currentUrl} &rarr; {mcpStatus?.url}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                <p className="text-xs text-gray-500">
+                  Restart the target app after installing to pick up the new config.
+                </p>
+              </div>
+
+              <div className="border-t border-border my-4" />
+
+              {/* Manual Setup (collapsible) */}
+              <div className="space-y-3">
+                <button
+                  onClick={() => setManualSetupOpen(!manualSetupOpen)}
+                  className="flex items-center gap-2 text-sm font-medium text-gray-200 hover:text-white transition-colors w-full"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className={`transition-transform ${manualSetupOpen ? 'rotate-90' : ''}`}
+                  >
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                  Manual Setup
+                </button>
+
+                {manualSetupOpen && mcpStatus?.url && (
+                  <div className="space-y-4 pl-5">
+                    {/* Global settings.json */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-500 uppercase tracking-wide">~/.claude/settings.json</label>
+                      <div className="bg-surface-tertiary rounded-lg p-3 relative">
+                        <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
+{JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
+                        </pre>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2));
+                            setMcpJsonCopied('global');
+                            setTimeout(() => setMcpJsonCopied(null), 2000);
+                          }}
+                          className="absolute top-2 right-2 btn-secondary px-2 py-1 text-xs"
+                        >
+                          {mcpJsonCopied === 'global' ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* .mcp.json */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-500 uppercase tracking-wide">.mcp.json (project root)</label>
+                      <div className="bg-surface-tertiary rounded-lg p-3 relative">
+                        <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
+{JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
+                        </pre>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2));
+                            setMcpJsonCopied('mcp');
+                            setTimeout(() => setMcpJsonCopied(null), 2000);
+                          }}
+                          className="absolute top-2 right-2 btn-secondary px-2 py-1 text-xs"
+                        >
+                          {mcpJsonCopied === 'mcp' ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Refresh button */}
+                    <button
+                      onClick={() => {
+                        window.api?.mcp?.status?.().then((result) => {
+                          if (result?.success && result.data) setMcpStatus(result.data);
+                        });
+                        window.api?.mcp?.checkClaudeCodeConfig?.().then((result) => {
+                          if (result?.success && result.data) setClaudeCodeConfig(result.data);
+                        });
+                        window.api?.mcp?.checkClaudeDesktopConfig?.().then((result) => {
+                          if (result?.success && result.data) setClaudeDesktopConfig(result.data);
+                        });
+                        setMessage({ type: 'success', text: 'MCP status refreshed' });
+                      }}
+                      className="btn-secondary w-full"
+                    >
+                      Refresh Status
+                    </button>
                   </div>
                 )}
-
-                {/* Refresh button */}
-                <button
-                  onClick={() => {
-                    window.api?.mcp?.status?.().then((result) => {
-                      if (result?.success && result.data) setMcpStatus(result.data);
-                    });
-                    setMessage({ type: 'success', text: 'MCP status refreshed' });
-                  }}
-                  className="btn-secondary w-full"
-                >
-                  Refresh Status
-                </button>
               </div>
             </>
           )}

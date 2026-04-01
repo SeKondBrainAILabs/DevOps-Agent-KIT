@@ -235,6 +235,7 @@ export interface AppConfig {
   recentProjects: string[];
   autoWatch: boolean;
   autoPush: boolean;
+  onboardingCompleted: boolean;
 }
 
 export interface BranchManagementSettings {

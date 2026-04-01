@@ -1,11 +1,11 @@
 /**
  * MCP Session Binder
- * Maps MCP connections to Kanvas sessions.
+ * Maps MCP connections to KIT sessions.
  * Pure logic class - no Electron dependencies.
  */
 
 export interface BoundSession {
-  kanvasSessionId: string;
+  kitSessionId: string;
   worktreePath: string;              // Primary repo worktree (backward compat default)
   registeredAt: string;
   // Multi-repo support
@@ -14,59 +14,59 @@ export interface BoundSession {
 }
 
 export class McpSessionBinder {
-  /** kanvasSessionId -> worktree path */
+  /** kitSessionId -> worktree path */
   private sessions = new Map<string, BoundSession>();
 
-  /** mcpSessionId -> kanvasSessionId */
+  /** mcpSessionId -> kitSessionId */
   private bindings = new Map<string, string>();
 
   /**
-   * Register a Kanvas session so MCP tools can resolve it.
+   * Register a KIT session so MCP tools can resolve it.
    * Called during instance creation.
    */
-  registerSession(kanvasSessionId: string, worktreePath: string): void {
-    this.sessions.set(kanvasSessionId, {
-      kanvasSessionId,
+  registerSession(kitSessionId: string, worktreePath: string): void {
+    this.sessions.set(kitSessionId, {
+      kitSessionId,
       worktreePath,
       registeredAt: new Date().toISOString(),
     });
   }
 
   /**
-   * Unregister a Kanvas session (e.g. on session close).
+   * Unregister a KIT session (e.g. on session close).
    */
-  unregisterSession(kanvasSessionId: string): void {
-    this.sessions.delete(kanvasSessionId);
+  unregisterSession(kitSessionId: string): void {
+    this.sessions.delete(kitSessionId);
     // Also remove any MCP bindings that pointed to this session
     for (const [mcpId, sessId] of this.bindings) {
-      if (sessId === kanvasSessionId) {
+      if (sessId === kitSessionId) {
         this.bindings.delete(mcpId);
       }
     }
   }
 
   /**
-   * Resolve a Kanvas session ID to its worktree path.
+   * Resolve a KIT session ID to its worktree path.
    */
-  getWorktreePath(kanvasSessionId: string): string | undefined {
-    return this.sessions.get(kanvasSessionId)?.worktreePath;
+  getWorktreePath(kitSessionId: string): string | undefined {
+    return this.sessions.get(kitSessionId)?.worktreePath;
   }
 
   /**
    * Get full session info.
    */
-  getSession(kanvasSessionId: string): BoundSession | undefined {
-    return this.sessions.get(kanvasSessionId);
+  getSession(kitSessionId: string): BoundSession | undefined {
+    return this.sessions.get(kitSessionId);
   }
 
   /**
-   * Bind an MCP transport session to a Kanvas session.
+   * Bind an MCP transport session to a KIT session.
    */
-  bind(mcpSessionId: string, kanvasSessionId: string): boolean {
-    if (!this.sessions.has(kanvasSessionId)) {
+  bind(mcpSessionId: string, kitSessionId: string): boolean {
+    if (!this.sessions.has(kitSessionId)) {
       return false;
     }
-    this.bindings.set(mcpSessionId, kanvasSessionId);
+    this.bindings.set(mcpSessionId, kitSessionId);
     return true;
   }
 
@@ -78,7 +78,7 @@ export class McpSessionBinder {
   }
 
   /**
-   * Resolve an MCP session to a Kanvas session ID.
+   * Resolve an MCP session to a KIT session ID.
    */
   resolveBinding(mcpSessionId: string): string | undefined {
     return this.bindings.get(mcpSessionId);
@@ -107,7 +107,7 @@ export class McpSessionBinder {
    * The repo marked 'primary' (or the first) becomes the default worktreePath.
    */
   registerMultiRepoSession(
-    kanvasSessionId: string,
+    kitSessionId: string,
     repos: Array<{ repoName: string; worktreePath: string; role: 'primary' | 'secondary' }>
   ): void {
     const primary = repos.find(r => r.role === 'primary') || repos[0];
@@ -115,8 +115,8 @@ export class McpSessionBinder {
     for (const repo of repos) {
       repoPaths.set(repo.repoName, repo.worktreePath);
     }
-    this.sessions.set(kanvasSessionId, {
-      kanvasSessionId,
+    this.sessions.set(kitSessionId, {
+      kitSessionId,
       worktreePath: primary.worktreePath,
       registeredAt: new Date().toISOString(),
       repoPaths,
@@ -128,8 +128,8 @@ export class McpSessionBinder {
    * Resolve worktree path for a specific repo within a session.
    * If repoName is omitted, returns the primary repo's path.
    */
-  getWorktreePathForRepo(kanvasSessionId: string, repoName?: string): string | undefined {
-    const session = this.sessions.get(kanvasSessionId);
+  getWorktreePathForRepo(kitSessionId: string, repoName?: string): string | undefined {
+    const session = this.sessions.get(kitSessionId);
     if (!session) return undefined;
     if (!repoName || !session.repoPaths) return session.worktreePath;
     return session.repoPaths.get(repoName);
@@ -139,8 +139,8 @@ export class McpSessionBinder {
    * List all repos for a session.
    * Single-repo sessions return a one-element array with repoName 'primary'.
    */
-  getReposForSession(kanvasSessionId: string): Array<{ repoName: string; worktreePath: string }> {
-    const session = this.sessions.get(kanvasSessionId);
+  getReposForSession(kitSessionId: string): Array<{ repoName: string; worktreePath: string }> {
+    const session = this.sessions.get(kitSessionId);
     if (!session) return [];
     if (!session.repoPaths) {
       return [{ repoName: 'primary', worktreePath: session.worktreePath }];

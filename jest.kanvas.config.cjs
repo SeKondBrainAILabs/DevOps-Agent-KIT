@@ -34,6 +34,7 @@ module.exports = {
         skipLibCheck: true,
         allowSyntheticDefaultImports: true,
         allowJs: true,
+        types: ['jest', '@testing-library/jest-dom', 'node'],
       },
     }],
   },

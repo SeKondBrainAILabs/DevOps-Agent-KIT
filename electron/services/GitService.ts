@@ -29,7 +29,7 @@ let _execa: ((cmd: string, args: string[], options?: object) => Promise<{ stdout
 
 async function getExeca() {
   if (!_execa) {
-    const mod = await import('execa');
+    const mod = await import('execa') as any;
     // Try different export patterns based on how the bundler resolves the module
     if (typeof mod.execa === 'function') {
       _execa = mod.execa;
@@ -454,6 +454,7 @@ export class GitService extends BaseService {
     commitsAdded: number;
     beforeHead: string;
     afterHead: string;
+    rawError?: string;
   }>> {
     return this.wrap(async () => {
       // Get HEAD before rebase to verify changes actually occurred

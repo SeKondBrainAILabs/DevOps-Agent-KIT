@@ -2,17 +2,19 @@
  * MCP Tool Handlers
  *
  * Registers 8 tools via mcpServer.tool() with Zod input schemas:
- * - kanvas_commit
- * - kanvas_commit_all (multi-repo: commit across all repos)
- * - kanvas_get_session_info
- * - kanvas_log_activity
- * - kanvas_lock_file
- * - kanvas_unlock_file
- * - kanvas_get_commit_history
- * - kanvas_request_review
+ * - kit_commit
+ * - kit_commit_all (multi-repo: commit across all repos)
+ * - kit_get_session_info
+ * - kit_log_activity
+ * - kit_lock_file
+ * - kit_unlock_file
+ * - kit_get_commit_history
+ * - kit_request_review
  */
 
 import { z } from 'zod';
+import { existsSync } from 'fs';
+import { join, basename, relative } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
@@ -71,19 +73,67 @@ export function registerTools(
     };
   }
 
+  /** Post-commit: detect contract changes and regenerate affected contracts */
+  async function triggerContractCheck(sessionId: string, worktreePath: string, commitHash: string, repoPath?: string): Promise<void> {
+    if (!deps.contractDetectionService || !deps.contractGenerationService || !deps.databaseService) return;
+
+    const metaFile = join(worktreePath, '.devops-kit', '.contract-generation-meta.json');
+    if (!existsSync(metaFile)) return;
+
+    try {
+      const analysisResult = await deps.contractDetectionService.analyzeCommit(worktreePath, commitHash);
+      if (!analysisResult.success || !analysisResult.data?.hasContractChanges) return;
+
+      const { changes, breakingChanges } = analysisResult.data;
+      const changedFiles: string[] = changes.map((c: { file: string }) => c.file);
+
+      const effectiveRepoPath = repoPath || worktreePath;
+      const cachedFeatures: any[] = deps.databaseService.getSetting(`discovered_features:${effectiveRepoPath}`, []) || [];
+      if (!cachedFeatures.length) return;
+
+      const affectedFeatures = cachedFeatures.filter((feature: any) => {
+        const relativeFeatPath = relative(effectiveRepoPath, feature.basePath);
+        return changedFiles.some((f: string) => f.startsWith(relativeFeatPath + '/'));
+      });
+
+      if (affectedFeatures.length === 0) return;
+
+      const updatedFeatures: string[] = [];
+      for (const feature of affectedFeatures) {
+        try {
+          const result = await deps.contractGenerationService!.generateFeatureContract(worktreePath, feature);
+          if (result.success) updatedFeatures.push(feature.name);
+        } catch { /* non-fatal */ }
+      }
+
+      if (updatedFeatures.length > 0 && deps.activityService) {
+        const displayFiles = changedFiles.map((f: string) => basename(f));
+        const filesSummary = displayFiles.length > 5
+          ? `${displayFiles.slice(0, 5).join(', ')} +${displayFiles.length - 5} more`
+          : displayFiles.join(', ');
+        deps.activityService.log(sessionId, 'info',
+          `Contracts updated for ${updatedFeatures.length} feature(s): ${updatedFeatures.join(', ')} (${changedFiles.length} files: ${filesSummary})`,
+          { type: 'contract-auto-update', commitHash, updatedFeatures, filesChanged: changedFiles, breakingChanges: breakingChanges.length }
+        );
+      }
+    } catch (err) {
+      console.error('[MCP] Post-commit contract check error:', err);
+    }
+  }
+
   // --------------------------------------------------------------------------
-  // kanvas_commit — Stage + commit + record + push (optional repo for multi-repo)
+  // kit_commit — Stage + commit + record + push (optional repo for multi-repo)
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_commit',
-    'Stage all changes, commit with a message, record in Kanvas, and optionally push. This replaces writing .devops-commit files. In multi-repo mode, specify repo to target a specific repository.',
+    'kit_commit',
+    'Stage all changes, commit with a message, record in KIT, and optionally push. This replaces writing .devops-commit files. In multi-repo mode, specify repo to target a specific repository.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
       push: z.boolean().optional().default(false).describe('Push to remote after commit'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    withCallLog('kanvas_commit', async ({ session_id, message, push, repo }) => {
+    withCallLog('kit_commit', async ({ session_id, message, push, repo }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -137,6 +187,9 @@ export function registerTools(
           }
         }
 
+        // 5. Post-commit contract check (fire-and-forget)
+        triggerContractCheck(session_id, worktree, hash).catch(() => {});
+
         const result = {
           commitHash: hash,
           shortHash,
@@ -155,17 +208,17 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
-  // kanvas_commit_all — Commit across all repos in multi-repo session
+  // kit_commit_all — Commit across all repos in multi-repo session
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_commit_all',
+    'kit_commit_all',
     'Commit changes across all repositories in a multi-repo session. Each repo with changes gets a commit with the same message.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
       push: z.boolean().optional().default(false).describe('Push to remote after each commit'),
     },
-    withCallLog('kanvas_commit_all', async ({ session_id, message, push }) => {
+    withCallLog('kit_commit_all', async ({ session_id, message, push }) => {
       const repos = binder.getReposForSession(session_id);
       if (repos.length === 0) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
@@ -215,6 +268,9 @@ export function registerTools(
             } catch { /* non-fatal */ }
           }
 
+          // Post-commit contract check
+          triggerContractCheck(session_id, repo.worktreePath, hash).catch(() => {});
+
           results.push({ repoName: repo.repoName, commitHash: hash, filesChanged, pushed });
         } catch (err) {
           results.push({ repoName: repo.repoName, error: err instanceof Error ? err.message : 'Failed' });
@@ -226,15 +282,15 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
-  // kanvas_get_session_info — Session config and metadata
+  // kit_get_session_info — Session config and metadata
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_get_session_info',
-    'Get session configuration, metadata, and working directory for a Kanvas session. In multi-repo mode, returns all repos.',
+    'kit_get_session_info',
+    'Get session configuration, metadata, and working directory for a KIT session. In multi-repo mode, returns all repos.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
     },
-    withCallLog('kanvas_get_session_info', async ({ session_id }) => {
+    withCallLog('kit_get_session_info', async ({ session_id }) => {
       const session = binder.getSession(session_id);
       if (!session) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
@@ -276,18 +332,18 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
-  // kanvas_log_activity — Log to Kanvas dashboard timeline
+  // kit_log_activity — Log to KIT dashboard timeline
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_log_activity',
-    'Log an activity entry to the Kanvas dashboard timeline. Use for progress updates, warnings, or error reports.',
+    'kit_log_activity',
+    'Log an activity entry to the KIT dashboard timeline. Use for progress updates, warnings, or error reports.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
       type: z.enum(['info', 'warning', 'error', 'git']).describe('Log level/type'),
       message: z.string().describe('Activity message'),
       details: z.record(z.unknown()).optional().describe('Optional structured details'),
     },
-    withCallLog('kanvas_log_activity', async ({ session_id, type, message, details }) => {
+    withCallLog('kit_log_activity', async ({ session_id, type, message, details }) => {
       if (!binder.getSession(session_id)) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
       }
@@ -302,18 +358,18 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
-  // kanvas_lock_file — Declare file edit intent (optional repo for multi-repo)
+  // kit_lock_file — Declare file edit intent (optional repo for multi-repo)
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_lock_file',
+    'kit_lock_file',
     'Declare intent to edit files. Returns conflicts if another session holds locks on the same files.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
       files: z.array(z.string()).describe('File paths to lock (relative to worktree)'),
       reason: z.string().optional().describe('Reason for the lock'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    withCallLog('kanvas_lock_file', async ({ session_id, files, reason, repo }) => {
+    withCallLog('kit_lock_file', async ({ session_id, files, reason, repo }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -367,17 +423,17 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
-  // kanvas_unlock_file — Release file locks
+  // kit_unlock_file — Release file locks
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_unlock_file',
+    'kit_unlock_file',
     'Release file locks for this session. If no files specified, releases all locks.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
       files: z.array(z.string()).optional().describe('Specific files to unlock. Omit to release all.'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    withCallLog('kanvas_unlock_file', async ({ session_id, files, repo }) => {
+    withCallLog('kit_unlock_file', async ({ session_id, files, repo }) => {
       if (!binder.getSession(session_id)) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
       }
@@ -406,17 +462,17 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
-  // kanvas_get_commit_history — Recent commits for session branch
+  // kit_get_commit_history — Recent commits for session branch
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_get_commit_history',
+    'kit_get_commit_history',
     'Get recent commit history for the session branch. In multi-repo mode, specify repo to get history for a specific repository.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
       limit: z.number().optional().default(10).describe('Max number of commits to return'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
     },
-    withCallLog('kanvas_get_commit_history', async ({ session_id, limit, repo }) => {
+    withCallLog('kit_get_commit_history', async ({ session_id, limit, repo }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -440,16 +496,16 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
-  // kanvas_request_review — Signal work ready for review
+  // kit_request_review — Signal work ready for review
   // --------------------------------------------------------------------------
   srv.tool(
-    'kanvas_request_review',
-    'Signal that work is ready for review. Logs activity and emits event to Kanvas dashboard.',
+    'kit_request_review',
+    'Signal that work is ready for review. Logs activity and emits event to KIT dashboard.',
     {
-      session_id: z.string().describe('The Kanvas session ID'),
+      session_id: z.string().describe('The KIT session ID'),
       summary: z.string().describe('Summary of work completed and what to review'),
     },
-    withCallLog('kanvas_request_review', async ({ session_id, summary }) => {
+    withCallLog('kit_request_review', async ({ session_id, summary }) => {
       if (!binder.getSession(session_id)) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
       }

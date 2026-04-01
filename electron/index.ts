@@ -53,7 +53,7 @@ async function createWindow(): Promise<void> {
     width: 1400,
     height: 900,
     minWidth: 900,
-    minHeight: 600,
+    minHeight: 700,
     webPreferences: {
       preload: join(__dirname, '../preload/preload.mjs'),
       contextIsolation: true,
@@ -120,7 +120,8 @@ async function createWindow(): Promise<void> {
 
   mainWindow.webContents.on('did-finish-load', async () => {
     console.log('Page loaded successfully');
-    // Emit stored sessions after a short delay to ensure React has mounted
+    // Refresh prompts with latest templates, then emit stored sessions
+    agentInstanceService.refreshStoredPrompts();
     setTimeout(() => {
       agentInstanceService.emitStoredSessions();
     }, 500);
@@ -171,8 +172,10 @@ async function createWindow(): Promise<void> {
     mainWindow.webContents.loadURL(`data:text/html,<html><body style="background:#fff;color:#000;font-family:sans-serif;padding:40px;"><h1>Failed to load app</h1><pre>${error}</pre><p>__dirname: ${__dirname}</p></body></html>`);
   }
 
-  // Open DevTools for debugging (always open to diagnose white screen)
-  mainWindow.webContents.openDevTools();
+  // Open DevTools only in development
+  if (process.env.NODE_ENV === 'development' || process.argv.includes('--devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
 
   // Open external links in browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
