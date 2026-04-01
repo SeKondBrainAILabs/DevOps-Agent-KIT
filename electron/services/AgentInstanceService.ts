@@ -1879,6 +1879,39 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
+   * Regenerate prompts for all stored instances using the latest template.
+   * Ensures prompt updates (e.g. tool renames) propagate to existing sessions.
+   */
+  refreshStoredPrompts(): void {
+    let updated = false;
+    for (const instance of this.instances.values()) {
+      if (!instance.sessionId || !instance.config) continue;
+      const vars: InstructionVars = {
+        repoPath: instance.worktreePath || instance.config.repoPath,
+        repoName: instance.config.repoPath.split('/').pop() || 'unknown',
+        branchName: instance.config.branchName,
+        sessionId: instance.sessionId,
+        taskDescription: instance.config.taskDescription || '',
+        systemPrompt: instance.config.systemPrompt || '',
+        contextPreservation: instance.config.contextPreservation || '',
+        rebaseFrequency: instance.config.rebaseFrequency || 'never',
+        mcpUrl: this.mcpServerUrl || undefined,
+        multiRepoEntries: instance.multiRepoEntries,
+        commitScope: instance.config.multiRepo?.commitScope,
+      };
+      instance.instructions = getAgentInstructions(instance.config.agentType, vars);
+      if (instance.config.agentType === 'claude') {
+        instance.prompt = generateClaudePrompt(vars);
+      }
+      updated = true;
+    }
+    if (updated) {
+      this.saveInstances();
+      console.log(`[AgentInstanceService] Refreshed prompts for ${this.instances.size} stored instances`);
+    }
+  }
+
+  /**
    * Emit all stored sessions to renderer on app startup
    * This ensures sessions persist across app restarts
    */

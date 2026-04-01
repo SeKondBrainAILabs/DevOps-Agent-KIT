@@ -120,7 +120,8 @@ async function createWindow(): Promise<void> {
 
   mainWindow.webContents.on('did-finish-load', async () => {
     console.log('Page loaded successfully');
-    // Emit stored sessions after a short delay to ensure React has mounted
+    // Refresh prompts with latest templates, then emit stored sessions
+    agentInstanceService.refreshStoredPrompts();
     setTimeout(() => {
       agentInstanceService.emitStoredSessions();
     }, 500);
