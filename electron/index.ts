@@ -7,7 +7,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'path';
 import { registerIpcHandlers, removeIpcHandlers } from './ipc';
 import { initializeServices, disposeServices, type Services } from './services';
-import { agentInstanceService } from './services/AgentInstanceService';
+
 import { IPC } from '../shared/ipc-channels';
 
 let mainWindow: BrowserWindow | null = null;
@@ -121,9 +121,10 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('did-finish-load', async () => {
     console.log('Page loaded successfully');
     // Refresh prompts with latest templates, then emit stored sessions
-    agentInstanceService.refreshStoredPrompts();
+    // Use services.agentInstance (not the singleton) — it has the MCP URL configured
+    services?.agentInstance?.refreshStoredPrompts();
     setTimeout(() => {
-      agentInstanceService.emitStoredSessions();
+      services?.agentInstance?.emitStoredSessions();
     }, 500);
 
     // Check for orphaned sessions after a longer delay
