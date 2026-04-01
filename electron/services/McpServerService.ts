@@ -26,6 +26,7 @@ import type { McpServerStatus, McpInstallConfigStatus, McpInstallTarget } from '
 // Lazy imports for MCP SDK (ESM modules)
 let _McpServer: typeof import('@modelcontextprotocol/sdk/server/mcp.js').McpServer | null = null;
 let _StreamableHTTPServerTransport: typeof import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport | null = null;
+let _SSEServerTransport: typeof import('@modelcontextprotocol/sdk/server/sse.js').SSEServerTransport | null = null;
 
 async function getMcpServer() {
   if (!_McpServer) {
@@ -41,6 +42,14 @@ async function getTransport() {
     _StreamableHTTPServerTransport = mod.StreamableHTTPServerTransport;
   }
   return _StreamableHTTPServerTransport;
+}
+
+async function getSseTransport() {
+  if (!_SSEServerTransport) {
+    const mod = await import('@modelcontextprotocol/sdk/server/sse.js');
+    _SSEServerTransport = mod.SSEServerTransport;
+  }
+  return _SSEServerTransport;
 }
 
 // Service interface types (set via setters, not constructor)
@@ -87,6 +96,12 @@ export class McpServerService extends BaseService {
   private transports = new Map<
     string,
     InstanceType<typeof import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport>
+  >();
+
+  // SSE transports — keyed by session-id for legacy SSE clients (Claude Desktop)
+  private sseTransports = new Map<
+    string,
+    InstanceType<typeof import('@modelcontextprotocol/sdk/server/sse.js').SSEServerTransport>
   >();
 
   readonly sessionBinder = new McpSessionBinder();
@@ -149,6 +164,7 @@ export class McpServerService extends BaseService {
       // Pre-load SDK classes so handleRequest doesn't need to await them
       await getMcpServer();
       await getTransport();
+      await getSseTransport();
 
       // Create HTTP server
       this.httpServer = createServer((req, res) => {
@@ -184,7 +200,7 @@ export class McpServerService extends BaseService {
   }
 
   async dispose(): Promise<void> {
-    // Close all active transports
+    // Close all active transports (streamable HTTP)
     for (const [sessionId, transport] of this.transports) {
       try {
         await transport.close();
@@ -192,6 +208,16 @@ export class McpServerService extends BaseService {
         // Ignore
       }
       this.transports.delete(sessionId);
+    }
+
+    // Close SSE transports
+    for (const [sessionId, transport] of this.sseTransports) {
+      try {
+        await transport.close?.();
+      } catch {
+        // Ignore
+      }
+      this.sseTransports.delete(sessionId);
     }
 
     if (this.httpServer) {
@@ -212,13 +238,7 @@ export class McpServerService extends BaseService {
   // ==========================================================================
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // Only handle /mcp path
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    if (url.pathname !== '/mcp') {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not found' }));
-      return;
-    }
 
     // CORS headers for local development
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -228,6 +248,29 @@ export class McpServerService extends BaseService {
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // ---- SSE transport routes (for Claude Desktop) ----
+    if (url.pathname === '/sse' && req.method === 'GET') {
+      await this.handleSseConnect(req, res);
+      return;
+    }
+    if (url.pathname === '/messages' && req.method === 'POST') {
+      const sseSessionId = url.searchParams.get('sessionId');
+      if (sseSessionId && this.sseTransports.has(sseSessionId)) {
+        await this.sseTransports.get(sseSessionId)!.handlePostMessage(req, res);
+        return;
+      }
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unknown SSE session' }));
+      return;
+    }
+
+    // ---- Streamable HTTP transport route (for Claude Code) ----
+    if (url.pathname !== '/mcp') {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
       return;
     }
 
@@ -294,6 +337,45 @@ export class McpServerService extends BaseService {
   }
 
   // ==========================================================================
+  // SSE TRANSPORT (Claude Desktop compatibility)
+  // ==========================================================================
+
+  private async handleSseConnect(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const McpServerClass = _McpServer!;
+    const SseTransportClass = _SSEServerTransport!;
+
+    const mcpServer = new McpServerClass({
+      name: 'kanvas',
+      version: '1.0.0',
+    });
+
+    // SSE transport: client GETs /sse, POSTs to /messages?sessionId=xxx
+    const transport = new SseTransportClass('/messages', res);
+
+    // Register tools and resources
+    const { registerTools } = await import('./mcp/tools');
+    const { registerResources } = await import('./mcp/resources');
+    registerTools(mcpServer, this.sessionBinder, this.deps, this);
+    registerResources(mcpServer, this.sessionBinder, this.deps);
+
+    await mcpServer.connect(transport);
+
+    // Track by the transport's session ID
+    const sid = (transport as any)._sessionId as string;
+    if (sid) {
+      this.sseTransports.set(sid, transport);
+      console.log(`[McpServerService] SSE session opened: ${sid} (${this.sseTransports.size} active)`);
+    }
+
+    transport.onclose = () => {
+      if (sid) {
+        this.sseTransports.delete(sid);
+        console.log(`[McpServerService] SSE session closed: ${sid} (${this.sseTransports.size} active)`);
+      }
+    };
+  }
+
+  // ==========================================================================
   // STATUS
   // ==========================================================================
 
@@ -311,7 +393,7 @@ export class McpServerService extends BaseService {
       port: this.port,
       url: this.getUrl(),
       isRunning: this.httpServer !== null && this.httpServer.listening,
-      connectionCount: this.transports.size,
+      connectionCount: this.transports.size + this.sseTransports.size,
       startedAt: this.startedAt,
     };
   }
@@ -344,8 +426,13 @@ export class McpServerService extends BaseService {
     await writeFile(filePath, JSON.stringify(data, null, 2));
   }
 
+  private getSseUrl(): string | null {
+    if (!this.port) return null;
+    return `http://${MCP_SERVER_HOST}:${this.port}/sse`;
+  }
+
   async installMcpConfig(target: McpInstallTarget): Promise<{ success: boolean; path: string; error?: string }> {
-    const url = this.getUrl();
+    const url = target === 'claude-desktop' ? this.getSseUrl() : this.getUrl();
     if (!url) {
       return { success: false, path: '', error: 'MCP server is not running' };
     }
@@ -354,10 +441,15 @@ export class McpServerService extends BaseService {
     try {
       const settings = await this.readJsonFile(configPath);
       const mcpServers = (settings.mcpServers as Record<string, unknown>) || {};
-      mcpServers.kanvas = {
-        type: 'streamable-http',
-        url,
-      };
+
+      if (target === 'claude-desktop') {
+        // Claude Desktop expects { url: "http://...sse" } — no type field
+        mcpServers.kanvas = { url };
+      } else {
+        // Claude Code expects { type: "streamable-http", url: "http://...mcp" }
+        mcpServers.kanvas = { type: 'streamable-http', url };
+      }
+
       settings.mcpServers = mcpServers;
       await this.writeJsonFile(configPath, settings);
 
@@ -400,7 +492,7 @@ export class McpServerService extends BaseService {
       }
 
       const currentUrl = kanvas.url || null;
-      const liveUrl = this.getUrl();
+      const liveUrl = target === 'claude-desktop' ? this.getSseUrl() : this.getUrl();
       const portMismatch = !!liveUrl && !!currentUrl && currentUrl !== liveUrl;
 
       return { installed: true, path: configPath, currentUrl, portMismatch };
