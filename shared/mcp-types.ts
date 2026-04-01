@@ -89,6 +89,17 @@ export const MCP_RESOURCES = {
 } as const;
 
 // =============================================================================
+// CLAUDE CODE CONFIG STATUS
+// =============================================================================
+
+export interface ClaudeCodeConfigStatus {
+  installed: boolean;
+  path: string;
+  currentUrl: string | null;
+  portMismatch: boolean;
+}
+
+// =============================================================================
 // MCP CONFIG
 // =============================================================================
 

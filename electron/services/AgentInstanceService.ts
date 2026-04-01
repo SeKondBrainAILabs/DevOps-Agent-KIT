@@ -379,6 +379,9 @@ ${DEVOPS_KIT_DIR}/
         if (!gitignore.includes(MCP_CONFIG_FILE)) {
           gitignore += `\n# MCP server config (auto-generated per session)\n${MCP_CONFIG_FILE}\n`;
         }
+        if (!gitignore.includes('.claude/settings.json')) {
+          gitignore += '\n# Claude Code project settings (auto-generated per session)\n.claude/settings.json\n';
+        }
         await writeFile(gitignorePath, gitignore);
       } catch {
         // Ignore gitignore errors
@@ -825,6 +828,32 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
+   * Create .claude/settings.json in worktree root for Claude Code project-level MCP discovery.
+   * Belt-and-suspenders: works alongside .mcp.json for maximum compatibility.
+   */
+  private async createClaudeProjectSettings(worktreePath: string): Promise<void> {
+    if (!this.mcpServerUrl) return;
+
+    try {
+      const claudeDir = join(worktreePath, '.claude');
+      await mkdir(claudeDir, { recursive: true });
+      const settingsPath = join(claudeDir, 'settings.json');
+      const settings = {
+        mcpServers: {
+          kanvas: {
+            type: 'streamable-http',
+            url: this.mcpServerUrl,
+          },
+        },
+      };
+      await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+      console.log(`[AgentInstanceService] Created .claude/settings.json at ${settingsPath}`);
+    } catch (error) {
+      console.warn(`[AgentInstanceService] Could not create .claude/settings.json: ${error}`);
+    }
+  }
+
+  /**
    * Copy houserules.md and FOLDER_STRUCTURE.md from main repo to worktree root
    * Single source of truth: these files live at repo root, not inside .S9N_KIT_DevOpsAgent/
    */
@@ -1057,10 +1086,11 @@ ${DEVOPS_KIT_DIR}/
       await this.copyContractsToWorktree(worktreePath, instance.config.repoPath);
     }
 
-    // Create .mcp.json for MCP-capable agents
+    // Create .mcp.json and .claude/settings.json for MCP-capable agents
     const mcpAgents = ['claude', 'cline'];
     if (mcpAgents.includes(instance.config.agentType)) {
       await this.createMcpConfigFile(worktreePath);
+      await this.createClaudeProjectSettings(worktreePath);
     }
 
     return { success: true };

@@ -411,6 +411,9 @@ export const IPC = {
   // ==========================================================================
   MCP_SERVER_STATUS: 'mcp:server-status',
   MCP_GET_CALL_LOG: 'mcp:get-call-log',
+  MCP_INSTALL_CLAUDE_CODE: 'mcp:install-claude-code',
+  MCP_UNINSTALL_CLAUDE_CODE: 'mcp:uninstall-claude-code',
+  MCP_CHECK_CLAUDE_CODE_CONFIG: 'mcp:check-claude-code-config',
   // Events (main → renderer)
   MCP_SERVER_STARTED: 'mcp:server-started',
   MCP_TOOL_CALLED: 'mcp:tool-called',

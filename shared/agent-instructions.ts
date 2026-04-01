@@ -62,7 +62,9 @@ TASK: ${task}
 ${vars.mcpUrl ? `
 ## 🔌 MCP SERVER CONNECTION
 This session has a Kanvas MCP server configured at: \`${vars.mcpUrl}\`
-Your \`.mcp.json\` file points to this server. You should have MCP tools available:
+MCP config is provided via \`.mcp.json\` and \`.claude/settings.json\` in this worktree.
+If using global config: check \`~/.claude/settings.json\` (install via Kanvas Settings > MCP tab).
+You should have MCP tools available:
 \`kanvas_commit\`, \`kanvas_lock_file\`, \`kanvas_unlock_file\`, \`kanvas_get_session_info\`, etc.
 
 **⚠️ These are MCP protocol tools, NOT bash commands. Do NOT try to run them in a terminal.**

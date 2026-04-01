@@ -13,11 +13,15 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import type { Server } from 'http';
 import { BaseService } from './BaseService';
 import { McpSessionBinder } from './mcp/session-binder';
 import { MCP_DEFAULT_PORT_START, MCP_SERVER_HOST } from '../../shared/mcp-types';
-import type { McpServerStatus } from '../../shared/mcp-types';
+import type { McpServerStatus, ClaudeCodeConfigStatus } from '../../shared/mcp-types';
 
 // Lazy imports for MCP SDK (ESM modules)
 let _McpServer: typeof import('@modelcontextprotocol/sdk/server/mcp.js').McpServer | null = null;
@@ -310,5 +314,96 @@ export class McpServerService extends BaseService {
       connectionCount: this.transports.size,
       startedAt: this.startedAt,
     };
+  }
+
+  // ==========================================================================
+  // CLAUDE CODE CONFIG MANAGEMENT
+  // ==========================================================================
+
+  private getClaudeSettingsPath(): string {
+    return join(homedir(), '.claude', 'settings.json');
+  }
+
+  private async readClaudeSettings(): Promise<Record<string, unknown>> {
+    const settingsPath = this.getClaudeSettingsPath();
+    try {
+      const content = await readFile(settingsPath, 'utf-8');
+      return JSON.parse(content);
+    } catch {
+      return {};
+    }
+  }
+
+  private async writeClaudeSettings(settings: Record<string, unknown>): Promise<void> {
+    const settingsPath = this.getClaudeSettingsPath();
+    const claudeDir = join(homedir(), '.claude');
+    if (!existsSync(claudeDir)) {
+      await mkdir(claudeDir, { recursive: true });
+    }
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+  }
+
+  async installForClaudeCode(): Promise<{ success: boolean; path: string; error?: string }> {
+    const url = this.getUrl();
+    if (!url) {
+      return { success: false, path: '', error: 'MCP server is not running' };
+    }
+
+    try {
+      const settings = await this.readClaudeSettings();
+      const mcpServers = (settings.mcpServers as Record<string, unknown>) || {};
+      mcpServers.kanvas = {
+        type: 'streamable-http',
+        url,
+      };
+      settings.mcpServers = mcpServers;
+      await this.writeClaudeSettings(settings);
+
+      const path = this.getClaudeSettingsPath();
+      console.log(`[McpServerService] Installed Kanvas MCP config to ${path}`);
+      return { success: true, path };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[McpServerService] Failed to install Claude Code config: ${message}`);
+      return { success: false, path: this.getClaudeSettingsPath(), error: message };
+    }
+  }
+
+  async uninstallFromClaudeCode(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const settings = await this.readClaudeSettings();
+      const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
+      if (mcpServers && 'kanvas' in mcpServers) {
+        delete mcpServers.kanvas;
+        settings.mcpServers = mcpServers;
+        await this.writeClaudeSettings(settings);
+        console.log('[McpServerService] Removed Kanvas MCP config from Claude Code settings');
+      }
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
+  }
+
+  async checkClaudeCodeConfig(): Promise<ClaudeCodeConfigStatus> {
+    const path = this.getClaudeSettingsPath();
+    try {
+      const settings = await this.readClaudeSettings();
+      const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
+      const kanvas = mcpServers?.kanvas as { url?: string } | undefined;
+
+      if (!kanvas) {
+        return { installed: false, path, currentUrl: null, portMismatch: false };
+      }
+
+      const currentUrl = kanvas.url || null;
+      const liveUrl = this.getUrl();
+      const portMismatch = !!liveUrl && !!currentUrl && currentUrl !== liveUrl;
+
+      return { installed: true, path, currentUrl, portMismatch };
+    } catch {
+      return { installed: false, path, currentUrl: null, portMismatch: false };
+    }
   }
 }

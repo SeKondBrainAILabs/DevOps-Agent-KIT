@@ -1288,6 +1288,25 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return { success: true, data: services.mcpServer.getMcpCallLog(limit) };
   });
 
+  ipcMain.handle(IPC.MCP_INSTALL_CLAUDE_CODE, async () => {
+    const result = await services.mcpServer.installForClaudeCode();
+    return result.success
+      ? { success: true, data: { path: result.path } }
+      : { success: false, error: { code: 'MCP_INSTALL_FAILED', message: result.error } };
+  });
+
+  ipcMain.handle(IPC.MCP_UNINSTALL_CLAUDE_CODE, async () => {
+    const result = await services.mcpServer.uninstallFromClaudeCode();
+    return result.success
+      ? { success: true }
+      : { success: false, error: { code: 'MCP_UNINSTALL_FAILED', message: result.error } };
+  });
+
+  ipcMain.handle(IPC.MCP_CHECK_CLAUDE_CODE_CONFIG, async () => {
+    const data = await services.mcpServer.checkClaudeCodeConfig();
+    return { success: true, data };
+  });
+
   // ==========================================================================
   // APP HANDLERS
   // ==========================================================================
