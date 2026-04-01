@@ -2118,6 +2118,20 @@ const api = {
       portMismatch: boolean;
     }>> =>
       ipcRenderer.invoke(IPC.MCP_CHECK_CLAUDE_CODE_CONFIG),
+
+    installClaudeDesktop: (): Promise<IpcResult<{ path: string }>> =>
+      ipcRenderer.invoke(IPC.MCP_INSTALL_CLAUDE_DESKTOP),
+
+    uninstallClaudeDesktop: (): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.MCP_UNINSTALL_CLAUDE_DESKTOP),
+
+    checkClaudeDesktopConfig: (): Promise<IpcResult<{
+      installed: boolean;
+      path: string;
+      currentUrl: string | null;
+      portMismatch: boolean;
+    }>> =>
+      ipcRenderer.invoke(IPC.MCP_CHECK_CLAUDE_DESKTOP_CONFIG),
   },
 
   // ==========================================================================

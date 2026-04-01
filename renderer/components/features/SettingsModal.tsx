@@ -73,7 +73,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     currentUrl: string | null;
     portMismatch: boolean;
   } | null>(null);
-  const [isInstallingMcp, setIsInstallingMcp] = useState(false);
+  const [claudeDesktopConfig, setClaudeDesktopConfig] = useState<{
+    installed: boolean;
+    path: string;
+    currentUrl: string | null;
+    portMismatch: boolean;
+  } | null>(null);
+  const [isInstallingMcp, setIsInstallingMcp] = useState<string | null>(null);
   const [manualSetupOpen, setManualSetupOpen] = useState(false);
   const [mcpJsonCopied, setMcpJsonCopied] = useState<string | null>(null);
 
@@ -421,9 +427,12 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
               window.api?.mcp?.status?.().then((result) => {
                 if (result?.success && result.data) setMcpStatus(result.data);
               });
-              // Check Claude Code config status
+              // Check Claude Code + Desktop config status
               window.api?.mcp?.checkClaudeCodeConfig?.().then((result) => {
                 if (result?.success && result.data) setClaudeCodeConfig(result.data);
+              });
+              window.api?.mcp?.checkClaudeDesktopConfig?.().then((result) => {
+                if (result?.success && result.data) setClaudeDesktopConfig(result.data);
               });
             }}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
@@ -1003,94 +1012,185 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
 
               <div className="border-t border-border my-4" />
 
-              {/* Claude Code Setup */}
+              {/* Agent MCP Setup */}
               <div className="space-y-3">
-                <h3 className="text-sm font-medium text-gray-200">Claude Code Setup</h3>
+                <h3 className="text-sm font-medium text-gray-200">Agent Setup</h3>
                 <p className="text-xs text-gray-400">
-                  Configure Claude Code to auto-connect to the Kanvas MCP server. This writes to <code className="font-mono text-accent">~/.claude/settings.json</code> so it works regardless of working directory.
+                  One-click install for supported tools. For other agents (Cursor, Cline), use Manual Setup below to copy the JSON config.
                 </p>
 
-                {/* Status banner */}
-                {claudeCodeConfig && (
-                  <div className={`rounded-lg p-3 text-sm ${
-                    claudeCodeConfig.installed && !claudeCodeConfig.portMismatch
-                      ? 'bg-green-500/10 border border-green-500/30'
-                      : claudeCodeConfig.installed && claudeCodeConfig.portMismatch
-                        ? 'bg-yellow-500/10 border border-yellow-500/30'
+                {/* Claude Code row */}
+                {(() => {
+                  const cfg = claudeCodeConfig;
+                  const isInstalled = cfg?.installed && !cfg?.portMismatch;
+                  const isMismatch = cfg?.installed && cfg?.portMismatch;
+                  return (
+                    <div className={`rounded-lg p-3 text-sm ${
+                      isInstalled ? 'bg-green-500/10 border border-green-500/30'
+                        : isMismatch ? 'bg-yellow-500/10 border border-yellow-500/30'
                         : 'bg-surface-tertiary border border-border'
-                  }`}>
-                    {claudeCodeConfig.installed && !claudeCodeConfig.portMismatch && (
+                    }`}>
                       <div className="flex items-center justify-between">
-                        <span className="flex items-center gap-2 text-green-400">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
-                          Installed in Claude Code
-                        </span>
-                        <button
-                          onClick={async () => {
-                            await window.api?.mcp?.uninstallClaudeCode?.();
-                            const result = await window.api?.mcp?.checkClaudeCodeConfig?.();
-                            if (result?.success && result.data) setClaudeCodeConfig(result.data);
-                            setMessage({ type: 'success', text: 'Kanvas removed from Claude Code settings' });
-                          }}
-                          className="text-xs text-gray-400 hover:text-red-400 transition-colors"
-                        >
-                          Uninstall
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-200 font-medium">Claude Code</span>
+                          <span className="text-xs text-gray-500 font-mono">~/.claude/settings.json</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {isInstalled && (
+                            <>
+                              <span className="text-green-400 text-xs flex items-center gap-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                                Installed
+                              </span>
+                              <button
+                                onClick={async () => {
+                                  await window.api?.mcp?.uninstallClaudeCode?.();
+                                  const result = await window.api?.mcp?.checkClaudeCodeConfig?.();
+                                  if (result?.success && result.data) setClaudeCodeConfig(result.data);
+                                  setMessage({ type: 'success', text: 'Removed from Claude Code' });
+                                }}
+                                className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                              >
+                                Remove
+                              </button>
+                            </>
+                          )}
+                          {isMismatch && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-code');
+                                try {
+                                  await window.api?.mcp?.installClaudeCode?.();
+                                  const check = await window.api?.mcp?.checkClaudeCodeConfig?.();
+                                  if (check?.success && check.data) setClaudeCodeConfig(check.data);
+                                  setMessage({ type: 'success', text: 'Claude Code config updated' });
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-code'}
+                              className="text-xs bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-code' ? 'Updating...' : 'Update Port'}
+                            </button>
+                          )}
+                          {!cfg?.installed && mcpStatus?.isRunning && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-code');
+                                try {
+                                  const result = await window.api?.mcp?.installClaudeCode?.();
+                                  if (result?.success) {
+                                    setMessage({ type: 'success', text: 'Installed for Claude Code' });
+                                  } else {
+                                    setMessage({ type: 'error', text: `Failed: ${(result as any)?.error?.message || 'Unknown'}` });
+                                  }
+                                  const check = await window.api?.mcp?.checkClaudeCodeConfig?.();
+                                  if (check?.success && check.data) setClaudeCodeConfig(check.data);
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-code'}
+                              className="text-xs bg-accent/20 text-accent hover:bg-accent/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-code' ? 'Installing...' : 'Install'}
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    )}
-                    {claudeCodeConfig.installed && claudeCodeConfig.portMismatch && (
-                      <div className="space-y-2">
-                        <span className="flex items-center gap-2 text-yellow-400">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                          Port changed — config is stale
-                        </span>
-                        <p className="text-xs text-gray-400">
-                          Config points to <code className="font-mono text-gray-300">{claudeCodeConfig.currentUrl}</code> but server is now at <code className="font-mono text-gray-300">{mcpStatus?.url}</code>
+                      {isMismatch && (
+                        <p className="text-xs text-yellow-400/70 mt-1">
+                          Port changed: {cfg?.currentUrl} &rarr; {mcpStatus?.url}
                         </p>
-                      </div>
-                    )}
-                    {!claudeCodeConfig.installed && (
-                      <span className="text-gray-400">Not yet configured for Claude Code</span>
-                    )}
-                  </div>
-                )}
+                      )}
+                    </div>
+                  );
+                })()}
 
-                {/* Install / Update button */}
-                {mcpStatus?.isRunning && (
-                  <button
-                    onClick={async () => {
-                      setIsInstallingMcp(true);
-                      try {
-                        const result = await window.api?.mcp?.installClaudeCode?.();
-                        if (result?.success) {
-                          setMessage({ type: 'success', text: 'Kanvas MCP installed for Claude Code' });
-                        } else {
-                          setMessage({ type: 'error', text: `Install failed: ${(result as any)?.error?.message || 'Unknown error'}` });
-                        }
-                        const check = await window.api?.mcp?.checkClaudeCodeConfig?.();
-                        if (check?.success && check.data) setClaudeCodeConfig(check.data);
-                      } finally {
-                        setIsInstallingMcp(false);
-                      }
-                    }}
-                    disabled={isInstallingMcp || (claudeCodeConfig?.installed && !claudeCodeConfig?.portMismatch)}
-                    className={`w-full py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
-                      claudeCodeConfig?.installed && !claudeCodeConfig?.portMismatch
-                        ? 'bg-green-500/20 text-green-400 cursor-default'
-                        : claudeCodeConfig?.portMismatch
-                          ? 'bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30'
-                          : 'bg-accent/20 text-accent hover:bg-accent/30'
-                    }`}
-                  >
-                    {isInstallingMcp ? 'Installing...'
-                      : claudeCodeConfig?.installed && !claudeCodeConfig?.portMismatch ? 'Installed'
-                      : claudeCodeConfig?.portMismatch ? 'Update Port'
-                      : 'Install for Claude Code'}
-                  </button>
-                )}
+                {/* Claude Desktop row */}
+                {(() => {
+                  const cfg = claudeDesktopConfig;
+                  const isInstalled = cfg?.installed && !cfg?.portMismatch;
+                  const isMismatch = cfg?.installed && cfg?.portMismatch;
+                  return (
+                    <div className={`rounded-lg p-3 text-sm ${
+                      isInstalled ? 'bg-green-500/10 border border-green-500/30'
+                        : isMismatch ? 'bg-yellow-500/10 border border-yellow-500/30'
+                        : 'bg-surface-tertiary border border-border'
+                    }`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-200 font-medium">Claude Desktop</span>
+                          <span className="text-xs text-gray-500 font-mono truncate max-w-[180px]">claude_desktop_config.json</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {isInstalled && (
+                            <>
+                              <span className="text-green-400 text-xs flex items-center gap-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                                Installed
+                              </span>
+                              <button
+                                onClick={async () => {
+                                  await window.api?.mcp?.uninstallClaudeDesktop?.();
+                                  const result = await window.api?.mcp?.checkClaudeDesktopConfig?.();
+                                  if (result?.success && result.data) setClaudeDesktopConfig(result.data);
+                                  setMessage({ type: 'success', text: 'Removed from Claude Desktop' });
+                                }}
+                                className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                              >
+                                Remove
+                              </button>
+                            </>
+                          )}
+                          {isMismatch && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-desktop');
+                                try {
+                                  await window.api?.mcp?.installClaudeDesktop?.();
+                                  const check = await window.api?.mcp?.checkClaudeDesktopConfig?.();
+                                  if (check?.success && check.data) setClaudeDesktopConfig(check.data);
+                                  setMessage({ type: 'success', text: 'Claude Desktop config updated' });
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-desktop'}
+                              className="text-xs bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-desktop' ? 'Updating...' : 'Update Port'}
+                            </button>
+                          )}
+                          {!cfg?.installed && mcpStatus?.isRunning && (
+                            <button
+                              onClick={async () => {
+                                setIsInstallingMcp('claude-desktop');
+                                try {
+                                  const result = await window.api?.mcp?.installClaudeDesktop?.();
+                                  if (result?.success) {
+                                    setMessage({ type: 'success', text: 'Installed for Claude Desktop' });
+                                  } else {
+                                    setMessage({ type: 'error', text: `Failed: ${(result as any)?.error?.message || 'Unknown'}` });
+                                  }
+                                  const check = await window.api?.mcp?.checkClaudeDesktopConfig?.();
+                                  if (check?.success && check.data) setClaudeDesktopConfig(check.data);
+                                } finally { setIsInstallingMcp(null); }
+                              }}
+                              disabled={isInstallingMcp === 'claude-desktop'}
+                              className="text-xs bg-accent/20 text-accent hover:bg-accent/30 px-2 py-1 rounded transition-colors"
+                            >
+                              {isInstallingMcp === 'claude-desktop' ? 'Installing...' : 'Install'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {isMismatch && (
+                        <p className="text-xs text-yellow-400/70 mt-1">
+                          Port changed: {cfg?.currentUrl} &rarr; {mcpStatus?.url}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <p className="text-xs text-gray-500">
-                  Restart any running Claude Code sessions after installing to pick up the new config.
+                  Restart the target app after installing to pick up the new config.
                 </p>
               </div>
 
@@ -1169,6 +1269,9 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                         });
                         window.api?.mcp?.checkClaudeCodeConfig?.().then((result) => {
                           if (result?.success && result.data) setClaudeCodeConfig(result.data);
+                        });
+                        window.api?.mcp?.checkClaudeDesktopConfig?.().then((result) => {
+                          if (result?.success && result.data) setClaudeDesktopConfig(result.data);
                         });
                         setMessage({ type: 'success', text: 'MCP status refreshed' });
                       }}

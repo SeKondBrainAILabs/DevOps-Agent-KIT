@@ -92,12 +92,17 @@ export const MCP_RESOURCES = {
 // CLAUDE CODE CONFIG STATUS
 // =============================================================================
 
-export interface ClaudeCodeConfigStatus {
+export type McpInstallTarget = 'claude-code' | 'claude-desktop';
+
+export interface McpInstallConfigStatus {
   installed: boolean;
   path: string;
   currentUrl: string | null;
   portMismatch: boolean;
 }
+
+/** @deprecated Use McpInstallConfigStatus instead */
+export type ClaudeCodeConfigStatus = McpInstallConfigStatus;
 
 // =============================================================================
 // MCP CONFIG

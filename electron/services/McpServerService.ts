@@ -21,7 +21,7 @@ import type { Server } from 'http';
 import { BaseService } from './BaseService';
 import { McpSessionBinder } from './mcp/session-binder';
 import { MCP_DEFAULT_PORT_START, MCP_SERVER_HOST } from '../../shared/mcp-types';
-import type { McpServerStatus, ClaudeCodeConfigStatus } from '../../shared/mcp-types';
+import type { McpServerStatus, McpInstallConfigStatus, McpInstallTarget } from '../../shared/mcp-types';
 
 // Lazy imports for MCP SDK (ESM modules)
 let _McpServer: typeof import('@modelcontextprotocol/sdk/server/mcp.js').McpServer | null = null;
@@ -317,67 +317,69 @@ export class McpServerService extends BaseService {
   }
 
   // ==========================================================================
-  // CLAUDE CODE CONFIG MANAGEMENT
+  // MCP CONFIG INSTALL/UNINSTALL (Claude Code CLI + Claude Desktop)
   // ==========================================================================
 
-  private getClaudeSettingsPath(): string {
+  private getConfigPath(target: McpInstallTarget): string {
+    if (target === 'claude-desktop') {
+      return join(homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+    }
     return join(homedir(), '.claude', 'settings.json');
   }
 
-  private async readClaudeSettings(): Promise<Record<string, unknown>> {
-    const settingsPath = this.getClaudeSettingsPath();
+  private async readJsonFile(filePath: string): Promise<Record<string, unknown>> {
     try {
-      const content = await readFile(settingsPath, 'utf-8');
+      const content = await readFile(filePath, 'utf-8');
       return JSON.parse(content);
     } catch {
       return {};
     }
   }
 
-  private async writeClaudeSettings(settings: Record<string, unknown>): Promise<void> {
-    const settingsPath = this.getClaudeSettingsPath();
-    const claudeDir = join(homedir(), '.claude');
-    if (!existsSync(claudeDir)) {
-      await mkdir(claudeDir, { recursive: true });
+  private async writeJsonFile(filePath: string, data: Record<string, unknown>): Promise<void> {
+    const dir = join(filePath, '..');
+    if (!existsSync(dir)) {
+      await mkdir(dir, { recursive: true });
     }
-    await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    await writeFile(filePath, JSON.stringify(data, null, 2));
   }
 
-  async installForClaudeCode(): Promise<{ success: boolean; path: string; error?: string }> {
+  async installMcpConfig(target: McpInstallTarget): Promise<{ success: boolean; path: string; error?: string }> {
     const url = this.getUrl();
     if (!url) {
       return { success: false, path: '', error: 'MCP server is not running' };
     }
 
+    const configPath = this.getConfigPath(target);
     try {
-      const settings = await this.readClaudeSettings();
+      const settings = await this.readJsonFile(configPath);
       const mcpServers = (settings.mcpServers as Record<string, unknown>) || {};
       mcpServers.kanvas = {
         type: 'streamable-http',
         url,
       };
       settings.mcpServers = mcpServers;
-      await this.writeClaudeSettings(settings);
+      await this.writeJsonFile(configPath, settings);
 
-      const path = this.getClaudeSettingsPath();
-      console.log(`[McpServerService] Installed Kanvas MCP config to ${path}`);
-      return { success: true, path };
+      console.log(`[McpServerService] Installed Kanvas MCP config to ${configPath} (${target})`);
+      return { success: true, path: configPath };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[McpServerService] Failed to install Claude Code config: ${message}`);
-      return { success: false, path: this.getClaudeSettingsPath(), error: message };
+      console.error(`[McpServerService] Failed to install ${target} config: ${message}`);
+      return { success: false, path: configPath, error: message };
     }
   }
 
-  async uninstallFromClaudeCode(): Promise<{ success: boolean; error?: string }> {
+  async uninstallMcpConfig(target: McpInstallTarget): Promise<{ success: boolean; error?: string }> {
+    const configPath = this.getConfigPath(target);
     try {
-      const settings = await this.readClaudeSettings();
+      const settings = await this.readJsonFile(configPath);
       const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
       if (mcpServers && 'kanvas' in mcpServers) {
         delete mcpServers.kanvas;
         settings.mcpServers = mcpServers;
-        await this.writeClaudeSettings(settings);
-        console.log('[McpServerService] Removed Kanvas MCP config from Claude Code settings');
+        await this.writeJsonFile(configPath, settings);
+        console.log(`[McpServerService] Removed Kanvas from ${target} config`);
       }
       return { success: true };
     } catch (error) {
@@ -386,24 +388,35 @@ export class McpServerService extends BaseService {
     }
   }
 
-  async checkClaudeCodeConfig(): Promise<ClaudeCodeConfigStatus> {
-    const path = this.getClaudeSettingsPath();
+  async checkMcpConfig(target: McpInstallTarget): Promise<McpInstallConfigStatus> {
+    const configPath = this.getConfigPath(target);
     try {
-      const settings = await this.readClaudeSettings();
+      const settings = await this.readJsonFile(configPath);
       const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
       const kanvas = mcpServers?.kanvas as { url?: string } | undefined;
 
       if (!kanvas) {
-        return { installed: false, path, currentUrl: null, portMismatch: false };
+        return { installed: false, path: configPath, currentUrl: null, portMismatch: false };
       }
 
       const currentUrl = kanvas.url || null;
       const liveUrl = this.getUrl();
       const portMismatch = !!liveUrl && !!currentUrl && currentUrl !== liveUrl;
 
-      return { installed: true, path, currentUrl, portMismatch };
+      return { installed: true, path: configPath, currentUrl, portMismatch };
     } catch {
-      return { installed: false, path, currentUrl: null, portMismatch: false };
+      return { installed: false, path: configPath, currentUrl: null, portMismatch: false };
     }
+  }
+
+  // Convenience wrappers for backward compat with existing IPC handlers
+  async installForClaudeCode(): Promise<{ success: boolean; path: string; error?: string }> {
+    return this.installMcpConfig('claude-code');
+  }
+  async uninstallFromClaudeCode(): Promise<{ success: boolean; error?: string }> {
+    return this.uninstallMcpConfig('claude-code');
+  }
+  async checkClaudeCodeConfig(): Promise<McpInstallConfigStatus> {
+    return this.checkMcpConfig('claude-code');
   }
 }
