@@ -53,7 +53,7 @@ async function createWindow(): Promise<void> {
     width: 1400,
     height: 900,
     minWidth: 900,
-    minHeight: 600,
+    minHeight: 700,
     webPreferences: {
       preload: join(__dirname, '../preload/preload.mjs'),
       contextIsolation: true,

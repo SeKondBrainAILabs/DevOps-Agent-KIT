@@ -509,9 +509,9 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-surface border border-border rounded-xl shadow-xl w-full max-w-lg mx-4">
+      <div className="bg-surface border border-border rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border">
+        <div className="flex items-center justify-between p-4 border-b border-border flex-shrink-0">
           <h2 className="text-lg font-semibold text-text-primary">
             {currentStep === 'result' ? (resultSuccess ? 'Resolution Complete' : 'Resolution Failed') :
              currentStep === 'manual' ? 'Manual Resolution' :
@@ -530,7 +530,7 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
         </div>
 
         {/* Content */}
-        <div className="p-4">
+        <div className="p-4 overflow-y-auto flex-1 min-h-0">
           {renderStepContent()}
         </div>
 
