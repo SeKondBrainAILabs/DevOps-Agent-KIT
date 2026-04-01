@@ -174,6 +174,8 @@ EOF
 - Call them as MCP tools with the parameters shown below.
 - The MCP tool handles staging, committing, recording, and optionally pushing.
 
+**Your session_id for ALL MCP tool calls: \`${vars.sessionId}\`**
+
 ### Available MCP Tools
 | Tool | Parameters | Description |
 |------|-----------|-------------|
