@@ -78,6 +78,12 @@ export class AgentInstanceService extends BaseService {
   private mcpServerUrl: string | null = null;
 
   /**
+   * Callback invoked after a single-repo session is created.
+   * Used by index.ts to register the session with MCP session binder.
+   */
+  onSessionCreated?: (sessionId: string, worktreePath: string) => void;
+
+  /**
    * Callback invoked after multi-repo session is created.
    * Used by index.ts to register repos with MCP session binder.
    */
@@ -529,6 +535,12 @@ ${DEVOPS_KIT_DIR}/
 
       // Setup agent environment (.agent-config, .vscode/settings.json)
       await this.setupAgentEnvironment(id);
+
+      // Register single-repo session with MCP binder so tools recognize it
+      if (!config.multiRepo && this.onSessionCreated) {
+        this.onSessionCreated(sessionId, worktreePath);
+        console.log(`[AgentInstanceService] Session ${sessionId} registered with MCP binder (worktree: ${worktreePath})`);
+      }
 
       // Multi-repo: create secondary repo environments after primary is ready
       if (config.multiRepo) {
@@ -1143,6 +1155,41 @@ ${DEVOPS_KIT_DIR}/
   /**
    * List all instances
    */
+  /**
+   * Re-register all active sessions with MCP binder on startup.
+   * Needed because the binder is in-memory and sessions are persisted in electron-store.
+   */
+  registerExistingSessionsWithBinder(): void {
+    let count = 0;
+    for (const instance of this.instances.values()) {
+      if (instance.status === 'completed' || instance.status === 'failed') continue;
+      const worktree = instance.worktreePath || instance.config.repoPath;
+      if (!instance.sessionId || !worktree) continue;
+
+      if (instance.multiRepoEntries && instance.multiRepoEntries.length > 0) {
+        if (this.onMultiRepoSessionCreated) {
+          this.onMultiRepoSessionCreated(
+            instance.sessionId,
+            instance.multiRepoEntries.map(r => ({
+              repoName: r.repoName,
+              worktreePath: r.worktreePath,
+              role: r.role,
+            }))
+          );
+          count++;
+        }
+      } else {
+        if (this.onSessionCreated) {
+          this.onSessionCreated(instance.sessionId, worktree);
+          count++;
+        }
+      }
+    }
+    if (count > 0) {
+      console.log(`[AgentInstanceService] Re-registered ${count} existing session(s) with MCP binder`);
+    }
+  }
+
   listInstances(): IpcResult<AgentInstance[]> {
     return {
       success: true,

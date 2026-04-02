@@ -410,31 +410,69 @@ export class MergeService extends BaseService {
         try {
           const { stdout: statusOutput } = await this.git(['status', '--porcelain'], options.worktreePath);
           if (statusOutput.trim()) {
-            console.log(`[MergeService] Found uncommitted changes, committing before merge...`);
+            const dirtyFileCount = statusOutput.trim().split('\n').length;
+            console.log(`[MergeService] Found ${dirtyFileCount} uncommitted change(s), committing before merge...`);
 
-            // Stage all changes
-            await this.git(['add', '-A'], options.worktreePath);
+            // Stage ALL changes (tracked, modified, untracked, deleted)
+            const addResult = await this.git(['add', '-A'], options.worktreePath);
+            if (addResult.exitCode !== 0) {
+              throw new Error(`git add -A failed (exit ${addResult.exitCode}): ${addResult.stderr}`);
+            }
+
+            // Verify everything was staged — nothing should remain unstaged
+            const { stdout: postAddStatus } = await this.git(['status', '--porcelain'], options.worktreePath);
+            const unstaged = postAddStatus.trim().split('\n').filter((line) => {
+              // After `git add -A`, any remaining porcelain line that is NOT index-only
+              // indicates a file that failed to stage. Index-staged lines have a
+              // non-space first char and space second char (e.g. "A ", "M ", "D ").
+              // Unstaged entries have a non-space second char (e.g. " M", "??", "UU").
+              return (line.length >= 2 && line[0] === ' ') || line.startsWith('??');
+            });
+            if (unstaged.length > 0) {
+              console.error(`[MergeService] Files failed to stage after git add -A:\n${unstaged.join('\n')}`);
+              throw new Error(
+                `${unstaged.length} file(s) could not be staged. Aborting merge to prevent data loss.`
+              );
+            }
 
             // Commit with auto-commit message
-            await this.git(
+            const commitResult = await this.git(
               ['commit', '-m', '[Kanvas] Auto-commit uncommitted changes before merge'],
               options.worktreePath
             );
+            if (commitResult.exitCode !== 0 && !commitResult.stderr.includes('nothing to commit')) {
+              throw new Error(`git commit failed (exit ${commitResult.exitCode}): ${commitResult.stderr}`);
+            }
+
+            // Final safety check: ensure worktree is clean after commit
+            const { stdout: postCommitStatus } = await this.git(['status', '--porcelain'], options.worktreePath);
+            if (postCommitStatus.trim()) {
+              const remainingFiles = postCommitStatus.trim().split('\n');
+              console.error(`[MergeService] Worktree still dirty after auto-commit (${remainingFiles.length} file(s)):\n${postCommitStatus}`);
+              throw new Error(
+                `Worktree still has ${remainingFiles.length} uncommitted file(s) after auto-commit. Aborting merge to prevent data loss.`
+              );
+            }
 
             // Push to ensure source branch has all changes before merge
             console.log(`[MergeService] Pushing committed changes to origin/${sourceBranch}...`);
             await this.git(['push', 'origin', sourceBranch], options.worktreePath);
 
-            console.log(`[MergeService] Successfully committed and pushed uncommitted changes`);
+            console.log(`[MergeService] Successfully committed and pushed all ${dirtyFileCount} file(s)`);
           } else {
             console.log(`[MergeService] No uncommitted changes in worktree`);
           }
         } catch (commitError) {
           const errorMsg = commitError instanceof Error ? commitError.message : String(commitError);
           console.error(`[MergeService] Failed to commit uncommitted changes: ${errorMsg}`);
-          // Don't fail the merge - just warn. User may have already committed.
-          if (!errorMsg.includes('nothing to commit')) {
-            console.warn(`[MergeService] Proceeding with merge despite commit error`);
+          if (errorMsg.includes('nothing to commit')) {
+            // Safe to proceed — worktree was already clean
+            console.log(`[MergeService] Nothing to commit, proceeding with merge`);
+          } else {
+            // Abort merge to prevent data loss
+            throw new Error(
+              `Pre-merge auto-commit failed: ${errorMsg}. Merge aborted to prevent data loss.`
+            );
           }
         }
       }
