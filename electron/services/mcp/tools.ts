@@ -165,8 +165,8 @@ export function registerTools(
         // 2. Record in database
         if (deps.databaseService) {
           try {
-            deps.databaseService.recordCommit(session_id, hash, message, filesChanged);
-            deps.databaseService.recordSessionEvent(session_id, 'commit', { hash, message, filesChanged, repo });
+            deps.databaseService.recordCommit(hash, session_id, commitMessage, new Date().toISOString(), { filesChanged, repoName: repo });
+            deps.databaseService.recordSessionEvent(session_id, 'commit', { hash, message: commitMessage, filesChanged, repo });
           } catch {
             // Non-fatal: database recording
           }
@@ -260,7 +260,7 @@ export function registerTools(
           // Record in database
           if (deps.databaseService) {
             try {
-              deps.databaseService.recordCommit(session_id, hash, message, filesChanged);
+              deps.databaseService.recordCommit(hash, session_id, commitMessage, new Date().toISOString(), { filesChanged, repoName: repo.repoName });
             } catch { /* non-fatal */ }
           }
 

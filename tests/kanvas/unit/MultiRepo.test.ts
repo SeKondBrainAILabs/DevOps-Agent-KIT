@@ -15,26 +15,13 @@ import { McpSessionBinder } from '../../../electron/services/mcp/session-binder'
 // ==========================================================================
 describe('generateSecondaryBranchName', () => {
   it('should generate branch name in correct format', () => {
-    const date = new Date(2026, 1, 26); // Feb 26, 2026
-    const result = generateSecondaryBranchName('DevOpsAgent', date);
-    expect(result).toBe('From_DevOpsAgent_260226');
-  });
-
-  it('should pad single-digit day and month', () => {
-    const date = new Date(2026, 0, 5); // Jan 5, 2026
-    const result = generateSecondaryBranchName('MyApp', date);
-    expect(result).toBe('From_MyApp_050126');
-  });
-
-  it('should use current date when no date provided', () => {
-    const result = generateSecondaryBranchName('Repo');
-    expect(result).toMatch(/^From_Repo_\d{6}$/);
+    const result = generateSecondaryBranchName('DevOpsAgent');
+    expect(result).toBe('Upgrade_From_DevOpsAgent');
   });
 
   it('should handle repo names with special characters', () => {
-    const date = new Date(2026, 5, 15);
-    const result = generateSecondaryBranchName('my-awesome-lib', date);
-    expect(result).toBe('From_my-awesome-lib_150626');
+    const result = generateSecondaryBranchName('my-awesome-lib');
+    expect(result).toBe('Upgrade_From_my-awesome-lib');
   });
 });
 

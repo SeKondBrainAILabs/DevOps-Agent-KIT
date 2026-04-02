@@ -362,13 +362,9 @@ export interface MultiRepoConfig {
   commitScope: 'all' | 'per-repo'; // User preference from wizard
 }
 
-/** Generate secondary repo branch name: From_{PrimaryRepoName}_{DDMMYY} */
-export function generateSecondaryBranchName(primaryRepoName: string, date?: Date): string {
-  const d = date || new Date();
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  return `From_${primaryRepoName}_${dd}${mm}${yy}`;
+/** Generate secondary repo branch name: Upgrade_From_{PrimaryRepoName} */
+export function generateSecondaryBranchName(primaryRepoName: string): string {
+  return `Upgrade_From_${primaryRepoName}`;
 }
 
 export interface RepoValidation {
