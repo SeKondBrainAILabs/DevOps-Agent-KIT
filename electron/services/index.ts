@@ -284,11 +284,18 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Pass MCP URL to AgentInstanceService for .mcp.json generation
   agentInstance.setMcpServerUrl(mcpServer.getUrl());
 
-  // Wire multi-repo callback: register all repos with MCP session binder
+  // Wire session callbacks: register sessions with MCP session binder
+  agentInstance.onSessionCreated = (sessionId, worktreePath) => {
+    mcpServer.sessionBinder.registerSession(sessionId, worktreePath);
+    console.log(`[Services] Session ${sessionId} registered with MCP binder`);
+  };
   agentInstance.onMultiRepoSessionCreated = (sessionId, repos) => {
     mcpServer.sessionBinder.registerMultiRepoSession(sessionId, repos);
     console.log(`[Services] Multi-repo session ${sessionId} registered with MCP binder (${repos.length} repos)`);
   };
+
+  // Re-register existing sessions loaded from electron-store (binder is in-memory only)
+  agentInstance.registerExistingSessionsWithBinder();
 
   // Initialize Analysis services
   // For AST parsing, repository analysis, and API extraction
