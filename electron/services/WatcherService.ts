@@ -39,6 +39,7 @@ interface WatcherInstance {
   agentType: AgentType;       // Agent type (for locking)
   branchName?: string;        // Branch name (for locking)
   repoName?: string;          // Which repo this watcher monitors (multi-repo mode)
+  primaryRepoName?: string;   // Set on secondary repos — traces commits back to root repo
 }
 
 export class WatcherService extends BaseService {
@@ -362,16 +363,22 @@ export class WatcherService extends BaseService {
       repoPath: string;
       agentType: AgentType;
       branchName?: string;
+      role?: 'primary' | 'secondary';
     }>
   ): Promise<IpcResult<void>> {
     return this.wrap(async () => {
+      const primaryRepo = repos.find(r => r.role === 'primary') || repos[0];
       for (const repo of repos) {
         const key = `${sessionId}:${repo.repoName}`;
         await this.startWithPath(key, repo.worktreePath, repo.agentType, repo.branchName);
-        // Patch the instance with repoName
+        // Patch the instance with repoName and primary linkage
         const instance = this.watchers.get(key);
         if (instance) {
           instance.repoName = repo.repoName;
+          // Secondary repos get primaryRepoName so commits are prefixed
+          if (repo.repoName !== primaryRepo.repoName) {
+            instance.primaryRepoName = primaryRepo.repoName;
+          }
         }
       }
     }, 'WATCHER_START_MULTI_FAILED');
@@ -515,8 +522,14 @@ export class WatcherService extends BaseService {
         this.emitToRenderer(IPC.COMMIT_TRIGGERED, triggerEvent);
         this.activityService.log(sessionId, 'commit', `Commit triggered: ${message.substring(0, 50)}...`);
 
+        // For secondary repos, prefix message with "Upgrade From {RootRepo}"
+        // so child repo history clearly traces back to the root repo session
+        const commitMessage = instance.primaryRepoName
+          ? `[Upgrade From ${instance.primaryRepoName}] ${message}`
+          : message;
+
         // Perform commit (pass repoName for multi-repo sessions)
-        const result = await this.gitService.commit(sessionId, message, instance.repoName);
+        const result = await this.gitService.commit(sessionId, commitMessage, instance.repoName);
         if (!result.success) {
           throw new Error(result.error?.message || 'Commit failed');
         }

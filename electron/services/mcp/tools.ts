@@ -144,8 +144,15 @@ export function registerTools(
       }
 
       try {
+        // For secondary repos, prefix message with "Upgrade From {RootRepo}"
+        // so child repo history clearly traces back to the root repo session
+        const primaryRepo = binder.getPrimaryRepoNameIfSecondary(session_id, repo);
+        const commitMessage = primaryRepo
+          ? `[Upgrade From ${primaryRepo}] ${message}`
+          : message;
+
         // 1. Stage + commit via gitService (pass repoName for multi-repo)
-        const commitResult = await deps.gitService.commit(session_id, message, repo);
+        const commitResult = await deps.gitService.commit(session_id, commitMessage, repo);
         if (!commitResult.success) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: commitResult.error?.message || 'Commit failed' }) }] };
         }
@@ -233,7 +240,14 @@ export function registerTools(
       for (const repo of repos) {
         try {
           const repoName = repo.repoName === 'primary' ? undefined : repo.repoName;
-          const commitResult = await deps.gitService.commit(session_id, message, repoName);
+
+          // For secondary repos, prefix message with "Upgrade From {RootRepo}"
+          const primaryRepo = binder.getPrimaryRepoNameIfSecondary(session_id, repoName);
+          const commitMessage = primaryRepo
+            ? `[Upgrade From ${primaryRepo}] ${message}`
+            : message;
+
+          const commitResult = await deps.gitService.commit(session_id, commitMessage, repoName);
 
           if (!commitResult.success) {
             results.push({ repoName: repo.repoName, error: commitResult.error?.message || 'Commit failed' });

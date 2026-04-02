@@ -152,6 +152,18 @@ export class McpSessionBinder {
   }
 
   /**
+   * Check if a repo is a secondary (non-primary) repo in a multi-repo session.
+   * Returns the primary repo name if so, or undefined for single-repo / primary.
+   */
+  getPrimaryRepoNameIfSecondary(kitSessionId: string, repoName?: string): string | undefined {
+    const session = this.sessions.get(kitSessionId);
+    if (!session || !session.repoPaths || !session.primaryRepoName) return undefined;
+    // No repo specified or repo is the primary → not secondary
+    if (!repoName || repoName === session.primaryRepoName) return undefined;
+    return session.primaryRepoName;
+  }
+
+  /**
    * Clear all state.
    */
   clear(): void {
