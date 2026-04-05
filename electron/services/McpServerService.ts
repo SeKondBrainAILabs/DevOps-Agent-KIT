@@ -119,17 +119,36 @@ export class McpServerService extends BaseService {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
-  // MCP call log for debug observability
+  // MCP call log — in-memory cache backed by persistent database
   private mcpCallLog: McpCallLogEntry[] = [];
+  private _dbService: { recordMcpCall: (entry: any) => void; getMcpCalls: (limit?: number, sessionId?: string) => any[] } | null = null;
 
-  getMcpCallLog(limit = 50): McpCallLogEntry[] {
+  /** Inject DatabaseService reference for persistent MCP call logging */
+  setMcpCallDb(db: { recordMcpCall: (entry: any) => void; getMcpCalls: (limit?: number, sessionId?: string) => any[] }): void {
+    this._dbService = db;
+  }
+
+  getMcpCallLog(limit = 200): McpCallLogEntry[] {
+    // Load from database if available and in-memory cache is empty
+    if (this.mcpCallLog.length === 0 && this._dbService) {
+      try {
+        const rows = this._dbService.getMcpCalls(limit);
+        this.mcpCallLog = rows;
+      } catch {
+        // Fall back to empty
+      }
+    }
     return this.mcpCallLog.slice(-limit);
   }
 
   addCallLogEntry(entry: McpCallLogEntry): void {
     this.mcpCallLog.push(entry);
-    if (this.mcpCallLog.length > 200) {
-      this.mcpCallLog.shift();
+    if (this.mcpCallLog.length > 500) {
+      this.mcpCallLog = this.mcpCallLog.slice(-200);
+    }
+    // Persist to database
+    if (this._dbService) {
+      this._dbService.recordMcpCall(entry);
     }
     // Emit real-time event to renderer
     this.emitToRenderer('mcp:tool-called', entry);

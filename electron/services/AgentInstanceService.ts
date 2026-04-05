@@ -36,9 +36,17 @@ async function getExeca() {
   return _execa;
 }
 
-async function execaCmd(cmd: string, args: string[], options?: { cwd?: string }): Promise<{ stdout: string; stderr: string }> {
+async function execaCmd(cmd: string, args: string[], options?: { cwd?: string; timeout?: number }): Promise<{ stdout: string; stderr: string }> {
   const execa = await getExeca();
-  return execa(cmd, args, options);
+  return execa(cmd, args, {
+    ...options,
+    timeout: options?.timeout ?? 30_000, // 30s default timeout to prevent hanging
+    env: {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',   // Never prompt for credentials
+      GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no',
+    },
+  });
 }
 import { KANVAS_PATHS, FILE_COORDINATION_PATHS, DEVOPS_KIT_DIR } from '../../shared/agent-protocol';
 import { getAgentInstructions, generateClaudePrompt, InstructionVars } from '../../shared/agent-instructions';

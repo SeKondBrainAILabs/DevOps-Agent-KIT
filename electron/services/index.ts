@@ -272,6 +272,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   mcpServer.setLockService(lock);
   mcpServer.setAgentInstanceService(agentInstance);
   mcpServer.setDatabaseService(databaseService);
+  mcpServer.setMcpCallDb(databaseService);
   await mcpServer.initialize();
   console.log('[Services] MCP server initialized on port', mcpServer.getPort());
 

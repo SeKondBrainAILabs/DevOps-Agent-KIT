@@ -455,6 +455,7 @@ export class GitService extends BaseService {
     beforeHead: string;
     afterHead: string;
     rawError?: string;
+    incomingCommits?: string[];
   }>> {
     return this.wrap(async () => {
       // Get HEAD before rebase to verify changes actually occurred
@@ -490,13 +491,39 @@ export class GitService extends BaseService {
 
         console.log(`[GitService] Rebase completed - HEAD after: ${afterHead.substring(0, 8)}, commits: ${afterCommitCount}, added: ${commitsAdded}`);
 
+        // Log the individual commits that flew in from the base branch
+        let incomingCommits: string[] = [];
+        if (headChanged && commitsAdded > 0) {
+          try {
+            // After rebase, the new commits from remote are between beforeHead and afterHead
+            // Use reflog to find what was integrated
+            const logOutput = await this.git(
+              ['log', '--oneline', '--no-merges', `${beforeHead}..${afterHead}`, '--', '.'],
+              repoPath
+            );
+            if (logOutput.trim()) {
+              incomingCommits = logOutput.trim().split('\n');
+              console.log(`[GitService] ---- Commits integrated from ${targetBranch} ----`);
+              for (const commit of incomingCommits) {
+                console.log(`[GitService]   ${commit}`);
+              }
+              console.log(`[GitService] ---- End of integrated commits ----`);
+            }
+          } catch {
+            console.log(`[GitService] Could not enumerate incoming commits (rebase rewrites history)`);
+          }
+        }
+
         // Determine appropriate message based on what actually happened
         let message: string;
         if (!headChanged && commitsAdded === 0) {
           message = 'Already up to date - no changes from remote';
           console.log(`[GitService] WARNING: Rebase completed but no changes detected!`);
         } else if (commitsAdded > 0) {
-          message = `Rebased successfully - added ${commitsAdded} commit(s) from ${targetBranch}`;
+          const commitSummary = incomingCommits.length > 0
+            ? `\nChanges from ${targetBranch}:\n${incomingCommits.map(c => `  ${c}`).join('\n')}`
+            : '';
+          message = `Rebased successfully - added ${commitsAdded} commit(s) from ${targetBranch}${commitSummary}`;
         } else if (headChanged) {
           message = `Rebased successfully onto ${targetBranch}`;
         } else {
@@ -509,6 +536,7 @@ export class GitService extends BaseService {
           commitsAdded,
           beforeHead,
           afterHead,
+          incomingCommits,
         };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -562,6 +590,7 @@ export class GitService extends BaseService {
     commitsAdded?: number;
     beforeHead?: string;
     afterHead?: string;
+    incomingCommits?: string[];
   }>> {
     return this.wrap(async () => {
       console.log(`[GitService] ========== REBASE OPERATION START ==========`);
@@ -651,6 +680,7 @@ export class GitService extends BaseService {
         commitsAdded: rebaseResult.data?.commitsAdded,
         beforeHead: rebaseResult.data?.beforeHead,
         afterHead: rebaseResult.data?.afterHead,
+        incomingCommits: rebaseResult.data?.incomingCommits,
       };
     }, 'GIT_PERFORM_REBASE_FAILED');
   }

@@ -172,6 +172,23 @@ export class DatabaseService extends BaseService {
       CREATE INDEX IF NOT EXISTS idx_contract_versions_contract ON contract_versions(contract_id);
     `);
 
+    // MCP call log table (persists tool call history across restarts)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS mcp_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        success INTEGER NOT NULL DEFAULT 1,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mcp_calls_session ON mcp_calls(session_id);
+      CREATE INDEX IF NOT EXISTS idx_mcp_calls_timestamp ON mcp_calls(timestamp);
+    `);
+
     console.log('[DatabaseService] Tables created/verified');
   }
 
@@ -584,6 +601,77 @@ export class DatabaseService extends BaseService {
       deletions: row.deletions,
       repoName: row.repo_name || undefined,
     }));
+  }
+
+  // ==========================================================================
+  // MCP CALL LOG (persistent across app restarts)
+  // ==========================================================================
+
+  /**
+   * Record an MCP tool call in the database
+   */
+  recordMcpCall(entry: {
+    timestamp: string;
+    toolName: string;
+    sessionId: string;
+    success: boolean;
+    durationMs: number;
+    error?: string;
+  }): void {
+    if (!this.db) return;
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO mcp_calls (timestamp, tool_name, session_id, success, duration_ms, error)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(
+        entry.timestamp,
+        entry.toolName,
+        entry.sessionId,
+        entry.success ? 1 : 0,
+        entry.durationMs,
+        entry.error || null
+      );
+    } catch (err) {
+      console.warn('[DatabaseService] Failed to record MCP call:', err);
+    }
+  }
+
+  /**
+   * Get MCP call log entries, optionally filtered by session
+   */
+  getMcpCalls(limit = 200, sessionId?: string): Array<{
+    timestamp: string;
+    toolName: string;
+    sessionId: string;
+    success: boolean;
+    durationMs: number;
+    error?: string;
+  }> {
+    if (!this.db) return [];
+    try {
+      let sql = 'SELECT * FROM mcp_calls';
+      const params: any[] = [];
+      if (sessionId) {
+        sql += ' WHERE session_id = ?';
+        params.push(sessionId);
+      }
+      sql += ' ORDER BY timestamp DESC LIMIT ?';
+      params.push(limit);
+
+      const rows = this.db.prepare(sql).all(...params) as any[];
+      return rows.map(row => ({
+        timestamp: row.timestamp,
+        toolName: row.tool_name,
+        sessionId: row.session_id,
+        success: row.success === 1,
+        durationMs: row.duration_ms,
+        error: row.error || undefined,
+      }));
+    } catch (err) {
+      console.warn('[DatabaseService] Failed to get MCP calls:', err);
+      return [];
+    }
   }
 
   /**
