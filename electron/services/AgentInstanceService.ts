@@ -1216,6 +1216,136 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
+   * Pre-delete safety check: returns info about worktree, uncommitted changes,
+   * unpushed commits, and remote branch existence so the UI can show warnings.
+   */
+  async getDeleteSafetyInfo(sessionId: string): Promise<IpcResult<{
+    hasWorktree: boolean;
+    worktreePath: string | null;
+    hasUncommittedChanges: boolean;
+    unpushedCommitCount: number;
+    hasRemoteBranch: boolean;
+    branchName: string;
+    repoPath: string;
+  }>> {
+    // Find instance by sessionId
+    let instance: AgentInstance | undefined;
+    for (const inst of this.instances.values()) {
+      if (inst.sessionId === sessionId) {
+        instance = inst;
+        break;
+      }
+    }
+
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: 'Session not found' } };
+    }
+
+    const repoPath = instance.config.repoPath;
+    const branchName = instance.config.branchName;
+    const worktreePath = instance.worktreePath && instance.worktreePath !== repoPath
+      ? instance.worktreePath : null;
+
+    let hasUncommittedChanges = false;
+    let unpushedCommitCount = 0;
+    let hasRemoteBranch = false;
+
+    const checkPath = worktreePath || repoPath;
+
+    try {
+      // Check uncommitted changes
+      const statusOut = await execaCmd('git', ['status', '--porcelain'], { cwd: checkPath });
+      hasUncommittedChanges = statusOut.stdout.trim().length > 0;
+    } catch { /* ignore */ }
+
+    try {
+      // Check unpushed commits
+      const aheadOut = await execaCmd('git', ['rev-list', '--count', `origin/${branchName}..${branchName}`], { cwd: repoPath });
+      unpushedCommitCount = parseInt(aheadOut.stdout.trim(), 10) || 0;
+    } catch { /* branch may not track remote */ }
+
+    try {
+      // Check if remote branch exists
+      await execaCmd('git', ['ls-remote', '--exit-code', '--heads', 'origin', branchName], { cwd: repoPath });
+      hasRemoteBranch = true;
+    } catch { /* no remote branch */ }
+
+    return {
+      success: true,
+      data: {
+        hasWorktree: !!worktreePath,
+        worktreePath,
+        hasUncommittedChanges,
+        unpushedCommitCount,
+        hasRemoteBranch,
+        branchName,
+        repoPath,
+      },
+    };
+  }
+
+  /**
+   * Delete an instance with optional worktree and branch cleanup
+   */
+  async deleteInstanceWithCleanup(
+    sessionId: string,
+    options: { deleteWorktree?: boolean; deleteLocalBranch?: boolean; deleteRemoteBranch?: boolean }
+  ): Promise<IpcResult<void>> {
+    // Find instance by sessionId
+    let instanceId: string | undefined;
+    let instance: AgentInstance | undefined;
+    for (const [id, inst] of this.instances) {
+      if (inst.sessionId === sessionId) {
+        instanceId = id;
+        instance = inst;
+        break;
+      }
+    }
+
+    if (!instance || !instanceId) {
+      return { success: false, error: { code: 'NOT_FOUND', message: 'Session not found' } };
+    }
+
+    const repoPath = instance.config.repoPath;
+    const branchName = instance.config.branchName;
+    const worktreePath = instance.worktreePath && instance.worktreePath !== repoPath
+      ? instance.worktreePath : null;
+
+    // 1. Remove worktree first (must happen before branch delete)
+    if (options.deleteWorktree && worktreePath) {
+      try {
+        await execaCmd('git', ['worktree', 'remove', worktreePath, '--force'], { cwd: repoPath });
+        console.log(`[AgentInstanceService] Removed worktree at ${worktreePath}`);
+      } catch (err) {
+        console.warn(`[AgentInstanceService] Failed to remove worktree: ${err}`);
+      }
+    }
+
+    // 2. Delete local branch
+    if (options.deleteLocalBranch) {
+      try {
+        await execaCmd('git', ['branch', '-D', branchName], { cwd: repoPath });
+        console.log(`[AgentInstanceService] Deleted local branch ${branchName}`);
+      } catch (err) {
+        console.warn(`[AgentInstanceService] Failed to delete local branch: ${err}`);
+      }
+    }
+
+    // 3. Delete remote branch
+    if (options.deleteRemoteBranch) {
+      try {
+        await execaCmd('git', ['push', 'origin', '--delete', branchName], { cwd: repoPath });
+        console.log(`[AgentInstanceService] Deleted remote branch ${branchName}`);
+      } catch (err) {
+        console.warn(`[AgentInstanceService] Failed to delete remote branch: ${err}`);
+      }
+    }
+
+    // 4. Delete the instance itself (files, state, etc.)
+    return this.deleteInstance(instanceId);
+  }
+
+  /**
    * Delete an instance
    * Also deletes session files from disk to prevent them reappearing on restart
    */
