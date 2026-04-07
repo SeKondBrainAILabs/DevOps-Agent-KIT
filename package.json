@@ -104,7 +104,10 @@
     "tar": "^7.1.0",
     "test-exclude": "^8.0.0",
     "@electron/asar": "^4.2.0",
-    "cacache": "^20.0.4"
+    "cacache": "^20.0.4",
+    "electron": {
+      "@electron/get": "^3.1.0"
+    }
   },
   "engines": {
     "node": ">=18.0.0"
