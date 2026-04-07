@@ -39,12 +39,8 @@
     "zod": "^3.25.76",
     "zustand": "^5.0.2"
   },
-  "optionalDependencies": {
-    "tree-sitter": "^0.21.1",
-    "tree-sitter-javascript": "^0.21.4",
-    "tree-sitter-typescript": "^0.21.2"
-  },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
     "@playwright/test": "^1.49.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
@@ -60,7 +56,6 @@
     "autoprefixer": "^10.4.20",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
-    "electron-rebuild": "^3.2.9",
     "electron-vite": "^2.3.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
@@ -103,6 +98,12 @@
         "deb"
       ]
     }
+  },
+  "overrides": {
+    "rimraf": "^4.4.1",
+    "tar": "^7.1.0",
+    "gauge": "^5.0.1",
+    "are-we-there-yet": "^4.0.1"
   },
   "engines": {
     "node": ">=18.0.0"
