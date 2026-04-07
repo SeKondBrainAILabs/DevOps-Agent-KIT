@@ -10,6 +10,7 @@
 import React, { useMemo, useState } from 'react';
 import { AgentCardSkeleton } from './AgentCard';
 import { MergeWorkflowModal } from './MergeWorkflowModal';
+import { DeleteSessionDialog } from './DeleteSessionDialog';
 import { useAgentStore } from '../../store/agentStore';
 import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentType } from '../../../shared/types';
@@ -356,7 +357,7 @@ function SessionRow({
   isSelected: boolean;
   onClick: () => void;
 }): React.ReactElement {
-  const [showConfirm, setShowConfirm] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showMergeModal, setShowMergeModal] = useState(false);
   const removeReportedSession = useAgentStore((state) => state.removeReportedSession);
 
@@ -385,15 +386,7 @@ function SessionRow({
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (showConfirm) {
-      const repoPath = session.repoPath || session.worktreePath || '';
-      window.api?.instance?.deleteSession?.(session.sessionId, repoPath);
-      removeReportedSession(session.sessionId);
-      setShowConfirm(false);
-    } else {
-      setShowConfirm(true);
-      setTimeout(() => setShowConfirm(false), 3000);
-    }
+    setShowDeleteDialog(true);
   };
 
   return (
@@ -438,16 +431,12 @@ function SessionRow({
           </button>
           <button
             onClick={handleDelete}
-            className={`p-0.5 rounded transition-all ${showConfirm ? 'bg-red-500 text-white' : 'text-text-secondary hover:text-red-500 hover:bg-red-500/10'}`}
-            title={showConfirm ? 'Click again to confirm' : 'Delete session'}
+            className="p-0.5 rounded transition-all text-text-secondary hover:text-red-500 hover:bg-red-500/10"
+            title="Delete session"
           >
-            {showConfirm ? (
-              <span className="text-[9px] px-0.5 font-medium">Del?</span>
-            ) : (
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            )}
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
           </button>
         </span>
       </div>
@@ -465,6 +454,18 @@ function SessionRow({
           removeReportedSession(session.sessionId);
         }}
       />
+
+      {showDeleteDialog && (
+        <DeleteSessionDialog
+          sessionId={session.sessionId}
+          sessionName={session.name || session.branchName || session.sessionId}
+          onClose={() => setShowDeleteDialog(false)}
+          onDeleted={() => {
+            removeReportedSession(session.sessionId);
+            setShowDeleteDialog(false);
+          }}
+        />
+      )}
     </>
   );
 }

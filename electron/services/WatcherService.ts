@@ -650,10 +650,18 @@ export class WatcherService extends BaseService {
                 // Use AI rebase through rebaseWatcher so conflicts are auto-resolved
                 const rebaseResult = this.rebaseWatcher
                   ? await this.rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch)
-                  : await this.gitService.rebase(repoPath, `origin/${baseBranch}`).then(r => ({ success: r.success && !!r.data?.success, message: r.data?.message || r.error?.message || '' }));
+                  : await this.gitService.rebase(repoPath, `origin/${baseBranch}`).then(r => ({
+                      success: r.success && !!r.data?.success,
+                      message: r.data?.message || r.error?.message || '',
+                      incomingCommits: r.data?.incomingCommits,
+                    }));
                 if (rebaseResult.success) {
-                  console.log(`[WatcherService] Direct post-commit rebase: synced with ${baseBranch}`);
-                  this.terminalLogService?.log('info', `Post-commit rebase: synced with ${baseBranch}`, { sessionId, source: 'Watcher' });
+                  const incoming = (rebaseResult as { incomingCommits?: string[] }).incomingCommits;
+                  const commitDetails = incoming && incoming.length > 0
+                    ? ` | Changes: ${incoming.join('; ')}`
+                    : '';
+                  console.log(`[WatcherService] Direct post-commit rebase: synced with ${baseBranch} (${checkResult.data.behind} commits)${commitDetails}`);
+                  this.terminalLogService?.log('info', `Post-commit rebase: synced with ${baseBranch} (${checkResult.data.behind} commits integrated)${commitDetails}`, { sessionId, source: 'Watcher' });
                 } else {
                   console.warn(`[WatcherService] Direct post-commit rebase failed:`, rebaseResult.message);
                 }

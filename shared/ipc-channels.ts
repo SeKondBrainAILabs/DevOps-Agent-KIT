@@ -130,6 +130,8 @@ export const IPC = {
   INSTANCE_GET: 'instance:get',
   INSTANCE_DELETE: 'instance:delete',
   INSTANCE_DELETE_SESSION: 'instance:delete-session', // Delete by sessionId
+  INSTANCE_DELETE_SAFETY_CHECK: 'instance:delete-safety-check', // Pre-delete safety info
+  INSTANCE_DELETE_WITH_CLEANUP: 'instance:delete-with-cleanup', // Delete with worktree/branch cleanup
   INSTANCE_RESTART: 'instance:restart',
   INSTANCE_CLEAR_ALL: 'instance:clear-all',
   INSTANCE_UPDATE_BASE_BRANCH: 'instance:update-base-branch',
@@ -505,6 +507,8 @@ export const REQUEST_CHANNELS = [
   IPC.INSTANCE_LIST,
   IPC.INSTANCE_GET,
   IPC.INSTANCE_DELETE,
+  IPC.INSTANCE_DELETE_SAFETY_CHECK,
+  IPC.INSTANCE_DELETE_WITH_CLEANUP,
   IPC.INSTANCE_RESTART,
   IPC.RECENT_REPOS_LIST,
   IPC.RECENT_REPOS_ADD,

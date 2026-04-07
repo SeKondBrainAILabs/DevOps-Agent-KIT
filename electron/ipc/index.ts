@@ -341,6 +341,20 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return await services.agentInstance.deleteSessionById(sessionId, repoPath);
   });
 
+  ipcMain.handle(IPC.INSTANCE_DELETE_SAFETY_CHECK, async (_, sessionId: string) => {
+    return services.agentInstance.getDeleteSafetyInfo(sessionId);
+  });
+
+  ipcMain.handle(IPC.INSTANCE_DELETE_WITH_CLEANUP, async (_, sessionId: string, options: {
+    deleteWorktree?: boolean;
+    deleteLocalBranch?: boolean;
+    deleteRemoteBranch?: boolean;
+  }) => {
+    // Stop watcher before deleting
+    await services.watcher.stop(sessionId).catch(() => {});
+    return await services.agentInstance.deleteInstanceWithCleanup(sessionId, options);
+  });
+
   ipcMain.handle(IPC.INSTANCE_RESTART, async (_, sessionId: string, sessionData?: {
     repoPath: string;
     branchName: string;
