@@ -8,7 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "postinstall": "electron-builder install-app-deps",
+    "postinstall": "CXXFLAGS='-std=c++20' electron-builder install-app-deps",
     "cli": "./start-devops-session.sh",
     "cli:list": "node src/session-coordinator.js list",
     "cli:start": "node src/session-coordinator.js start",
@@ -20,7 +20,10 @@
     "test:multi-repo": "jest --config jest.kanvas.config.cjs --testPathPattern='MultiRepo'",
     "test:contracts": "jest tests/unit/generate-contracts.test.js tests/integration/contract-workflow.test.js",
     "test:e2e": "playwright test",
-    "lint": "eslint . --ext .ts,.tsx"
+    "lint": "eslint . --ext .ts,.tsx",
+    "check:loc": "node scripts/check-file-loc.js --all",
+    "check:loc:staged": "node scripts/check-file-loc.js",
+    "check:loc:report": "node scripts/check-file-loc.js --all --report"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
