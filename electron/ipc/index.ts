@@ -171,6 +171,15 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return { success: true, data: services.ai.getAvailableModels() };
   });
 
+  ipcMain.handle(IPC.AI_IS_CONFIGURED, async () => {
+    return { success: true, data: services.ai.hasApiKey() };
+  });
+
+  ipcMain.handle(IPC.AI_HEALTH_CHECK, async () => {
+    const result = await services.ai.healthCheck();
+    return { success: true, data: result };
+  });
+
   ipcMain.on(IPC.AI_STREAM_START, async (_, messages, modelOverride?: string) => {
     try {
       for await (const chunk of services.ai.streamChat(messages, modelOverride as any)) {
@@ -562,6 +571,17 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.handle(IPC.GIT_GET_COMMIT_DIFF, async (_, repoPath: string, commitHash: string) => {
     return services.git.getCommitDiff(repoPath, commitHash);
+  });
+
+  ipcMain.handle(IPC.GIT_ANALYZE_STALE_BRANCHES, async (_, repoPath: string, baseBranch?: string, staleDays?: number) => {
+    return services.git.analyzeStaleBranches(repoPath, baseBranch, staleDays);
+  });
+
+  ipcMain.handle(IPC.GIT_ARCHIVE_BRANCH, async (_, repoPath: string, branchName: string, options: {
+    deleteOriginal?: boolean;
+    deleteRemote?: boolean;
+  }) => {
+    return services.git.archiveBranch(repoPath, branchName, options);
   });
 
   // ==========================================================================

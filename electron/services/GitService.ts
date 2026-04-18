@@ -383,6 +383,12 @@ export class GitService extends BaseService {
     return this.git(['rev-parse', '--show-toplevel'], anyPath);
   }
 
+  async getCurrentBranch(repoPath: string): Promise<IpcResult<string>> {
+    return this.wrap(async () => {
+      return await this.git(['branch', '--show-current'], repoPath);
+    }, 'GIT_GET_BRANCH_FAILED');
+  }
+
   // ==========================================================================
   // REBASE AND SYNC OPERATIONS
   // ==========================================================================
@@ -759,10 +765,14 @@ export class GitService extends BaseService {
         try {
           await this.git(['stash', 'pop'], repoPath);
         } catch (error) {
-          console.warn('[GitService] Stash pop had conflicts:', error);
+          console.error('[GitService] Stash pop failed after rebase — cleaning up conflict markers:', error);
+          try {
+            await this.git(['reset', 'HEAD', '--', '.'], repoPath);
+            await this.git(['checkout', '--', '.'], repoPath);
+          } catch { /* best-effort cleanup — stash entry is preserved for manual recovery */ }
           return {
-            success: true,
-            message: 'Rebase successful but stash pop had conflicts',
+            success: false,
+            message: 'Rebase successful but stash pop had conflicts. Stashed changes were preserved — run "git stash pop" manually to recover them.',
             hadChanges,
             conflictsResolved: rebaseResult.data.conflictsResolved,
             conflictsFailed: rebaseResult.data.conflictsFailed,
@@ -865,6 +875,147 @@ export class GitService extends BaseService {
         .filter(b => b && b !== baseBranch && b !== 'master' && b !== 'main' && b !== 'development');
       return branches;
     }, 'GIT_MERGED_BRANCHES_FAILED');
+  }
+
+  /**
+   * Analyze all local branches for staleness, merged status, and zero-diff vs base.
+   * Used by the branch cleanup UI to suggest branches to archive/prune.
+   */
+  async analyzeStaleBranches(
+    repoPath: string,
+    baseBranch = 'main',
+    staleDays = 30
+  ): Promise<IpcResult<Array<{
+    name: string;
+    lastCommitDate: string;
+    lastCommitIso: string;
+    daysSinceLastCommit: number;
+    isMerged: boolean;
+    hasNoDiffVsBase: boolean;
+    aheadCount: number;
+    behindCount: number;
+    isStale: boolean;
+    safeToPrune: boolean;
+  }>>> {
+    return this.wrap(async () => {
+      // List all local branches with last-commit ISO date in one shot.
+      // Format: <branch>\t<iso-date>\t<relative-date>
+      const fmt = '%(refname:short)%09%(committerdate:iso8601)%09%(committerdate:relative)';
+      const raw = await this.git(['for-each-ref', `--format=${fmt}`, 'refs/heads/'], repoPath);
+
+      // Get merged branch list once
+      let mergedSet = new Set<string>();
+      try {
+        const merged = await this.git(['branch', '--merged', baseBranch], repoPath);
+        mergedSet = new Set(
+          merged.split('\n').map(b => b.replace('*', '').trim()).filter(Boolean)
+        );
+      } catch {
+        // baseBranch may not exist locally; try origin/<base>
+        try {
+          const merged = await this.git(['branch', '--merged', `origin/${baseBranch}`], repoPath);
+          mergedSet = new Set(
+            merged.split('\n').map(b => b.replace('*', '').trim()).filter(Boolean)
+          );
+        } catch { /* ignore */ }
+      }
+
+      // Protected branches we never report as stale
+      const protectedBranches = new Set([baseBranch, 'main', 'master', 'develop', 'development']);
+
+      const now = Date.now();
+      const results: Array<any> = [];
+
+      for (const line of raw.split('\n').filter(Boolean)) {
+        const [name, iso, relative] = line.split('\t');
+        if (!name || protectedBranches.has(name)) continue;
+
+        const ts = new Date(iso).getTime();
+        const daysSinceLastCommit = Math.floor((now - ts) / (1000 * 60 * 60 * 24));
+        const isMerged = mergedSet.has(name);
+
+        // Check ahead/behind vs base + zero-diff
+        let aheadCount = 0;
+        let behindCount = 0;
+        let hasNoDiffVsBase = false;
+        try {
+          const counts = await this.git(
+            ['rev-list', '--left-right', '--count', `${baseBranch}...${name}`],
+            repoPath
+          );
+          const [behind, ahead] = counts.trim().split('\t').map(n => parseInt(n, 10) || 0);
+          behindCount = behind;
+          aheadCount = ahead;
+
+          // Zero-diff: not just commit count — actual content. Branches that
+          // were force-rebased or only contain merge commits may have ahead>0
+          // but no real changes vs base.
+          const diff = await this.git(['diff', '--shortstat', `${baseBranch}...${name}`], repoPath);
+          hasNoDiffVsBase = diff.trim().length === 0;
+        } catch { /* base branch may not be local */ }
+
+        const isStale = daysSinceLastCommit >= staleDays;
+        const safeToPrune = isMerged || hasNoDiffVsBase;
+
+        results.push({
+          name,
+          lastCommitDate: relative,
+          lastCommitIso: iso,
+          daysSinceLastCommit,
+          isMerged,
+          hasNoDiffVsBase,
+          aheadCount,
+          behindCount,
+          isStale,
+          safeToPrune,
+        });
+      }
+
+      // Sort: safe-to-prune first, then by staleness desc
+      results.sort((a, b) => {
+        if (a.safeToPrune !== b.safeToPrune) return a.safeToPrune ? -1 : 1;
+        return b.daysSinceLastCommit - a.daysSinceLastCommit;
+      });
+
+      return results;
+    }, 'GIT_ANALYZE_STALE_BRANCHES_FAILED');
+  }
+
+  /**
+   * Archive a branch by renaming it to archive/<original-name>-<yyyymmdd>.
+   * The new branch points at the same commit, so the work isn't lost.
+   * Optionally also pushes the archive ref and deletes the original (local + remote).
+   */
+  async archiveBranch(
+    repoPath: string,
+    branchName: string,
+    options: { deleteOriginal?: boolean; deleteRemote?: boolean } = {}
+  ): Promise<IpcResult<{ archiveBranchName: string }>> {
+    return this.wrap(async () => {
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const archiveBranchName = `archive/${branchName}-${date}`;
+
+      // Create archive ref pointing at the same commit
+      await this.git(['branch', archiveBranchName, branchName], repoPath);
+
+      if (options.deleteOriginal) {
+        try {
+          await this.git(['branch', '-D', branchName], repoPath);
+        } catch (err) {
+          console.warn(`[GitService] Failed to delete local branch ${branchName}:`, err);
+        }
+      }
+
+      if (options.deleteRemote) {
+        try {
+          await this.git(['push', 'origin', '--delete', branchName], repoPath);
+        } catch {
+          // Remote branch may not exist; non-fatal
+        }
+      }
+
+      return { archiveBranchName };
+    }, 'GIT_ARCHIVE_BRANCH_FAILED');
   }
 
   /**

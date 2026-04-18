@@ -80,6 +80,8 @@ export const IPC = {
   AI_GET_MODE: 'ai:get-mode',
   AI_RELOAD_CONFIG: 'ai:reload-config',
   AI_GET_CONFIG_SOURCES: 'ai:get-config-sources',
+  AI_IS_CONFIGURED: 'ai:is-configured',
+  AI_HEALTH_CHECK: 'ai:health-check',
   // Events (main → renderer)
   AI_STREAM_CHUNK: 'ai:stream:chunk',
   AI_STREAM_END: 'ai:stream:end',
@@ -185,6 +187,8 @@ export const IPC = {
   // Get commit history and detailed diffs for session tracking
   // ==========================================================================
   GIT_GET_COMMIT_HISTORY: 'git:get-commit-history',
+  GIT_ANALYZE_STALE_BRANCHES: 'git:analyze-stale-branches',
+  GIT_ARCHIVE_BRANCH: 'git:archive-branch',
   GIT_GET_COMMIT_DIFF: 'git:get-commit-diff',
 
   // ==========================================================================
@@ -471,6 +475,8 @@ export const REQUEST_CHANNELS = [
   IPC.GIT_CREATE_WORKTREE,
   IPC.GIT_REMOVE_WORKTREE,
   IPC.GIT_DETECT_SUBMODULES,
+  IPC.GIT_ANALYZE_STALE_BRANCHES,
+  IPC.GIT_ARCHIVE_BRANCH,
   IPC.WATCHER_START,
   IPC.WATCHER_STOP,
   IPC.WATCHER_STATUS,
@@ -491,6 +497,8 @@ export const REQUEST_CHANNELS = [
   IPC.AI_GET_MODE,
   IPC.AI_RELOAD_CONFIG,
   IPC.AI_GET_CONFIG_SOURCES,
+  IPC.AI_IS_CONFIGURED,
+  IPC.AI_HEALTH_CHECK,
   IPC.LOG_GET,
   IPC.LOG_CLEAR,
   IPC.DIALOG_OPEN_DIRECTORY,

@@ -93,6 +93,7 @@ export function MergeWorkflowModal({
 
   // Track whether auto-fix has been triggered for current preview
   const autoFixTriggered = useRef(false);
+  const [offline, setOffline] = useState(false);
 
   // Helper to add/update progress entries
   const addProgress = useCallback((message: string, status: ProgressEntry['status'] = 'active', detail?: string) => {
@@ -125,6 +126,12 @@ export function MergeWorkflowModal({
     setTargetBranch(initialTargetBranch);
 
     const init = async () => {
+      // Check AI connectivity
+      try {
+        const health = await window.api?.ai?.healthCheck?.();
+        setOffline(!(health?.success && health.data?.online));
+      } catch { setOffline(true); }
+
       // Step 1: Resolve the ACTUAL active branch from the worktree
       // The session's branchName may be stale if the developer switched branches
       let resolvedBranch = sourceBranch;
@@ -478,6 +485,15 @@ export function MergeWorkflowModal({
                 Session was created as <code className="bg-blue-100 px-1 rounded">{sourceBranch}</code>,{' '}
                 but the worktree is on <code className="bg-blue-100 px-1 rounded">{actualBranch}</code>.{' '}
                 Using the actual active branch.
+              </p>
+            </div>
+          )}
+
+          {/* Offline warning */}
+          {offline && (
+            <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-xs text-red-700">
+                <span className="font-medium">Not connected</span> — AI conflict resolution is unavailable. Clean merges will still work.
               </p>
             </div>
           )}

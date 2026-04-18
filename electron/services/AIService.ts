@@ -171,6 +171,19 @@ export class AIService extends BaseService {
     return !!this.configService.getCredentialValue('groqApiKey');
   }
 
+  async healthCheck(): Promise<{ online: boolean; configured: boolean; error?: string }> {
+    const configured = this.hasApiKey();
+    if (!configured) return { online: false, configured: false, error: 'API key not configured' };
+    try {
+      const client = this.getClient();
+      await client.models.list();
+      return { online: true, configured: true };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      return { online: false, configured: true, error: msg };
+    }
+  }
+
   // ==========================================================================
   // MODE-BASED PROMPTS
   // ==========================================================================

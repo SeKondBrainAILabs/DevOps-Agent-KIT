@@ -195,6 +195,26 @@ const api = {
     }>> =>
       ipcRenderer.invoke(IPC.GIT_GET_COMMIT_DIFF, repoPath, commitHash),
 
+    analyzeStaleBranches: (repoPath: string, baseBranch?: string, staleDays?: number): Promise<IpcResult<Array<{
+      name: string;
+      lastCommitDate: string;
+      lastCommitIso: string;
+      daysSinceLastCommit: number;
+      isMerged: boolean;
+      hasNoDiffVsBase: boolean;
+      aheadCount: number;
+      behindCount: number;
+      isStale: boolean;
+      safeToPrune: boolean;
+    }>>> =>
+      ipcRenderer.invoke(IPC.GIT_ANALYZE_STALE_BRANCHES, repoPath, baseBranch, staleDays),
+
+    archiveBranch: (repoPath: string, branchName: string, options: {
+      deleteOriginal?: boolean;
+      deleteRemote?: boolean;
+    }): Promise<IpcResult<{ archiveBranchName: string }>> =>
+      ipcRenderer.invoke(IPC.GIT_ARCHIVE_BRANCH, repoPath, branchName, options),
+
     fetch: (repoPath: string, remote?: string): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.GIT_FETCH, repoPath, remote),
 
@@ -391,6 +411,12 @@ const api = {
       submodulePath: string | null;
     }>> =>
       ipcRenderer.invoke(IPC.AI_GET_CONFIG_SOURCES),
+
+    isConfigured: (): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke(IPC.AI_IS_CONFIGURED),
+
+    healthCheck: (): Promise<IpcResult<{ online: boolean; configured: boolean; error?: string }>> =>
+      ipcRenderer.invoke(IPC.AI_HEALTH_CHECK),
   },
 
   // ==========================================================================
