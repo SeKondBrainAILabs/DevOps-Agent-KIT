@@ -223,7 +223,11 @@ ${vars.multiRepoEntries.map(r => `| ${r.repoName} | ${r.role} | ${r.branchName} 
 | \`kit_get_commit_history\` | repo (optional) | History for a specific repo |
 
 When no \`repo\` parameter is specified, operations target the **primary** repo.
-Secondary repo branches use the naming convention: \`From_{PrimaryRepoName}_{DDMMYY}\`.
+
+### ⚠️ Branch naming — read carefully
+- **Primary repo**: use the branch name shown in the table above — do NOT invent or rename it.
+- **Secondary (child) repos only**: branches follow \`Upgrade_From_{PrimaryRepoName}\` (no date suffix).
+- 🚫 DO NOT apply the \`Upgrade_From_*\` pattern to the primary repo. That naming exists solely to trace child-repo commits back to the primary repo's session. Using it on the primary creates a confusing self-referential branch.
 
 ### ⚠️ FALLBACK: If MCP tools are NOT available
 If \`kit_commit_all\` is not in your tools list, commit each repo manually:

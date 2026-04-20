@@ -12,6 +12,7 @@ import type { AgentInstance, ContractType, Contract, ActivityLogEntry, Discovere
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
+import { useConflictStore } from '../../store/conflictStore';
 import { CommitsTab } from './CommitsTab';
 import { McpTab } from './McpTab';
 
@@ -111,6 +112,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [branches, setBranches] = useState<string[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
+  const showConflictDialog = useConflictStore((state) => state.showDialog);
 
   useEffect(() => {
     const check = () => {
@@ -216,17 +218,31 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
 
       if (rebaseResult?.success && rebaseResult.data) {
         const resultMessage = rebaseResult.data.message || (rebaseResult.data.success ? 'Synced successfully' : 'Rebase failed');
-        setSyncResult({
-          success: rebaseResult.data.success,
-          message: resultMessage,
-        });
 
-        // Show popup only for failures; success always auto-clears
-        if (!rebaseResult.data.success) {
-          setShowErrorPopup(true);
-        } else {
-          // Clear success message after 5 seconds
+        if (rebaseResult.data.success) {
+          setSyncResult({ success: true, message: resultMessage });
           setTimeout(() => setSyncResult(null), 5000);
+        } else {
+          // Route unresolved-conflict failures to the rich RebaseMergeErrorDialog so
+          // the user has auto-fix-with-backup / manual-fix paths instead of a
+          // dead-end Retry button that just re-hits the same wall.
+          const failed = (rebaseResult.data as { conflictsFailed?: number }).conflictsFailed ?? 0;
+          const resolutions = (rebaseResult.data as { resolutions?: Array<{ file: string }> }).resolutions ?? [];
+          const isConflictFailure = failed > 0 || resolutions.length > 0 || /conflict/i.test(resultMessage);
+
+          if (isConflictFailure) {
+            showConflictDialog({
+              sessionId: session.sessionId,
+              repoPath,
+              baseBranch,
+              currentBranch: session.branchName || '',
+              conflictedFiles: resolutions.map((r) => r.file),
+              errorMessage: resultMessage,
+            });
+          } else {
+            setSyncResult({ success: false, message: resultMessage });
+            setShowErrorPopup(true);
+          }
         }
       } else {
         const errorMessage = rebaseResult?.error?.message || 'Rebase failed - check console for details';
