@@ -1024,7 +1024,31 @@ export function MergeWorkflowModal({
                 </button>
               </>
             )}
-            {(step === 'complete' || step === 'error') && (
+            {step === 'error' && (
+              <>
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 rounded-lg text-text-secondary hover:bg-surface transition-colors"
+                >
+                  Close
+                </button>
+                {/conflict/i.test(error || '') && (
+                  <button
+                    onClick={() => {
+                      autoFixTriggered.current = false;
+                      handleAutoFix();
+                    }}
+                    className="px-4 py-2 rounded-lg bg-kanvas-blue text-white hover:bg-blue-600 transition-colors font-medium flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    Auto-Fix with AI
+                  </button>
+                )}
+              </>
+            )}
+            {step === 'complete' && (
               <button
                 onClick={onClose}
                 className="ml-auto px-4 py-2 rounded-lg bg-surface text-text-primary hover:bg-surface-tertiary transition-colors font-medium"
