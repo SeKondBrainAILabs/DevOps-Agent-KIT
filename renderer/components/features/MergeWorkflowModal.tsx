@@ -270,11 +270,18 @@ export function MergeWorkflowModal({
     setProgressLog([]);
 
     try {
+      // Run conflict resolution on the worktree (where the session branch lives)
+      // rather than the primary repo. After a failed merge + abort, the primary
+      // is clean, so generatePreviews would do a no-op rebase and find zero
+      // conflicts. Rebasing the session branch on the worktree against the
+      // target reproduces the real conflicts and resolves them in place.
+      const conflictPath = worktreePath || repoPath;
+
       addProgress('Creating backup branch for safety...');
 
       // Create backup if we have a sessionId
       if (sessionId) {
-        const backupResult = await window.api?.conflict?.createBackup?.(repoPath, sessionId);
+        const backupResult = await window.api?.conflict?.createBackup?.(conflictPath, sessionId);
         if (backupResult?.success) {
           updateLastProgress('done', `Backup: backup_kit/${sessionId}`);
         } else {
@@ -286,7 +293,7 @@ export function MergeWorkflowModal({
 
       addProgress('Analyzing conflicts with AI (kimi-k2)...');
 
-      const result = await window.api?.conflict?.generatePreviews?.(repoPath, targetBranch);
+      const result = await window.api?.conflict?.generatePreviews?.(conflictPath, targetBranch);
 
       if (result?.success && result.data) {
         if (result.data.aborted) {
@@ -320,21 +327,21 @@ export function MergeWorkflowModal({
 
         // Backend applyApprovedResolutions gates on status 'approved' or 'modified' — force 'approved'.
         const applyResult = await window.api?.conflict?.applyApproved?.(
-          repoPath,
+          conflictPath,
           resolvable.map((p) => ({ ...p, status: 'approved' as const }))
         );
 
         if (applyResult?.success) {
           updateLastProgress('done');
 
-          // Clean up backup
+          // Clean up backup on the same path we created it on
           if (sessionId) {
-            await window.api?.conflict?.deleteBackup?.(repoPath, sessionId);
+            await window.api?.conflict?.deleteBackup?.(conflictPath, sessionId);
           }
 
           addProgress('All conflicts resolved! Proceeding to merge options...', 'done');
 
-          // Reload preview using actual branch
+          // Reload preview against the primary repo (merge happens there, not in the worktree)
           const previewResult = await window.api?.merge?.preview?.(repoPath, actualBranch, targetBranch);
           if (previewResult?.success && previewResult.data) {
             setPreview(previewResult.data);
@@ -358,7 +365,7 @@ export function MergeWorkflowModal({
       setErrorWithLog(err instanceof Error ? err.message : 'Auto-fix failed');
       setStep('error');
     }
-  }, [sessionId, repoPath, targetBranch, actualBranch, addProgress, updateLastProgress, setErrorWithLog]);
+  }, [sessionId, repoPath, worktreePath, targetBranch, actualBranch, addProgress, updateLastProgress, setErrorWithLog]);
 
   // Reset auto-fix trigger when modal closes
   const autoStashTriggered = useRef(false);
