@@ -1991,24 +1991,46 @@ const api = {
   // ==========================================================================
   conflict: {
     /**
-     * Generate AI resolution previews for conflicted files
+     * Generate AI resolution previews for conflicted files.
+     * Returns the full ConflictPreviewResult (previews array + metrics + abort flags).
      */
-    generatePreviews: (repoPath: string, targetBranch: string): Promise<IpcResult<Array<{
-      filePath: string;
-      oursContent: string;
-      theirsContent: string;
-      resolvedContent: string;
-      resolution: 'ours' | 'theirs' | 'merged';
-    }>>> =>
+    generatePreviews: (repoPath: string, targetBranch: string): Promise<IpcResult<{
+      repoPath: string;
+      currentBranch: string;
+      targetBranch: string;
+      previews: Array<{
+        file: string;
+        language: string;
+        originalContent: string;
+        proposedContent: string;
+        status: 'pending' | 'approved' | 'rejected' | 'modified' | 'skipped';
+        userModifiedContent?: string;
+        skippedReason?: string;
+        analysis?: unknown;
+        triage?: unknown;
+      }>;
+      totalConflicts: number;
+      resolvedByAI: number;
+      failedToResolve: number;
+      skippedFiles: number;
+      metrics: unknown;
+      aborted?: boolean;
+      abortReason?: string;
+    }>> =>
       ipcRenderer.invoke(IPC.CONFLICT_GENERATE_PREVIEWS, repoPath, targetBranch),
 
     /**
-     * Apply user-approved conflict resolutions
+     * Apply user-approved conflict resolutions.
+     * Takes the full ConflictResolutionPreview objects from generatePreviews with status set.
      */
     applyApproved: (repoPath: string, previews: Array<{
-      filePath: string;
-      resolvedContent: string;
-      approved: boolean;
+      file: string;
+      language: string;
+      originalContent: string;
+      proposedContent: string;
+      status: 'pending' | 'approved' | 'rejected' | 'modified' | 'skipped';
+      userModifiedContent?: string;
+      skippedReason?: string;
     }>): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.CONFLICT_APPLY_APPROVED, repoPath, previews),
 

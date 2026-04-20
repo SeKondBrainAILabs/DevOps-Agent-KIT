@@ -284,29 +284,44 @@ export function MergeWorkflowModal({
         updateLastProgress('done', 'No session ID for backup');
       }
 
-      addProgress('Analyzing conflicts with AI (llama/qwen)...');
+      addProgress('Analyzing conflicts with AI (kimi-k2)...');
 
       const result = await window.api?.conflict?.generatePreviews?.(repoPath, targetBranch);
 
       if (result?.success && result.data) {
-        const previews = result.data as Array<{
-          filePath: string;
-          resolvedContent: string;
-          resolution: string;
-        }>;
+        if (result.data.aborted) {
+          updateLastProgress('error');
+          setErrorWithLog(result.data.abortReason || 'Conflict resolution aborted');
+          setStep('error');
+          return;
+        }
 
-        updateLastProgress('done', `Generated ${previews.length} resolution(s)`);
+        const previews = result.data.previews ?? [];
+        const resolvable = previews.filter((p) => p.status !== 'skipped' && !!p.proposedContent);
 
-        // Show each file resolution
+        updateLastProgress('done', `Generated ${resolvable.length} resolution(s) (${previews.length - resolvable.length} skipped)`);
+
+        // Show each file outcome
         for (const p of previews) {
-          addProgress(`Resolved: ${p.filePath} (${p.resolution})`, 'done');
+          if (p.status === 'skipped' || p.skippedReason) {
+            addProgress(`Skipped: ${p.file} — ${p.skippedReason || 'requires manual review'}`, 'error');
+          } else {
+            addProgress(`Resolved: ${p.file} (${p.status})`, 'done');
+          }
+        }
+
+        if (resolvable.length === 0) {
+          setErrorWithLog('AI could not auto-resolve any files. Use manual fix.');
+          setStep('error');
+          return;
         }
 
         addProgress('Applying approved resolutions...');
 
+        // Backend applyApprovedResolutions gates on status 'approved' or 'modified' — force 'approved'.
         const applyResult = await window.api?.conflict?.applyApproved?.(
           repoPath,
-          previews.map((p) => ({ ...p, approved: true }))
+          resolvable.map((p) => ({ ...p, status: 'approved' as const }))
         );
 
         if (applyResult?.success) {

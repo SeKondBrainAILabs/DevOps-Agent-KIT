@@ -96,16 +96,19 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
       );
 
       if (result?.success && result.data) {
-        const previewsWithApproval = (result.data as Array<{
-          filePath: string;
-          oursContent: string;
-          theirsContent: string;
-          resolvedContent: string;
-          resolution: 'ours' | 'theirs' | 'merged';
-        }>).map((p) => ({
+        if (result.data.aborted) {
+          setResult(false, result.data.abortReason || 'Conflict resolution aborted');
+          return;
+        }
+        const previewsWithApproval = (result.data.previews ?? []).map((p) => ({
           ...p,
-          approved: true, // Default to approved
+          // Default to approved only for previews the AI actually resolved.
+          approved: p.status !== 'skipped' && p.status !== 'rejected' && !!p.proposedContent,
         }));
+        if (previewsWithApproval.length === 0) {
+          setResult(false, 'No conflicts found to resolve (rebase may have already succeeded).');
+          return;
+        }
         setPreviews(previewsWithApproval);
         setStep('review_plan');
       } else {
@@ -133,9 +136,11 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
         return;
       }
 
+      // Backend applyApprovedResolutions only applies previews with status 'approved' or 'modified'.
+      // Force status='approved' for everything the user checked so the backend honors them.
       const result = await window.api?.conflict?.applyApproved?.(
         errorDetails.repoPath,
-        approvedPreviews
+        approvedPreviews.map((p) => ({ ...p, status: 'approved' as const }))
       );
 
       if (result?.success) {
@@ -319,33 +324,41 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
             </div>
 
             <div className="max-h-64 overflow-y-auto space-y-2">
-              {previews.map((preview) => (
-                <div
-                  key={preview.filePath}
-                  className={`p-3 rounded-lg border ${
-                    preview.approved ? 'bg-green-50 border-green-200' : 'bg-surface-secondary border-border'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={preview.approved}
-                        onChange={(e) => setPreviewApproval(preview.filePath, e.target.checked)}
-                        className="w-4 h-4 rounded border-border text-kanvas-blue focus:ring-kanvas-blue"
-                      />
-                      <span className="text-sm font-mono text-text-primary">{preview.filePath}</span>
+              {previews.map((preview) => {
+                const isSkipped = preview.status === 'skipped' || !!preview.skippedReason;
+                return (
+                  <div
+                    key={preview.file}
+                    className={`p-3 rounded-lg border ${
+                      isSkipped ? 'bg-yellow-50 border-yellow-200' :
+                      preview.approved ? 'bg-green-50 border-green-200' : 'bg-surface-secondary border-border'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={preview.approved}
+                          disabled={isSkipped}
+                          onChange={(e) => setPreviewApproval(preview.file, e.target.checked)}
+                          className="w-4 h-4 rounded border-border text-kanvas-blue focus:ring-kanvas-blue disabled:opacity-50"
+                        />
+                        <span className="text-sm font-mono text-text-primary">{preview.file}</span>
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded ${
+                        isSkipped ? 'bg-yellow-100 text-yellow-700' :
+                        preview.status === 'approved' ? 'bg-green-100 text-green-700' :
+                        'bg-blue-100 text-blue-700'
+                      }`}>
+                        {isSkipped ? 'skipped' : preview.status}
+                      </span>
                     </div>
-                    <span className={`text-xs px-2 py-0.5 rounded ${
-                      preview.resolution === 'merged' ? 'bg-purple-100 text-purple-700' :
-                      preview.resolution === 'ours' ? 'bg-green-100 text-green-700' :
-                      'bg-blue-100 text-blue-700'
-                    }`}>
-                      {preview.resolution}
-                    </span>
+                    {preview.skippedReason && (
+                      <p className="text-xs text-yellow-700 mt-1 pl-6">{preview.skippedReason}</p>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="flex gap-3 pt-2">

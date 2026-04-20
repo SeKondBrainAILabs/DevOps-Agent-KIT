@@ -15,12 +15,20 @@ export interface RebaseErrorDetails {
   rawError?: string;
 }
 
+/**
+ * Mirrors ConflictResolutionPreview from electron/services/MergeConflictService.ts,
+ * with an added `approved` flag the UI uses to gate which files get applied.
+ */
 export interface ConflictPreview {
-  filePath: string;
-  oursContent: string;
-  theirsContent: string;
-  resolvedContent: string;
-  resolution: 'ours' | 'theirs' | 'merged';
+  file: string;
+  language: string;
+  originalContent: string;       // File with conflict markers
+  proposedContent: string;       // AI's proposed resolution
+  status: 'pending' | 'approved' | 'rejected' | 'modified' | 'skipped';
+  userModifiedContent?: string;
+  skippedReason?: string;
+  analysis?: unknown;
+  triage?: unknown;
   approved: boolean;
 }
 
@@ -98,7 +106,7 @@ export const useConflictStore = create<ConflictState>((set) => ({
   setPreviewApproval: (filePath, approved) =>
     set((state) => ({
       previews: state.previews.map((p) =>
-        p.filePath === filePath ? { ...p, approved } : p
+        p.file === filePath ? { ...p, approved } : p
       ),
     })),
 
