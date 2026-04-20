@@ -101,6 +101,68 @@ export class MergeService extends BaseService {
   }
 
   /**
+   * Parse "Your local changes to the following files would be overwritten by merge"
+   * error from git stderr. This fires when the target branch has tracked (committed)
+   * changes to files that also have uncommitted local modifications.
+   * Returns the list of blocking files, or null if not this type of error.
+   */
+  private parseTrackedDirtyFiles(stderr: string): string[] | null {
+    if (!stderr.includes('Your local changes to the following files would be overwritten')) {
+      return null;
+    }
+    // Git error format:
+    // error: Your local changes to the following files would be overwritten by merge:
+    //     path/to/file1
+    //     path/to/file2
+    // Please commit your changes or stash them before you merge.
+    // Aborting
+    const lines = stderr.split('\n');
+    const blockingFiles: string[] = [];
+    let capturing = false;
+    for (const line of lines) {
+      if (line.includes('Your local changes to the following files would be overwritten')) {
+        capturing = true;
+        continue;
+      }
+      if (capturing) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('Please ') || trimmed === 'Aborting' || trimmed === '') {
+          capturing = false;
+          continue;
+        }
+        if (trimmed) {
+          blockingFiles.push(trimmed);
+        }
+      }
+    }
+    return blockingFiles.length > 0 ? blockingFiles : null;
+  }
+
+  /**
+   * Stash tracked files that have uncommitted local changes blocking a merge.
+   * Uses a pathspec stash so only the blocking files are stashed — any other
+   * dirty files the user has stay put. Message prefix matches the untracked
+   * flow so popStashAfterMerge auto-recovers it after a successful merge.
+   */
+  private async stashTrackedDirtyFiles(
+    repoPath: string,
+    blockingFiles: string[]
+  ): Promise<{ stashed: string[]; stashRef: string } | null> {
+    const stashMsg = `[Kanvas] Pre-merge stash: ${blockingFiles.length} tracked file(s) blocking merge`;
+    const { exitCode: stashExit, stderr } = await this.git(
+      ['stash', 'push', '-m', stashMsg, '--', ...blockingFiles],
+      repoPath
+    );
+    if (stashExit !== 0) {
+      console.warn(`[MergeService] Failed to stash tracked blocking files: ${stderr}`);
+      return null;
+    }
+    const { stdout: stashRef } = await this.git(['stash', 'list', '--max-count=1'], repoPath);
+    console.log(`[MergeService] Stashed ${blockingFiles.length} tracked blocking files: ${stashRef}`);
+    return { stashed: blockingFiles, stashRef };
+  }
+
+  /**
    * Stash untracked files that are blocking a merge, then attempt the merge.
    * Uses `git stash --include-untracked` to safely preserve the files.
    * After merge, user can pop the stash if needed.
@@ -538,6 +600,31 @@ export class MergeService extends BaseService {
               success: false,
               message: `Untracked files blocking merge could not be stashed: ${failedFiles.join(', ')}. Please move or remove them manually.`,
               conflictingFiles: blockingFiles,
+            };
+          }
+        }
+      }
+
+      // Handle tracked dirty files blocking the merge - stash those specific paths and retry.
+      // Mirrors the untracked-blocking path above: identical user outcome (merge just works),
+      // and popStashAfterMerge later auto-recovers the user's local edits.
+      if (mergeResult.exitCode !== 0) {
+        const trackedBlockers = this.parseTrackedDirtyFiles(mergeResult.stderr);
+        if (trackedBlockers && trackedBlockers.length > 0) {
+          console.log(`[MergeService] Tracked dirty files blocking merge, stashing: ${trackedBlockers.join(', ')}`);
+
+          const stashResult = await this.stashTrackedDirtyFiles(repoPath, trackedBlockers);
+          if (stashResult) {
+            didStash = true;
+            mergeResult = await this.git(
+              ['merge', sourceBranch, '-m', `Merge branch '${sourceBranch}' into ${targetBranch}`],
+              repoPath
+            );
+          } else {
+            return {
+              success: false,
+              message: `Local changes to ${trackedBlockers.join(', ')} would be overwritten by merge and could not be auto-stashed. Please commit or stash them manually.`,
+              conflictingFiles: trackedBlockers,
             };
           }
         }
