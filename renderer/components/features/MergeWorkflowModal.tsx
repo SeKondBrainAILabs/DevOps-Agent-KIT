@@ -93,7 +93,21 @@ export function MergeWorkflowModal({
 
   // Track whether auto-fix has been triggered for current preview
   const autoFixTriggered = useRef(false);
+  // Session deletion is deferred until the user dismisses the success screen
+  // (see handleExecuteMerge). Stored sessionId gets deleted in handleClose.
+  const pendingSessionDelete = useRef<string | null>(null);
   const [offline, setOffline] = useState(false);
+
+  // Wrap onClose so the deferred session delete fires after the user
+  // acknowledges the success screen, rather than immediately on merge complete.
+  const handleClose = useCallback(() => {
+    const sessionToDelete = pendingSessionDelete.current;
+    pendingSessionDelete.current = null;
+    onClose();
+    if (sessionToDelete && onDeleteSession) {
+      onDeleteSession(sessionToDelete);
+    }
+  }, [onClose, onDeleteSession]);
 
   // Helper to add/update progress entries
   const addProgress = useCallback((message: string, status: ProgressEntry['status'] = 'active', detail?: string) => {
@@ -430,8 +444,12 @@ export function MergeWorkflowModal({
             updateLastProgress('done');
             setStep('complete');
             onMergeComplete?.();
+            // Defer session deletion until the user dismisses the success screen.
+            // Deleting the session immediately unmounts this modal (via parent
+            // state changes) before the "complete" step can render, making the
+            // dialog appear to vanish silently after a successful merge.
             if (deleteSession && sessionId && onDeleteSession) {
-              onDeleteSession(sessionId);
+              pendingSessionDelete.current = sessionId;
             }
           } else {
             updateLastProgress('error');
@@ -490,7 +508,7 @@ export function MergeWorkflowModal({
               </div>
             </div>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="p-2 rounded-lg hover:bg-surface-secondary transition-colors"
             >
               <svg className="w-5 h-5 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1050,7 +1068,7 @@ export function MergeWorkflowModal({
             )}
             {step === 'complete' && (
               <button
-                onClick={onClose}
+                onClick={handleClose}
                 className="ml-auto px-4 py-2 rounded-lg bg-surface text-text-primary hover:bg-surface-tertiary transition-colors font-medium"
               >
                 Close
