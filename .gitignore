@@ -118,3 +118,6 @@ release-test*/
 
 # MCP server config (auto-generated per session)
 .mcp.json
+
+# Claude Code project settings (auto-generated per session)
+.claude/settings.json
