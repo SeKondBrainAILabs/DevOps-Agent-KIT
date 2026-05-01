@@ -23,6 +23,7 @@ import type {
   ActivityLogEntry,
   AppConfig,
   Credentials,
+  WorktreeMode,
   IpcResult,
   RepoVersionInfo,
   RepoVersionSettings,
@@ -336,6 +337,20 @@ const api = {
 
     has: (key: keyof Credentials): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke(IPC.CREDENTIAL_HAS, key),
+  },
+
+  // ==========================================================================
+  // PER-REPO WORKSPACE API (C5 Single-Session Mode)
+  // ==========================================================================
+  repoWorkspace: {
+    getWorktreeMode: (repoPath: string): Promise<IpcResult<WorktreeMode>> =>
+      ipcRenderer.invoke(IPC.REPO_GET_WORKTREE_MODE, repoPath),
+
+    setWorktreeMode: (repoPath: string, mode: WorktreeMode): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.REPO_SET_WORKTREE_MODE, repoPath, mode),
+
+    getActiveSessionCount: (repoPath: string): Promise<IpcResult<number>> =>
+      ipcRenderer.invoke(IPC.REPO_GET_ACTIVE_SESSION_COUNT, repoPath),
   },
 
   // ==========================================================================

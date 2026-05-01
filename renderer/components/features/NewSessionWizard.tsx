@@ -3,8 +3,9 @@
  * Modal form for creating new sessions
  */
 
-import React, { useState } from 'react';
-import type { AgentType } from '../../../shared/types';
+import React, { useEffect, useState } from 'react';
+import type { AgentType, WorktreeMode } from '../../../shared/types';
+import { evaluateSingleSessionGuard } from '../../../shared/single-session-guard';
 
 interface NewSessionWizardProps {
   onClose: () => void;
@@ -28,6 +29,40 @@ export function NewSessionWizard({
   const [agentType, setAgentType] = useState<AgentType>('claude');
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // C5 Single-Session Mode: when worktrees are disabled for the chosen repo
+  // and an active session exists, block the "Create Session" CTA.
+  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('worktree');
+  const [activeSessionCount, setActiveSessionCount] = useState(0);
+
+  useEffect(() => {
+    if (!repoPath) {
+      setWorktreeMode('worktree');
+      setActiveSessionCount(0);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [modeRes, countRes] = await Promise.all([
+          window.api.repoWorkspace.getWorktreeMode(repoPath),
+          window.api.repoWorkspace.getActiveSessionCount(repoPath),
+        ]);
+        if (cancelled) return;
+        if (modeRes.success && modeRes.data) setWorktreeMode(modeRes.data);
+        if (countRes.success && typeof countRes.data === 'number') {
+          setActiveSessionCount(countRes.data);
+        }
+      } catch {
+        // Non-fatal — fall back to default (allow creation)
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath]);
+
+  const singleSessionGuard = evaluateSingleSessionGuard(worktreeMode, activeSessionCount);
 
   const handleSelectDirectory = async () => {
     const result = await window.api.dialog.openDirectory();
@@ -164,6 +199,17 @@ export function NewSessionWizard({
             </div>
           )}
 
+          {/* Single-Session Mode notice (C5) */}
+          {singleSessionGuard.blocked && (
+            <div
+              className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-md text-amber-300 text-sm"
+              data-testid="single-session-mode-notice"
+            >
+              <strong>Single-Session Mode active.</strong>{' '}
+              {singleSessionGuard.error?.message}
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex gap-2 pt-2">
             <button
@@ -177,7 +223,12 @@ export function NewSessionWizard({
             <button
               type="submit"
               className="btn-primary flex-1"
-              disabled={isCreating}
+              disabled={isCreating || singleSessionGuard.blocked}
+              title={
+                singleSessionGuard.blocked
+                  ? singleSessionGuard.error?.message
+                  : undefined
+              }
             >
               {isCreating ? 'Creating...' : 'Create Session'}
             </button>

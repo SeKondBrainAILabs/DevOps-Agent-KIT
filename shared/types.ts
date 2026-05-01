@@ -238,6 +238,25 @@ export interface AppConfig {
   onboardingCompleted: boolean;
 }
 
+// =============================================================================
+// PER-REPO WORKSPACE SETTINGS
+// =============================================================================
+
+/**
+ * Worktree mode for a repo.
+ * - 'worktree' (default): each session gets an isolated git worktree;
+ *   parallel sessions are allowed.
+ * - 'in-place': agent works on a branch in the main repo (Docker hot-reload friendly);
+ *   only ONE active session is permitted per repo (Single-Session Mode).
+ */
+export type WorktreeMode = 'in-place' | 'worktree';
+
+export interface RepoWorkspaceConfig {
+  repoPath: string;
+  worktreeMode: WorktreeMode;
+  lastUpdated: string;
+}
+
 export interface BranchManagementSettings {
   defaultMergeTarget: string;
   enableDualMerge: boolean;

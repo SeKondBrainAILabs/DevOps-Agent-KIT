@@ -64,6 +64,11 @@ export const IPC = {
   CREDENTIAL_SET: 'credential:set',
   CREDENTIAL_HAS: 'credential:has',
 
+  // Per-repo workspace settings (C5 Single-Session Mode)
+  REPO_GET_WORKTREE_MODE: 'repo:get-worktree-mode',
+  REPO_SET_WORKTREE_MODE: 'repo:set-worktree-mode',
+  REPO_GET_ACTIVE_SESSION_COUNT: 'repo:get-active-session-count',
+
   // ==========================================================================
   // AI/CHAT CHANNELS
   // ==========================================================================
@@ -491,6 +496,9 @@ export const REQUEST_CHANNELS = [
   IPC.CREDENTIAL_GET,
   IPC.CREDENTIAL_SET,
   IPC.CREDENTIAL_HAS,
+  IPC.REPO_GET_WORKTREE_MODE,
+  IPC.REPO_SET_WORKTREE_MODE,
+  IPC.REPO_GET_ACTIVE_SESSION_COUNT,
   IPC.AI_CHAT,
   IPC.AI_CHAT_WITH_MODE,
   IPC.AI_LIST_MODES,

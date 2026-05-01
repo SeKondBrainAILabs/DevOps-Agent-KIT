@@ -144,6 +144,20 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.config.hasCredential(key);
   });
 
+  // Per-repo workspace settings (C5 Single-Session Mode)
+  ipcMain.handle(IPC.REPO_GET_WORKTREE_MODE, async (_, repoPath: string) => {
+    return { success: true, data: services.config.getRepoWorktreeMode(repoPath) };
+  });
+
+  ipcMain.handle(IPC.REPO_SET_WORKTREE_MODE, async (_, repoPath: string, mode: 'in-place' | 'worktree') => {
+    services.config.setRepoWorktreeMode(repoPath, mode);
+    return { success: true };
+  });
+
+  ipcMain.handle(IPC.REPO_GET_ACTIVE_SESSION_COUNT, async (_, repoPath: string) => {
+    return services.agentInstance.getActiveSessionCountForRepo(repoPath);
+  });
+
   // ==========================================================================
   // AI HANDLERS (streaming uses on/send pattern)
   // ==========================================================================

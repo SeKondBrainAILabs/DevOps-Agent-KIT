@@ -176,6 +176,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Connect terminalLog to agentInstance for restart logging
   agentInstance.setTerminalLogService(terminalLog);
 
+  // Connect ConfigService for per-repo worktree-mode lookups (C5 Single-Session Mode)
+  agentInstance.setConfigService(config);
+
   // Connect agentInstance to watcher for commit tracking (crash recovery)
   watcher.setAgentInstanceService(agentInstance);
 

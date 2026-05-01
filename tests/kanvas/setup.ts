@@ -117,6 +117,11 @@ const mockApi = {
     get: jest.fn() as MockFn,
     set: jest.fn() as MockFn,
   },
+  repoWorkspace: {
+    getWorktreeMode: createMockFn({ success: true, data: 'worktree' }),
+    setWorktreeMode: createMockFn({ success: true }),
+    getActiveSessionCount: createMockFn({ success: true, data: 0 }),
+  },
   shell: {
     openExternal: jest.fn() as MockFn,
     openPath: jest.fn() as MockFn,
