@@ -281,6 +281,31 @@ export interface WorkspaceUpdateInput {
   ignoreGlobs?: string[];
 }
 
+/**
+ * A repository discovered by `WorkspaceService.scanWorkspace` (story A2).
+ * Each row maps to one Git repo found under a workspace folder.
+ */
+export interface DiscoveredRepo {
+  /** Workspace this repo belongs to. */
+  workspaceId: string;
+  /** Absolute path to the repo root (the directory containing `.git`). */
+  path: string;
+  /** Basename of the repo path. */
+  name: string;
+  /** Depth at which this repo was discovered, relative to workspace root. */
+  depth: number;
+  /** ISO timestamp of discovery. */
+  discoveredAt: string;
+}
+
+export interface WorkspaceScanResult {
+  workspaceId: string;
+  scannedAt: string;
+  durationMs: number;
+  repoCount: number;
+  repos: DiscoveredRepo[];
+}
+
 // =============================================================================
 // PER-REPO WORKSPACE SETTINGS
 // =============================================================================

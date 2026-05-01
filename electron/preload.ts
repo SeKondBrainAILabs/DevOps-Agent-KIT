@@ -27,6 +27,7 @@ import type {
   Workspace,
   WorkspaceCreateInput,
   WorkspaceUpdateInput,
+  WorkspaceScanResult,
   IpcResult,
   RepoVersionInfo,
   RepoVersionSettings,
@@ -374,6 +375,8 @@ const api = {
       ipcRenderer.invoke(IPC.WORKSPACE_GET_ACTIVE),
     setActive: (id: string | null): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.WORKSPACE_SET_ACTIVE, id),
+    scan: (id: string): Promise<IpcResult<WorkspaceScanResult>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_SCAN, id),
   },
 
   // ==========================================================================

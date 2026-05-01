@@ -77,6 +77,7 @@ export const IPC = {
   WORKSPACE_REMOVE: 'workspace:remove',
   WORKSPACE_GET_ACTIVE: 'workspace:get-active',
   WORKSPACE_SET_ACTIVE: 'workspace:set-active',
+  WORKSPACE_SCAN: 'workspace:scan',
 
   // ==========================================================================
   // AI/CHAT CHANNELS
@@ -515,6 +516,7 @@ export const REQUEST_CHANNELS = [
   IPC.WORKSPACE_REMOVE,
   IPC.WORKSPACE_GET_ACTIVE,
   IPC.WORKSPACE_SET_ACTIVE,
+  IPC.WORKSPACE_SCAN,
   IPC.AI_CHAT,
   IPC.AI_CHAT_WITH_MODE,
   IPC.AI_LIST_MODES,

@@ -9,11 +9,15 @@
  */
 
 import Store from 'electron-store';
+import { readdir } from 'fs/promises';
+import { join } from 'path';
 import { BaseService } from './BaseService';
 import type {
   Workspace,
   WorkspaceCreateInput,
   WorkspaceUpdateInput,
+  WorkspaceScanResult,
+  DiscoveredRepo,
   IpcResult,
 } from '../../shared/types';
 import {
@@ -22,6 +26,7 @@ import {
   validateWorkspaceCreate,
   WORKSPACE_ERRORS,
 } from '../../shared/workspace-helpers';
+import { scanForRepos, type DirChild } from '../../shared/repo-scanner';
 
 interface StoreSchema {
   workspaces: Workspace[];
@@ -125,5 +130,53 @@ export class WorkspaceService extends BaseService {
     const next = [...repos];
     next[idx] = { ...next[idx], lastScannedAt: new Date().toISOString() };
     this.store.set('workspaces', next);
+  }
+
+  /**
+   * Recursively scan a workspace for Git repositories.
+   * (Epic A / story A2.)
+   *
+   * Honors the workspace's `scanDepth` and `ignoreGlobs`. Found repos are
+   * returned and the workspace's `lastScannedAt` is bumped.
+   */
+  async scan(id: string): Promise<IpcResult<WorkspaceScanResult>> {
+    const list = this.store.get('workspaces');
+    const ws = list.find((w) => w.id === id);
+    if (!ws) return this.error(WORKSPACE_ERRORS.NOT_FOUND, `Workspace ${id} not found`);
+
+    const start = Date.now();
+    const found = await scanForRepos({
+      root: ws.path,
+      maxDepth: ws.scanDepth,
+      ignoreGlobs: ws.ignoreGlobs,
+      listChildren: async (absDir: string): Promise<DirChild[]> => {
+        try {
+          const entries = await readdir(absDir, { withFileTypes: true });
+          return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
+        } catch {
+          return [];
+        }
+      },
+      joinPath: join,
+    });
+    const scannedAt = new Date().toISOString();
+    const durationMs = Date.now() - start;
+    this.markScanned(id);
+
+    const repos: DiscoveredRepo[] = found.map((r) => ({
+      workspaceId: id,
+      path: r.path,
+      name: r.name,
+      depth: r.depth,
+      discoveredAt: scannedAt,
+    }));
+
+    return this.success({
+      workspaceId: id,
+      scannedAt,
+      durationMs,
+      repoCount: repos.length,
+      repos,
+    });
   }
 }

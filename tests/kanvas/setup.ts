@@ -130,6 +130,7 @@ const mockApi = {
     remove: createMockFn({ success: true }),
     getActive: createMockFn({ success: true, data: null }),
     setActive: createMockFn({ success: true }),
+    scan: createMockFn({ success: true, data: { workspaceId: 'ws_x', scannedAt: '', durationMs: 0, repoCount: 0, repos: [] } }),
   },
   shell: {
     openExternal: jest.fn() as MockFn,
