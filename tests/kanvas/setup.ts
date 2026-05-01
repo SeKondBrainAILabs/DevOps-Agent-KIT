@@ -135,6 +135,13 @@ const mockApi = {
     stopWatching: createMockFn({ success: true }),
     onRepoChange: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
+  projectGroup: {
+    list: createMockFn({ success: true, data: [] }),
+    get: createMockFn({ success: false, error: { code: 'PROJECT_GROUP_NOT_FOUND', message: 'not found' } }),
+    add: createMockFn({ success: true, data: null }),
+    update: createMockFn({ success: true, data: null }),
+    remove: createMockFn({ success: true }),
+  },
   shell: {
     openExternal: jest.fn() as MockFn,
     openPath: jest.fn() as MockFn,

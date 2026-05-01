@@ -83,6 +83,13 @@ export const IPC = {
   // main → renderer event
   WORKSPACE_REPO_CHANGE: 'workspace:repo-change',
 
+  // Project Groups (Epic F / story F1)
+  PROJECT_GROUP_LIST: 'project-group:list',
+  PROJECT_GROUP_GET: 'project-group:get',
+  PROJECT_GROUP_ADD: 'project-group:add',
+  PROJECT_GROUP_UPDATE: 'project-group:update',
+  PROJECT_GROUP_REMOVE: 'project-group:remove',
+
   // ==========================================================================
   // AI/CHAT CHANNELS
   // ==========================================================================
@@ -523,6 +530,11 @@ export const REQUEST_CHANNELS = [
   IPC.WORKSPACE_SCAN,
   IPC.WORKSPACE_WATCH_START,
   IPC.WORKSPACE_WATCH_STOP,
+  IPC.PROJECT_GROUP_LIST,
+  IPC.PROJECT_GROUP_GET,
+  IPC.PROJECT_GROUP_ADD,
+  IPC.PROJECT_GROUP_UPDATE,
+  IPC.PROJECT_GROUP_REMOVE,
   IPC.AI_CHAT,
   IPC.AI_CHAT_WITH_MODE,
   IPC.AI_LIST_MODES,

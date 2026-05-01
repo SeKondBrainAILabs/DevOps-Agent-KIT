@@ -29,6 +29,9 @@ import type {
   WorkspaceUpdateInput,
   WorkspaceScanResult,
   WorkspaceRepoChangeEvent,
+  ProjectGroup,
+  ProjectGroupCreateInput,
+  ProjectGroupUpdateInput,
   IpcResult,
   RepoVersionInfo,
   RepoVersionSettings,
@@ -388,6 +391,22 @@ const api = {
       ipcRenderer.on(IPC.WORKSPACE_REPO_CHANGE, handler);
       return () => ipcRenderer.removeListener(IPC.WORKSPACE_REPO_CHANGE, handler);
     },
+  },
+
+  // ==========================================================================
+  // PROJECT GROUP API (Epic F — cross-repo project groups)
+  // ==========================================================================
+  projectGroup: {
+    list: (): Promise<IpcResult<ProjectGroup[]>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_LIST),
+    get: (id: string): Promise<IpcResult<ProjectGroup>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_GET, id),
+    add: (input: ProjectGroupCreateInput): Promise<IpcResult<ProjectGroup>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_ADD, input),
+    update: (id: string, patch: ProjectGroupUpdateInput): Promise<IpcResult<ProjectGroup>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_UPDATE, id, patch),
+    remove: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_REMOVE, id),
   },
 
   // ==========================================================================

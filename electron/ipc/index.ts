@@ -170,6 +170,13 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   ipcMain.handle(IPC.WORKSPACE_WATCH_START, async (_, id: string) => services.workspace.startWatching(id));
   ipcMain.handle(IPC.WORKSPACE_WATCH_STOP, async (_, id: string) => services.workspace.stopWatching(id));
 
+  // Project Groups (Epic F / story F1)
+  ipcMain.handle(IPC.PROJECT_GROUP_LIST, async () => services.projectGroup.list());
+  ipcMain.handle(IPC.PROJECT_GROUP_GET, async (_, id: string) => services.projectGroup.get(id));
+  ipcMain.handle(IPC.PROJECT_GROUP_ADD, async (_, input) => services.projectGroup.add(input));
+  ipcMain.handle(IPC.PROJECT_GROUP_UPDATE, async (_, id: string, patch) => services.projectGroup.update(id, patch));
+  ipcMain.handle(IPC.PROJECT_GROUP_REMOVE, async (_, id: string) => services.projectGroup.remove(id));
+
   // ==========================================================================
   // AI HANDLERS (streaming uses on/send pattern)
   // ==========================================================================

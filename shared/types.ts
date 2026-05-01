@@ -310,6 +310,36 @@ export interface WorkspaceRepoChangeEvent {
   at: string;
 }
 
+/**
+ * Project Group (Epic F / story F1).
+ *
+ * A user-defined logical grouping of repos (e.g. "Core Stack"). Persistent —
+ * lives outside any individual session — so it can power cross-repo views,
+ * branch-sync visualizers, and bulk actions.
+ */
+export interface ProjectGroup {
+  id: string;
+  name: string;
+  /** Member repo paths (absolute). */
+  repoPaths: string[];
+  /** Optional UI accent color (hex string). */
+  color?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectGroupCreateInput {
+  name: string;
+  repoPaths: string[];
+  color?: string;
+}
+
+export interface ProjectGroupUpdateInput {
+  name?: string;
+  repoPaths?: string[];
+  color?: string;
+}
+
 export interface WorkspaceScanResult {
   workspaceId: string;
   scannedAt: string;

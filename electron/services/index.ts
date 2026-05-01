@@ -10,6 +10,7 @@ import { WatcherService } from './WatcherService';
 import { LockService } from './LockService';
 import { ConfigService } from './ConfigService';
 import { WorkspaceService } from './WorkspaceService';
+import { ProjectGroupService } from './ProjectGroupService';
 import { AIService } from './AIService';
 import { ActivityService } from './ActivityService';
 import { AgentListenerService } from './AgentListenerService';
@@ -52,6 +53,7 @@ export interface Services {
   lock: LockService;
   config: ConfigService;
   workspace: WorkspaceService;
+  projectGroup: ProjectGroupService;
   ai: AIService;
   activity: ActivityService;
   agentListener: AgentListenerService;
@@ -106,6 +108,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
 
   // Workspaces (Epic A — multi-workspace, multi-repo discovery)
   const workspace = new WorkspaceService();
+
+  // Project Groups (Epic F — persistent cross-repo bundles)
+  const projectGroup = new ProjectGroupService();
 
   // Initialize activity service (used by other services for logging)
   const activity = new ActivityService();
@@ -338,6 +343,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     lock,
     config,
     workspace,
+    projectGroup,
     ai,
     activity,
     agentListener,
