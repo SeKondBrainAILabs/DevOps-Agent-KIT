@@ -78,6 +78,10 @@ export const IPC = {
   WORKSPACE_GET_ACTIVE: 'workspace:get-active',
   WORKSPACE_SET_ACTIVE: 'workspace:set-active',
   WORKSPACE_SCAN: 'workspace:scan',
+  WORKSPACE_WATCH_START: 'workspace:watch:start',
+  WORKSPACE_WATCH_STOP: 'workspace:watch:stop',
+  // main → renderer event
+  WORKSPACE_REPO_CHANGE: 'workspace:repo-change',
 
   // ==========================================================================
   // AI/CHAT CHANNELS
@@ -517,6 +521,8 @@ export const REQUEST_CHANNELS = [
   IPC.WORKSPACE_GET_ACTIVE,
   IPC.WORKSPACE_SET_ACTIVE,
   IPC.WORKSPACE_SCAN,
+  IPC.WORKSPACE_WATCH_START,
+  IPC.WORKSPACE_WATCH_STOP,
   IPC.AI_CHAT,
   IPC.AI_CHAT_WITH_MODE,
   IPC.AI_LIST_MODES,

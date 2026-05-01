@@ -298,6 +298,18 @@ export interface DiscoveredRepo {
   discoveredAt: string;
 }
 
+/**
+ * Event fired by the WorkspaceService filesystem watcher (story A3).
+ * Renderer subscribes via `window.api.workspace.onRepoChange(...)`.
+ */
+export interface WorkspaceRepoChangeEvent {
+  workspaceId: string;
+  kind: 'repo-added' | 'repo-removed';
+  repoPath: string;
+  depth: number;
+  at: string;
+}
+
 export interface WorkspaceScanResult {
   workspaceId: string;
   scannedAt: string;

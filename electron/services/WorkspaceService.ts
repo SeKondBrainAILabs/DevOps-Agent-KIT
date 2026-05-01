@@ -11,15 +11,19 @@
 import Store from 'electron-store';
 import { readdir } from 'fs/promises';
 import { join } from 'path';
+import chokidar, { type FSWatcher } from 'chokidar';
+import { BrowserWindow } from 'electron';
 import { BaseService } from './BaseService';
 import type {
   Workspace,
   WorkspaceCreateInput,
   WorkspaceUpdateInput,
   WorkspaceScanResult,
+  WorkspaceRepoChangeEvent,
   DiscoveredRepo,
   IpcResult,
 } from '../../shared/types';
+import { IPC } from '../../shared/ipc-channels';
 import {
   applyWorkspaceUpdate,
   buildWorkspace,
@@ -27,6 +31,10 @@ import {
   WORKSPACE_ERRORS,
 } from '../../shared/workspace-helpers';
 import { scanForRepos, type DirChild } from '../../shared/repo-scanner';
+import {
+  classifyWatcherEvent,
+  type WatcherRawEventType,
+} from '../../shared/workspace-watcher-events';
 
 interface StoreSchema {
   workspaces: Workspace[];
@@ -36,6 +44,8 @@ interface StoreSchema {
 
 export class WorkspaceService extends BaseService {
   private store: Store<StoreSchema>;
+  /** Active chokidar watchers, keyed by workspace id (story A3). */
+  private watchers: Map<string, FSWatcher> = new Map();
 
   constructor() {
     super();
@@ -178,5 +188,79 @@ export class WorkspaceService extends BaseService {
       repoCount: repos.length,
       repos,
     });
+  }
+
+  // ==========================================================================
+  // FILESYSTEM WATCHER (Epic A / story A3)
+  // ==========================================================================
+
+  /**
+   * Start watching a workspace folder for new/removed Git repos.
+   * Emits `IPC.WORKSPACE_REPO_CHANGE` events to all renderer windows
+   * via the BaseService main-window broadcast.
+   *
+   * Idempotent: calling twice on the same workspace replaces the watcher.
+   */
+  async startWatching(id: string): Promise<IpcResult<void>> {
+    const ws = this.store.get('workspaces').find((w) => w.id === id);
+    if (!ws) return this.error(WORKSPACE_ERRORS.NOT_FOUND, `Workspace ${id} not found`);
+
+    await this.stopWatching(id);
+
+    const watcher = chokidar.watch(ws.path, {
+      ignored: ws.ignoreGlobs.map((g) => `**/${g}/**`),
+      persistent: true,
+      ignoreInitial: true,
+      depth: ws.scanDepth + 1, // need +1 to see `.git` folder inside repo dir
+      followSymlinks: false,
+      awaitWriteFinish: false,
+    });
+
+    const handle = (rawEvent: WatcherRawEventType) => (path: string) => {
+      const result = classifyWatcherEvent(rawEvent, path, {
+        workspaceRoot: ws.path,
+        maxDepth: ws.scanDepth + 1,
+      });
+      if (result.kind === 'irrelevant') return;
+      const payload: WorkspaceRepoChangeEvent = {
+        workspaceId: id,
+        kind: result.kind,
+        repoPath: result.repoPath!,
+        depth: result.depth ?? -1,
+        at: new Date().toISOString(),
+      };
+      this.broadcastRepoChange(payload);
+    };
+
+    watcher
+      .on('add', handle('add'))
+      .on('addDir', handle('addDir'))
+      .on('unlink', handle('unlink'))
+      .on('unlinkDir', handle('unlinkDir'));
+
+    this.watchers.set(id, watcher);
+    return this.success(undefined);
+  }
+
+  async stopWatching(id: string): Promise<IpcResult<void>> {
+    const watcher = this.watchers.get(id);
+    if (watcher) {
+      await watcher.close();
+      this.watchers.delete(id);
+    }
+    return this.success(undefined);
+  }
+
+  async stopAllWatchers(): Promise<void> {
+    await Promise.all(Array.from(this.watchers.values()).map((w) => w.close()));
+    this.watchers.clear();
+  }
+
+  private broadcastRepoChange(event: WorkspaceRepoChangeEvent): void {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(IPC.WORKSPACE_REPO_CHANGE, event);
+      }
+    }
   }
 }

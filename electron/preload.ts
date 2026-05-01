@@ -28,6 +28,7 @@ import type {
   WorkspaceCreateInput,
   WorkspaceUpdateInput,
   WorkspaceScanResult,
+  WorkspaceRepoChangeEvent,
   IpcResult,
   RepoVersionInfo,
   RepoVersionSettings,
@@ -377,6 +378,16 @@ const api = {
       ipcRenderer.invoke(IPC.WORKSPACE_SET_ACTIVE, id),
     scan: (id: string): Promise<IpcResult<WorkspaceScanResult>> =>
       ipcRenderer.invoke(IPC.WORKSPACE_SCAN, id),
+    startWatching: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_WATCH_START, id),
+    stopWatching: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_WATCH_STOP, id),
+    /** Subscribe to repo-added / repo-removed events. Returns an unsubscribe fn. */
+    onRepoChange: (cb: (event: WorkspaceRepoChangeEvent) => void): (() => void) => {
+      const handler = (_: unknown, event: WorkspaceRepoChangeEvent) => cb(event);
+      ipcRenderer.on(IPC.WORKSPACE_REPO_CHANGE, handler);
+      return () => ipcRenderer.removeListener(IPC.WORKSPACE_REPO_CHANGE, handler);
+    },
   },
 
   // ==========================================================================

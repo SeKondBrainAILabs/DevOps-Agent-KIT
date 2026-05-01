@@ -167,6 +167,8 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   ipcMain.handle(IPC.WORKSPACE_GET_ACTIVE, async () => services.workspace.getActive());
   ipcMain.handle(IPC.WORKSPACE_SET_ACTIVE, async (_, id: string | null) => services.workspace.setActive(id));
   ipcMain.handle(IPC.WORKSPACE_SCAN, async (_, id: string) => services.workspace.scan(id));
+  ipcMain.handle(IPC.WORKSPACE_WATCH_START, async (_, id: string) => services.workspace.startWatching(id));
+  ipcMain.handle(IPC.WORKSPACE_WATCH_STOP, async (_, id: string) => services.workspace.stopWatching(id));
 
   // ==========================================================================
   // AI HANDLERS (streaming uses on/send pattern)
