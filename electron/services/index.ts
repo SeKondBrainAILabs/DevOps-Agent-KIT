@@ -9,6 +9,7 @@ import { GitService } from './GitService';
 import { WatcherService } from './WatcherService';
 import { LockService } from './LockService';
 import { ConfigService } from './ConfigService';
+import { WorkspaceService } from './WorkspaceService';
 import { AIService } from './AIService';
 import { ActivityService } from './ActivityService';
 import { AgentListenerService } from './AgentListenerService';
@@ -50,6 +51,7 @@ export interface Services {
   watcher: WatcherService;
   lock: LockService;
   config: ConfigService;
+  workspace: WorkspaceService;
   ai: AIService;
   activity: ActivityService;
   agentListener: AgentListenerService;
@@ -101,6 +103,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Initialize config service (other services may depend on it)
   const config = new ConfigService();
   await config.initialize();
+
+  // Workspaces (Epic A — multi-workspace, multi-repo discovery)
+  const workspace = new WorkspaceService();
 
   // Initialize activity service (used by other services for logging)
   const activity = new ActivityService();
@@ -332,6 +337,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     watcher,
     lock,
     config,
+    workspace,
     ai,
     activity,
     agentListener,

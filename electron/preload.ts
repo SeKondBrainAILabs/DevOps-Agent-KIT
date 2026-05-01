@@ -24,6 +24,9 @@ import type {
   AppConfig,
   Credentials,
   WorktreeMode,
+  Workspace,
+  WorkspaceCreateInput,
+  WorkspaceUpdateInput,
   IpcResult,
   RepoVersionInfo,
   RepoVersionSettings,
@@ -351,6 +354,26 @@ const api = {
 
     getActiveSessionCount: (repoPath: string): Promise<IpcResult<number>> =>
       ipcRenderer.invoke(IPC.REPO_GET_ACTIVE_SESSION_COUNT, repoPath),
+  },
+
+  // ==========================================================================
+  // WORKSPACE API (Epic A — multi-workspace, multi-repo discovery)
+  // ==========================================================================
+  workspace: {
+    list: (): Promise<IpcResult<Workspace[]>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_LIST),
+    get: (id: string): Promise<IpcResult<Workspace>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_GET, id),
+    add: (input: WorkspaceCreateInput): Promise<IpcResult<Workspace>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_ADD, input),
+    update: (id: string, patch: WorkspaceUpdateInput): Promise<IpcResult<Workspace>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_UPDATE, id, patch),
+    remove: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_REMOVE, id),
+    getActive: (): Promise<IpcResult<Workspace | null>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_GET_ACTIVE),
+    setActive: (id: string | null): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_SET_ACTIVE, id),
   },
 
   // ==========================================================================

@@ -158,6 +158,15 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.agentInstance.getActiveSessionCountForRepo(repoPath);
   });
 
+  // Workspaces (Epic A / story A1)
+  ipcMain.handle(IPC.WORKSPACE_LIST, async () => services.workspace.list());
+  ipcMain.handle(IPC.WORKSPACE_GET, async (_, id: string) => services.workspace.get(id));
+  ipcMain.handle(IPC.WORKSPACE_ADD, async (_, input) => services.workspace.add(input));
+  ipcMain.handle(IPC.WORKSPACE_UPDATE, async (_, id: string, patch) => services.workspace.update(id, patch));
+  ipcMain.handle(IPC.WORKSPACE_REMOVE, async (_, id: string) => services.workspace.remove(id));
+  ipcMain.handle(IPC.WORKSPACE_GET_ACTIVE, async () => services.workspace.getActive());
+  ipcMain.handle(IPC.WORKSPACE_SET_ACTIVE, async (_, id: string | null) => services.workspace.setActive(id));
+
   // ==========================================================================
   // AI HANDLERS (streaming uses on/send pattern)
   // ==========================================================================

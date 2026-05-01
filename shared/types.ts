@@ -244,6 +244,44 @@ export interface AppConfig {
 }
 
 // =============================================================================
+// WORKSPACE (Epic A — multi-workspace, multi-repo discovery)
+// =============================================================================
+
+/**
+ * A user-defined root folder containing one or more repositories
+ * (e.g. `/Users/x/work`). Workspaces can be added, renamed, removed.
+ */
+export interface Workspace {
+  /** Stable ID (UUID-ish). Persisted across renames. */
+  id: string;
+  /** Human-friendly name; defaults to the basename of `path`. */
+  name: string;
+  /** Absolute filesystem path. */
+  path: string;
+  /** Recursive scan depth (default 2). */
+  scanDepth: number;
+  /** Glob patterns to skip during scans (in addition to defaults). */
+  ignoreGlobs: string[];
+  /** ISO timestamp of when the workspace was added. */
+  createdAt: string;
+  /** ISO timestamp of the most-recent successful scan. */
+  lastScannedAt?: string;
+}
+
+export interface WorkspaceCreateInput {
+  path: string;
+  name?: string;
+  scanDepth?: number;
+  ignoreGlobs?: string[];
+}
+
+export interface WorkspaceUpdateInput {
+  name?: string;
+  scanDepth?: number;
+  ignoreGlobs?: string[];
+}
+
+// =============================================================================
 // PER-REPO WORKSPACE SETTINGS
 // =============================================================================
 

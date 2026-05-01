@@ -122,6 +122,15 @@ const mockApi = {
     setWorktreeMode: createMockFn({ success: true }),
     getActiveSessionCount: createMockFn({ success: true, data: 0 }),
   },
+  workspace: {
+    list: createMockFn({ success: true, data: [] }),
+    get: createMockFn({ success: false, error: { code: 'WORKSPACE_NOT_FOUND', message: 'not found' } }),
+    add: createMockFn({ success: true, data: null }),
+    update: createMockFn({ success: true, data: null }),
+    remove: createMockFn({ success: true }),
+    getActive: createMockFn({ success: true, data: null }),
+    setActive: createMockFn({ success: true }),
+  },
   shell: {
     openExternal: jest.fn() as MockFn,
     openPath: jest.fn() as MockFn,

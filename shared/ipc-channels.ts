@@ -69,6 +69,15 @@ export const IPC = {
   REPO_SET_WORKTREE_MODE: 'repo:set-worktree-mode',
   REPO_GET_ACTIVE_SESSION_COUNT: 'repo:get-active-session-count',
 
+  // Workspaces (Epic A — multi-workspace, multi-repo discovery)
+  WORKSPACE_LIST: 'workspace:list',
+  WORKSPACE_GET: 'workspace:get',
+  WORKSPACE_ADD: 'workspace:add',
+  WORKSPACE_UPDATE: 'workspace:update',
+  WORKSPACE_REMOVE: 'workspace:remove',
+  WORKSPACE_GET_ACTIVE: 'workspace:get-active',
+  WORKSPACE_SET_ACTIVE: 'workspace:set-active',
+
   // ==========================================================================
   // AI/CHAT CHANNELS
   // ==========================================================================
@@ -499,6 +508,13 @@ export const REQUEST_CHANNELS = [
   IPC.REPO_GET_WORKTREE_MODE,
   IPC.REPO_SET_WORKTREE_MODE,
   IPC.REPO_GET_ACTIVE_SESSION_COUNT,
+  IPC.WORKSPACE_LIST,
+  IPC.WORKSPACE_GET,
+  IPC.WORKSPACE_ADD,
+  IPC.WORKSPACE_UPDATE,
+  IPC.WORKSPACE_REMOVE,
+  IPC.WORKSPACE_GET_ACTIVE,
+  IPC.WORKSPACE_SET_ACTIVE,
   IPC.AI_CHAT,
   IPC.AI_CHAT_WITH_MODE,
   IPC.AI_LIST_MODES,
