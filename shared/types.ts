@@ -241,6 +241,11 @@ export interface AppConfig {
    * explicitly opt-in. When `false`, no analytics or usage pings are sent.
    */
   telemetryOptIn: boolean;
+  /**
+   * Default landing view shown on app launch (Epic L / story L4).
+   * One of 'morning-check' | 'workspace-browser' | 'last-visited'.
+   */
+  defaultLandingView: 'morning-check' | 'workspace-browser' | 'last-visited';
 }
 
 // =============================================================================

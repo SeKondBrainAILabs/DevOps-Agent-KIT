@@ -34,6 +34,8 @@ const defaultConfig: AppConfig = {
   onboardingCompleted: false,
   // O5: opt-in default is false — telemetry stays off until user agrees.
   telemetryOptIn: false,
+  // L4: default landing view — 'last-visited' so existing users see no surprise.
+  defaultLandingView: 'last-visited',
 };
 
 const defaultBranchSettings: BranchManagementSettings = {
