@@ -236,6 +236,11 @@ export interface AppConfig {
   autoWatch: boolean;
   autoPush: boolean;
   onboardingCompleted: boolean;
+  /**
+   * Telemetry opt-in (Epic O / story O5). Default `false` — the user must
+   * explicitly opt-in. When `false`, no analytics or usage pings are sent.
+   */
+  telemetryOptIn: boolean;
 }
 
 // =============================================================================

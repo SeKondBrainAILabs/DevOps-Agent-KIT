@@ -32,6 +32,8 @@ const defaultConfig: AppConfig = {
   autoWatch: true,
   autoPush: true,
   onboardingCompleted: false,
+  // O5: opt-in default is false — telemetry stays off until user agrees.
+  telemetryOptIn: false,
 };
 
 const defaultBranchSettings: BranchManagementSettings = {
