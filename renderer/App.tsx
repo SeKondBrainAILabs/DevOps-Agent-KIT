@@ -13,6 +13,7 @@ import { StatusBar } from './components/layouts/StatusBar';
 import { DashboardCanvas } from './components/features/DashboardCanvas';
 import { SessionDetailView } from './components/features/SessionDetailView';
 import { UniversalCommitsView } from './components/features/UniversalCommitsView';
+import { WorkspaceBrowserView } from './components/features/WorkspaceBrowserView';
 import { HomeArtefactLeft } from './components/ui/HomeArtefactLeft';
 import { NewSessionWizard } from './components/features/NewSessionWizard';
 import { CloseSessionDialog } from './components/features/CloseSessionDialog';
@@ -203,6 +204,8 @@ export default function App(): React.ReactElement {
       onDelete={handleDeleteSession}
       onRestart={handleRestartSession}
     />
+  ) : mainView === 'workspaces' ? (
+    <WorkspaceBrowserView />
   ) : mainView === 'commits' ? (
     <UniversalCommitsView />
   ) : mainView === 'artefacts' ? (

@@ -5,7 +5,7 @@
 
 import { create } from 'zustand';
 
-export type MainView = 'dashboard' | 'commits' | 'artefacts';
+export type MainView = 'dashboard' | 'commits' | 'artefacts' | 'workspaces';
 export type SidebarTab = 'artefacts' | 'agents';
 
 interface UIState {

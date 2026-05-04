@@ -146,6 +146,9 @@ const mockApi = {
     openExternal: jest.fn() as MockFn,
     openPath: jest.fn() as MockFn,
     openTerminal: jest.fn() as MockFn,
+    openVSCode: jest.fn() as MockFn,
+    openFinder: jest.fn() as MockFn,
+    copyPath: jest.fn() as MockFn,
   },
   dialog: {
     showOpenDialog: createMockFn({ canceled: false, filePaths: ['/test/path'] }),
