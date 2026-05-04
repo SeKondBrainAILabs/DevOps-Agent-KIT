@@ -46,6 +46,22 @@ const mockApi = {
     getFilesWithStatus: createMockFn({ success: true, data: [] }),
     getDiffSummary: createMockFn({ success: true, data: { files: [] } }),
     detectSubmodules: createMockFn({ success: true, data: [] }),
+    getRepoStatus: createMockFn({
+      success: true,
+      data: {
+        repoPath: '/test/repo',
+        currentBranch: 'main',
+        ahead: 0,
+        behind: 0,
+        modifiedCount: 0,
+        stagedCount: 0,
+        untrackedCount: 0,
+        unmergedCount: 0,
+        stashCount: 0,
+        worktreeCount: 1,
+        fetchedAt: '2026-05-04T00:00:00.000Z',
+      },
+    }),
   },
   instance: {
     create: createMockFn({ success: true, data: {} }),

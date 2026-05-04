@@ -15,7 +15,14 @@ import type {
   BranchInfo,
   FileStatus,
   IpcResult,
+  RepoStatus,
 } from '../../shared/types';
+import {
+  countNonBlankLines,
+  countWorktreeListPorcelain,
+  parseLastCommit,
+  parsePorcelainV2,
+} from '../../shared/repo-status-parser';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -1392,6 +1399,60 @@ export class GitService extends BaseService {
   // ==========================================================================
   // COMMIT HISTORY OPERATIONS
   // ==========================================================================
+
+  /**
+   * Compact status snapshot keyed on raw repo path (no sessionId required).
+   * Powers the RepoStatusCard in the Workspace Browser.
+   *
+   * Issues 4 git invocations in parallel:
+   *   1) status --porcelain=v2 -b   (branch + ahead/behind + per-file counts)
+   *   2) stash list                 (count via line count)
+   *   3) worktree list --porcelain  (count via 'worktree ' header count)
+   *   4) log -1 --format=%H|%h|%s|%aI   (last commit)
+   *
+   * Each sub-call is independently fault-tolerant: if any fails (e.g. no
+   * upstream, fresh repo with no commits) we still return what we have.
+   */
+  async getRepoStatus(repoPath: string): Promise<IpcResult<RepoStatus>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await p;
+        } catch {
+          return fallback;
+        }
+      };
+
+      const [statusOut, stashOut, worktreeOut, lastCommitOut] = await Promise.all([
+        safe(this.git(['status', '--porcelain=v2', '-b'], repoPath), ''),
+        safe(this.git(['stash', 'list'], repoPath), ''),
+        safe(this.git(['worktree', 'list', '--porcelain'], repoPath), ''),
+        safe(this.git(['log', '-1', '--format=%H|%h|%s|%aI'], repoPath), ''),
+      ]);
+
+      const parsed = parsePorcelainV2(statusOut);
+      const stashCount = countNonBlankLines(stashOut);
+      const worktreeCount = countWorktreeListPorcelain(worktreeOut);
+      const lastCommit = parseLastCommit(lastCommitOut) ?? undefined;
+
+      const result: RepoStatus = {
+        repoPath,
+        currentBranch: parsed.currentBranch,
+        upstream: parsed.upstream,
+        ahead: parsed.ahead,
+        behind: parsed.behind,
+        modifiedCount: parsed.modifiedCount,
+        stagedCount: parsed.stagedCount,
+        untrackedCount: parsed.untrackedCount,
+        unmergedCount: parsed.unmergedCount,
+        stashCount,
+        worktreeCount,
+        lastCommit,
+        fetchedAt: new Date().toISOString(),
+      };
+      return result;
+    }, 'GIT_GET_REPO_STATUS_FAILED');
+  }
 
   /**
    * Get commit history for a branch since divergence from base branch

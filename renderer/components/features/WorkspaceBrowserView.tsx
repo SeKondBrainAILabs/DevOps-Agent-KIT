@@ -97,22 +97,36 @@ export function WorkspaceBrowserView(): React.ReactElement {
     return unsubscribe;
   }, [activeId]);
 
-  // Pre-fetch worktree-mode + active session count for each repo so the
-  // single-session badge + active-session count surface immediately.
+  // Pre-fetch worktree-mode + active session count + git repo status for
+  // each repo so the card shows real branch / ahead-behind / uncommitted /
+  // stash / worktree counts in addition to the C5 single-session badge.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const updates: Record<string, RepoStatusBlock> = {};
       for (const repo of repos) {
         try {
-          const [modeRes, countRes] = await Promise.all([
+          const [modeRes, countRes, statusRes] = await Promise.all([
             window.api.repoWorkspace.getWorktreeMode(repo.path),
             window.api.repoWorkspace.getActiveSessionCount(repo.path),
+            window.api.git.getRepoStatus(repo.path),
           ]);
-          updates[repo.path] = {
+          const block: RepoStatusBlock = {
             worktreeMode: modeRes.success ? modeRes.data : undefined,
             activeSessionCount: countRes.success ? countRes.data : 0,
           };
+          if (statusRes.success && statusRes.data) {
+            const s = statusRes.data;
+            block.currentBranch = s.currentBranch;
+            block.ahead = s.ahead;
+            block.behind = s.behind;
+            block.modifiedCount = s.modifiedCount;
+            block.stagedCount = s.stagedCount;
+            block.untrackedCount = s.untrackedCount;
+            block.stashCount = s.stashCount;
+            block.worktreeCount = s.worktreeCount;
+          }
+          updates[repo.path] = block;
         } catch {
           // ignore — leave block undefined
         }

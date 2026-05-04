@@ -30,6 +30,7 @@ export const IPC = {
   GIT_CREATE_WORKTREE: 'git:createWorktree',
   GIT_REMOVE_WORKTREE: 'git:removeWorktree',
   GIT_DETECT_SUBMODULES: 'git:detect-submodules',
+  GIT_GET_REPO_STATUS: 'git:get-repo-status',
   // Events (main → renderer)
   GIT_STATUS_CHANGED: 'git:statusChanged',
 
@@ -501,6 +502,7 @@ export const REQUEST_CHANNELS = [
   IPC.GIT_CREATE_WORKTREE,
   IPC.GIT_REMOVE_WORKTREE,
   IPC.GIT_DETECT_SUBMODULES,
+  IPC.GIT_GET_REPO_STATUS,
   IPC.GIT_ANALYZE_STALE_BRANCHES,
   IPC.GIT_ARCHIVE_BRANCH,
   IPC.WATCHER_START,

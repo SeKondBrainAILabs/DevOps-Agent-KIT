@@ -345,6 +345,33 @@ export interface ProjectGroupUpdateInput {
   color?: string;
 }
 
+/**
+ * Status block surfaced by `GitService.getRepoStatus(repoPath)` and
+ * consumed by the RepoStatusCard renderer atom (Day 1.5).
+ */
+export interface RepoStatus {
+  repoPath: string;
+  currentBranch: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  modifiedCount: number;
+  stagedCount: number;
+  untrackedCount: number;
+  unmergedCount: number;
+  stashCount: number;
+  worktreeCount: number;
+  /** Most recent commit info, if a log exists. */
+  lastCommit?: {
+    sha: string;
+    shortSha: string;
+    subject: string;
+    authoredAt: string;
+  };
+  /** ISO timestamp when the snapshot was produced. */
+  fetchedAt: string;
+}
+
 export interface WorkspaceScanResult {
   workspaceId: string;
   scannedAt: string;

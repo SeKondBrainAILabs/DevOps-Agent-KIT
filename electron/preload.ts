@@ -128,6 +128,10 @@ const api = {
     detectSubmodules: (repoPath: string): Promise<IpcResult<Array<{ name: string; path: string; url: string }>>> =>
       ipcRenderer.invoke(IPC.GIT_DETECT_SUBMODULES, repoPath),
 
+    /** Compact status snapshot for the RepoStatusCard (Day 1.5). */
+    getRepoStatus: (repoPath: string): Promise<IpcResult<import('../shared/types').RepoStatus>> =>
+      ipcRenderer.invoke(IPC.GIT_GET_REPO_STATUS, repoPath),
+
     getChangedFiles: (repoPath: string, baseBranch?: string): Promise<IpcResult<Array<{
       path: string;
       status: string;

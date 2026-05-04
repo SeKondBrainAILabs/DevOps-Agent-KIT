@@ -74,6 +74,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.git.detectSubmodules(repoPath);
   });
 
+  ipcMain.handle(IPC.GIT_GET_REPO_STATUS, async (_, repoPath: string) => {
+    return services.git.getRepoStatus(repoPath);
+  });
+
   // ==========================================================================
   // WATCHER HANDLERS
   // ==========================================================================
