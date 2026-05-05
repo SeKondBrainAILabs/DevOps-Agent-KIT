@@ -187,6 +187,61 @@ describe('WorkspaceBrowserView — per-repo status fetch', () => {
   });
 });
 
+describe('WorkspaceBrowserView — recent-repos fallback (Day 1.5 polish)', () => {
+  beforeEach(() => {
+    // Override default: no workspaces, but recent repos exist
+    (mockApi.workspace.list as jest.Mock).mockResolvedValue({ success: true, data: [] } as never);
+    (mockApi.workspace.getActive as jest.Mock).mockResolvedValue({ success: true, data: null } as never);
+    (mockApi.instance.getRecentRepos as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [
+        { path: '/Users/me/work/kora', name: 'kora', lastUsed: new Date(Date.now() - 60_000).toISOString() },
+        { path: '/Users/me/work/kanvas', name: 'kanvas', lastUsed: new Date().toISOString() },
+      ],
+    } as never);
+  });
+
+  it('renders cards from recentRepos when no workspace is configured', async () => {
+    render(<WorkspaceBrowserView />);
+    await waitFor(() => {
+      const grid = screen.getByTestId('repo-grid');
+      expect(within(grid).getAllByTestId('repo-status-card')).toHaveLength(2);
+    });
+    // The dedicated empty state is suppressed in favor of the fallback banner
+    expect(screen.queryByTestId('empty-state-no-workspace')).toBeNull();
+    expect(screen.getByTestId('recent-repos-banner')).toBeInTheDocument();
+  });
+
+  it('shows a pin-parent CTA targeting the common parent path', async () => {
+    render(<WorkspaceBrowserView />);
+    await waitFor(() => screen.getByTestId('recent-repos-banner'));
+    const pin = screen.getByTestId('pin-parent-button');
+    expect(pin).toHaveTextContent('Pin /Users/me/work as workspace');
+  });
+
+  it('clicking pin-parent calls workspace.add with the common parent', async () => {
+    const user = userEvent.setup();
+    render(<WorkspaceBrowserView />);
+    await waitFor(() => screen.getByTestId('pin-parent-button'));
+    await user.click(screen.getByTestId('pin-parent-button'));
+    await waitFor(() => {
+      expect(mockApi.workspace.add).toHaveBeenCalledWith({ path: '/Users/me/work' });
+    });
+  });
+
+  it('falls through to no-workspaces empty state when there are also no recent repos', async () => {
+    (mockApi.instance.getRecentRepos as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [],
+    } as never);
+    render(<WorkspaceBrowserView />);
+    await waitFor(() => {
+      expect(screen.getByTestId('empty-state-no-workspace')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('recent-repos-banner')).toBeNull();
+  });
+});
+
 describe('WorkspaceBrowserView — switching workspaces', () => {
   it('changing the active workspace persists via setActive and re-scans', async () => {
     (mockApi.workspace.list as jest.Mock).mockResolvedValue({

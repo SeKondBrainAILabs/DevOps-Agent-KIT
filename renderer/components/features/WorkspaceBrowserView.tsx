@@ -32,12 +32,57 @@ export function WorkspaceBrowserView(): React.ReactElement {
   /** Per-repoPath status block — populated lazily as we learn about repos. */
   const [statusByPath, setStatusByPath] = useState<Record<string, RepoStatusBlock>>({});
 
+  const [recentReposFallback, setRecentReposFallback] = useState<DiscoveredRepo[]>([]);
+
   const refreshWorkspaces = useCallback(async () => {
     const listRes = await window.api.workspace.list();
-    if (listRes.success && listRes.data) setWorkspaces(listRes.data);
+    const list = listRes.success && listRes.data ? listRes.data : [];
+    if (listRes.success) setWorkspaces(list);
+
     const activeRes = await window.api.workspace.getActive();
     if (activeRes.success && activeRes.data) setActiveId(activeRes.data.id);
-    else if (listRes.success && listRes.data?.length) setActiveId(listRes.data[0].id);
+    else if (list.length) setActiveId(list[0].id);
+
+    // When the user has no workspaces yet but already has recentRepos from
+    // their existing Kanvas sessions, surface those so the page isn't empty
+    // on first visit. They're not yet a real workspace — there's an inline
+    // CTA to "pin parent folder as workspace" in the empty-state UI.
+    if (list.length === 0) {
+      try {
+        const recents = await window.api.instance?.getRecentRepos?.();
+        if (recents?.success && Array.isArray(recents.data)) {
+          const now = new Date().toISOString();
+          setRecentReposFallback(
+            recents.data.map((r: { path: string; name: string; lastUsed?: string }) => ({
+              workspaceId: '__recent__',
+              path: r.path,
+              name: r.name,
+              depth: 0,
+              discoveredAt: r.lastUsed ?? now,
+            }))
+          );
+        }
+      } catch {
+        // ignore — fallback just stays empty
+      }
+    } else {
+      setRecentReposFallback([]);
+    }
+  }, []);
+
+  /** Common parent dir (POSIX) of a non-empty list of paths. */
+  const commonParent = useCallback((paths: string[]): string | null => {
+    if (paths.length === 0) return null;
+    const split = paths.map((p) => p.split('/'));
+    const head = split[0];
+    let i = 0;
+    for (; i < head.length; i++) {
+      const segment = head[i];
+      if (!split.every((parts) => parts[i] === segment)) break;
+    }
+    if (i === 0) return '/';
+    const joined = head.slice(0, i).join('/');
+    return joined || '/';
   }, []);
 
   const scanActive = useCallback(async (id: string) => {
@@ -102,9 +147,10 @@ export function WorkspaceBrowserView(): React.ReactElement {
   // stash / worktree counts in addition to the C5 single-session badge.
   useEffect(() => {
     let cancelled = false;
+    const target = workspaces.length === 0 ? recentReposFallback : repos;
     (async () => {
       const updates: Record<string, RepoStatusBlock> = {};
-      for (const repo of repos) {
+      for (const repo of target) {
         try {
           const [modeRes, countRes, statusRes] = await Promise.all([
             window.api.repoWorkspace.getWorktreeMode(repo.path),
@@ -136,15 +182,21 @@ export function WorkspaceBrowserView(): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [repos]);
+  }, [repos, recentReposFallback, workspaces.length]);
+
+  // When no workspace exists, the recent-repos fallback drives the grid
+  // so the user immediately sees their work — even before they configure
+  // a real workspace folder.
+  const showingFallback = workspaces.length === 0 && recentReposFallback.length > 0;
+  const sourceRepos = showingFallback ? recentReposFallback : repos;
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const list = q
-      ? repos.filter(
+      ? sourceRepos.filter(
           (r) => r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q)
         )
-      : [...repos];
+      : [...sourceRepos];
     const cmp = getRepoComparator(sortKey);
     list.sort((a, b) =>
       cmp(
@@ -153,7 +205,20 @@ export function WorkspaceBrowserView(): React.ReactElement {
       )
     );
     return list;
-  }, [repos, filter, sortKey]);
+  }, [sourceRepos, filter, sortKey]);
+
+  const fallbackParent = useMemo(
+    () => (showingFallback ? commonParent(recentReposFallback.map((r) => r.path)) : null),
+    [showingFallback, recentReposFallback, commonParent]
+  );
+
+  const handlePinFallbackParent = useCallback(async () => {
+    if (!fallbackParent) return;
+    const result = await window.api.workspace.add({ path: fallbackParent });
+    if (result.success && result.data) {
+      void refreshWorkspaces();
+    }
+  }, [fallbackParent, refreshWorkspaces]);
 
   return (
     <div className="flex-1 flex flex-col bg-surface" data-testid="workspace-browser">
@@ -227,7 +292,7 @@ export function WorkspaceBrowserView(): React.ReactElement {
             {error}
           </div>
         )}
-        {workspaces.length === 0 && (
+        {workspaces.length === 0 && recentReposFallback.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-text-secondary" data-testid="empty-state-no-workspace">
             <p className="mb-3">No workspaces yet.</p>
             <button
@@ -237,6 +302,37 @@ export function WorkspaceBrowserView(): React.ReactElement {
             >
               Add your first workspace
             </button>
+          </div>
+        )}
+        {showingFallback && (
+          <div
+            className="mb-3 p-3 border border-border rounded-lg bg-surface-secondary"
+            data-testid="recent-repos-banner"
+          >
+            <p className="text-sm text-text-primary mb-2">
+              Showing {recentReposFallback.length} repos from your recent sessions.
+              Add a workspace to enable folder scanning + filesystem watching.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAdd(true)}
+                className="text-sm px-3 py-1 bg-kanvas-blue text-white rounded"
+              >
+                + Add workspace
+              </button>
+              {fallbackParent && (
+                <button
+                  type="button"
+                  onClick={() => void handlePinFallbackParent()}
+                  className="text-sm px-3 py-1 border border-border rounded text-text-primary hover:bg-surface-tertiary"
+                  data-testid="pin-parent-button"
+                  title={`Create a workspace at ${fallbackParent}`}
+                >
+                  Pin {fallbackParent} as workspace
+                </button>
+              )}
+            </div>
           </div>
         )}
         {workspaces.length > 0 && filtered.length === 0 && !loading && (
