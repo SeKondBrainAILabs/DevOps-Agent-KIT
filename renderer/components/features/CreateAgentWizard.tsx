@@ -13,6 +13,12 @@ import { generateSecondaryBranchName } from '../../../shared/types';
 
 interface CreateAgentWizardProps {
   onClose: () => void;
+  /**
+   * Optional repo path to pre-select (Day 2). When provided, the wizard
+   * skips the repo-pick step and starts at 'setup'. Useful for the
+   * "New session" button on RepoStatusCard.
+   */
+  initialRepoPath?: string | null;
 }
 
 type WizardStep = 'repo' | 'setup' | 'agent' | 'multi-repo' | 'workflow' | 'prompt' | 'complete';
@@ -44,14 +50,40 @@ Key things to remember after context compaction:
 - Check .file-coordination/active-edits/ for file claims
 - Write commits to .devops-commit-<session>.msg`;
 
-export function CreateAgentWizard({ onClose }: CreateAgentWizardProps): React.ReactElement {
-  const [currentStep, setCurrentStep] = useState<WizardStep>('repo');
+export function CreateAgentWizard({ onClose, initialRepoPath }: CreateAgentWizardProps): React.ReactElement {
+  const [currentStep, setCurrentStep] = useState<WizardStep>(
+    initialRepoPath ? 'setup' : 'repo'
+  );
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Form state
-  const [repoPath, setRepoPath] = useState<string | null>(null);
+  const [repoPath, setRepoPath] = useState<string | null>(initialRepoPath ?? null);
   const [repoValidation, setRepoValidation] = useState<RepoValidation | null>(null);
+
+  // When opened with a prefill, kick off validation immediately so subsequent
+  // steps have what they need.
+  React.useEffect(() => {
+    if (!initialRepoPath) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await window.api?.instance?.validateRepo?.(initialRepoPath);
+        if (cancelled) return;
+        if (result?.success && result.data) {
+          setRepoValidation(result.data);
+          if (result.data.currentBranch) {
+            setSettings((s) => ({ ...s, baseBranch: result.data!.currentBranch || 'main' }));
+          }
+        }
+      } catch {
+        // ignore — wizard still usable, user can re-pick
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRepoPath]);
   const [agentType, setAgentType] = useState<AgentType | null>(null);
   const [settings, setSettings] = useState<AgentSettings>({
     branchName: '',

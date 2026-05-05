@@ -19,6 +19,7 @@ import { NewSessionWizard } from './components/features/NewSessionWizard';
 import { CloseSessionDialog } from './components/features/CloseSessionDialog';
 import { SettingsModal } from './components/features/SettingsModal';
 import { CreateAgentWizard } from './components/features/CreateAgentWizard';
+import { RepoDetailModal } from './components/features/RepoDetailModal';
 import { RebaseMergeErrorDialog } from './components/features/RebaseMergeErrorDialog';
 import { OnboardingModal } from './components/features/OnboardingModal';
 import { useAgentStore, selectAgentList, selectSessionById } from './store/agentStore';
@@ -50,6 +51,9 @@ export default function App(): React.ReactElement {
     setShowSettingsModal,
     showCreateAgentWizard,
     setShowCreateAgentWizard,
+    createAgentWizardRepoPath,
+    repoDetailPath,
+    closeRepoDetail,
     showOnboarding,
     setShowOnboarding,
   } = useUIStore();
@@ -251,7 +255,13 @@ export default function App(): React.ReactElement {
       )}
 
       {showCreateAgentWizard && (
-        <CreateAgentWizard onClose={() => setShowCreateAgentWizard(false)} />
+        <CreateAgentWizard
+          onClose={() => setShowCreateAgentWizard(false)}
+          initialRepoPath={createAgentWizardRepoPath}
+        />
+      )}
+      {repoDetailPath && (
+        <RepoDetailModal repoPath={repoDetailPath} onClose={closeRepoDetail} />
       )}
 
       {/* Onboarding - shown on first launch */}

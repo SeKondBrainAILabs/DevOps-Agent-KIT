@@ -19,8 +19,11 @@ import {
 } from '../../../shared/repo-sort';
 import { RepoStatusCard, type RepoStatusBlock } from './RepoStatusCard';
 import { AddWorkspaceDialog } from './AddWorkspaceDialog';
+import { useUIStore } from '../../store/uiStore';
 
 export function WorkspaceBrowserView(): React.ReactElement {
+  const openCreateAgentWizardForRepo = useUIStore((s) => s.openCreateAgentWizardForRepo);
+  const openRepoDetail = useUIStore((s) => s.openRepoDetail);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [repos, setRepos] = useState<DiscoveredRepo[]>([]);
@@ -352,12 +355,10 @@ export function WorkspaceBrowserView(): React.ReactElement {
                 key={repo.path}
                 repo={repo}
                 status={statusByPath[repo.path] ?? null}
+                onSelect={(r) => openRepoDetail(r.path)}
                 onOpenIde={() => window.api.shell?.openVSCode?.(repo.path)}
                 onOpenTerminal={() => window.api.shell?.openTerminal?.(repo.path)}
-                onNewSession={() => {
-                  // Defer to existing wizard via uiStore; consumer can wire this up.
-                  // For now: open the wizard with repoPath pre-filled if the wizard supports it.
-                }}
+                onNewSession={() => openCreateAgentWizardForRepo(repo.path)}
               />
             ))}
           </div>

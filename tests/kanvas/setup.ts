@@ -62,6 +62,8 @@ const mockApi = {
         fetchedAt: '2026-05-04T00:00:00.000Z',
       },
     }),
+    listBranchesForRepo: createMockFn({ success: true, data: [] }),
+    listWorktrees: createMockFn({ success: true, data: [] }),
   },
   instance: {
     create: createMockFn({ success: true, data: {} }),

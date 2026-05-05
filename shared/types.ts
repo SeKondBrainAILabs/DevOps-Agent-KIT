@@ -346,6 +346,25 @@ export interface ProjectGroupUpdateInput {
 }
 
 /**
+ * Branch row enriched with C7 hygiene metadata, surfaced by
+ * `GitService.listBranchesForRepo(repoPath)` and consumed by the
+ * BranchManagerPanel.
+ */
+export interface RepoBranchRow {
+  name: string;
+  /** True iff this is the currently checked-out branch. */
+  isCurrent: boolean;
+  /** Most recent commit timestamp on the branch (ms since epoch). */
+  lastCommitMs: number;
+  /** True iff the branch is fully merged into the default branch. */
+  mergedIntoDefault: boolean;
+  /** True iff the local branch's remote tracking ref is gone. */
+  deletedOnRemote: boolean;
+  /** True iff a worktree references this branch. */
+  hasWorktree: boolean;
+}
+
+/**
  * Status block surfaced by `GitService.getRepoStatus(repoPath)` and
  * consumed by the RepoStatusCard renderer atom (Day 1.5).
  */

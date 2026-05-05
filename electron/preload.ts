@@ -132,6 +132,14 @@ const api = {
     getRepoStatus: (repoPath: string): Promise<IpcResult<import('../shared/types').RepoStatus>> =>
       ipcRenderer.invoke(IPC.GIT_GET_REPO_STATUS, repoPath),
 
+    /** Branches with C7 hygiene metadata (Day 2). */
+    listBranchesForRepo: (repoPath: string): Promise<IpcResult<import('../shared/types').RepoBranchRow[]>> =>
+      ipcRenderer.invoke(IPC.GIT_LIST_BRANCHES_FOR_REPO, repoPath),
+
+    /** Worktree list keyed on repoPath (Day 2). */
+    listWorktrees: (repoPath: string): Promise<IpcResult<Array<{ path: string; branch: string; head: string; bare: boolean }>>> =>
+      ipcRenderer.invoke(IPC.GIT_LIST_WORKTREES, repoPath),
+
     getChangedFiles: (repoPath: string, baseBranch?: string): Promise<IpcResult<Array<{
       path: string;
       status: string;

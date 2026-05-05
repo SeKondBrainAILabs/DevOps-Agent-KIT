@@ -78,6 +78,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.git.getRepoStatus(repoPath);
   });
 
+  ipcMain.handle(IPC.GIT_LIST_BRANCHES_FOR_REPO, async (_, repoPath: string) => {
+    return services.git.listBranchesForRepo(repoPath);
+  });
+
   // ==========================================================================
   // WATCHER HANDLERS
   // ==========================================================================
