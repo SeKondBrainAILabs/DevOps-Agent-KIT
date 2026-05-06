@@ -15,7 +15,15 @@ import type {
   BranchInfo,
   FileStatus,
   IpcResult,
+  RepoStatus,
+  RepoBranchRow,
 } from '../../shared/types';
+import {
+  countNonBlankLines,
+  countWorktreeListPorcelain,
+  parseLastCommit,
+  parsePorcelainV2,
+} from '../../shared/repo-status-parser';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -381,6 +389,12 @@ export class GitService extends BaseService {
    */
   async getRepoRootPath(anyPath: string): Promise<string> {
     return this.git(['rev-parse', '--show-toplevel'], anyPath);
+  }
+
+  async getCurrentBranch(repoPath: string): Promise<IpcResult<string>> {
+    return this.wrap(async () => {
+      return await this.git(['branch', '--show-current'], repoPath);
+    }, 'GIT_GET_BRANCH_FAILED');
   }
 
   // ==========================================================================
@@ -759,10 +773,14 @@ export class GitService extends BaseService {
         try {
           await this.git(['stash', 'pop'], repoPath);
         } catch (error) {
-          console.warn('[GitService] Stash pop had conflicts:', error);
+          console.error('[GitService] Stash pop failed after rebase — cleaning up conflict markers:', error);
+          try {
+            await this.git(['reset', 'HEAD', '--', '.'], repoPath);
+            await this.git(['checkout', '--', '.'], repoPath);
+          } catch { /* best-effort cleanup — stash entry is preserved for manual recovery */ }
           return {
-            success: true,
-            message: 'Rebase successful but stash pop had conflicts',
+            success: false,
+            message: 'Rebase successful but stash pop had conflicts. Stashed changes were preserved — run "git stash pop" manually to recover them.',
             hadChanges,
             conflictsResolved: rebaseResult.data.conflictsResolved,
             conflictsFailed: rebaseResult.data.conflictsFailed,
@@ -865,6 +883,147 @@ export class GitService extends BaseService {
         .filter(b => b && b !== baseBranch && b !== 'master' && b !== 'main' && b !== 'development');
       return branches;
     }, 'GIT_MERGED_BRANCHES_FAILED');
+  }
+
+  /**
+   * Analyze all local branches for staleness, merged status, and zero-diff vs base.
+   * Used by the branch cleanup UI to suggest branches to archive/prune.
+   */
+  async analyzeStaleBranches(
+    repoPath: string,
+    baseBranch = 'main',
+    staleDays = 30
+  ): Promise<IpcResult<Array<{
+    name: string;
+    lastCommitDate: string;
+    lastCommitIso: string;
+    daysSinceLastCommit: number;
+    isMerged: boolean;
+    hasNoDiffVsBase: boolean;
+    aheadCount: number;
+    behindCount: number;
+    isStale: boolean;
+    safeToPrune: boolean;
+  }>>> {
+    return this.wrap(async () => {
+      // List all local branches with last-commit ISO date in one shot.
+      // Format: <branch>\t<iso-date>\t<relative-date>
+      const fmt = '%(refname:short)%09%(committerdate:iso8601)%09%(committerdate:relative)';
+      const raw = await this.git(['for-each-ref', `--format=${fmt}`, 'refs/heads/'], repoPath);
+
+      // Get merged branch list once
+      let mergedSet = new Set<string>();
+      try {
+        const merged = await this.git(['branch', '--merged', baseBranch], repoPath);
+        mergedSet = new Set(
+          merged.split('\n').map(b => b.replace('*', '').trim()).filter(Boolean)
+        );
+      } catch {
+        // baseBranch may not exist locally; try origin/<base>
+        try {
+          const merged = await this.git(['branch', '--merged', `origin/${baseBranch}`], repoPath);
+          mergedSet = new Set(
+            merged.split('\n').map(b => b.replace('*', '').trim()).filter(Boolean)
+          );
+        } catch { /* ignore */ }
+      }
+
+      // Protected branches we never report as stale
+      const protectedBranches = new Set([baseBranch, 'main', 'master', 'develop', 'development']);
+
+      const now = Date.now();
+      const results: Array<any> = [];
+
+      for (const line of raw.split('\n').filter(Boolean)) {
+        const [name, iso, relative] = line.split('\t');
+        if (!name || protectedBranches.has(name)) continue;
+
+        const ts = new Date(iso).getTime();
+        const daysSinceLastCommit = Math.floor((now - ts) / (1000 * 60 * 60 * 24));
+        const isMerged = mergedSet.has(name);
+
+        // Check ahead/behind vs base + zero-diff
+        let aheadCount = 0;
+        let behindCount = 0;
+        let hasNoDiffVsBase = false;
+        try {
+          const counts = await this.git(
+            ['rev-list', '--left-right', '--count', `${baseBranch}...${name}`],
+            repoPath
+          );
+          const [behind, ahead] = counts.trim().split('\t').map(n => parseInt(n, 10) || 0);
+          behindCount = behind;
+          aheadCount = ahead;
+
+          // Zero-diff: not just commit count — actual content. Branches that
+          // were force-rebased or only contain merge commits may have ahead>0
+          // but no real changes vs base.
+          const diff = await this.git(['diff', '--shortstat', `${baseBranch}...${name}`], repoPath);
+          hasNoDiffVsBase = diff.trim().length === 0;
+        } catch { /* base branch may not be local */ }
+
+        const isStale = daysSinceLastCommit >= staleDays;
+        const safeToPrune = isMerged || hasNoDiffVsBase;
+
+        results.push({
+          name,
+          lastCommitDate: relative,
+          lastCommitIso: iso,
+          daysSinceLastCommit,
+          isMerged,
+          hasNoDiffVsBase,
+          aheadCount,
+          behindCount,
+          isStale,
+          safeToPrune,
+        });
+      }
+
+      // Sort: safe-to-prune first, then by staleness desc
+      results.sort((a, b) => {
+        if (a.safeToPrune !== b.safeToPrune) return a.safeToPrune ? -1 : 1;
+        return b.daysSinceLastCommit - a.daysSinceLastCommit;
+      });
+
+      return results;
+    }, 'GIT_ANALYZE_STALE_BRANCHES_FAILED');
+  }
+
+  /**
+   * Archive a branch by renaming it to archive/<original-name>-<yyyymmdd>.
+   * The new branch points at the same commit, so the work isn't lost.
+   * Optionally also pushes the archive ref and deletes the original (local + remote).
+   */
+  async archiveBranch(
+    repoPath: string,
+    branchName: string,
+    options: { deleteOriginal?: boolean; deleteRemote?: boolean } = {}
+  ): Promise<IpcResult<{ archiveBranchName: string }>> {
+    return this.wrap(async () => {
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const archiveBranchName = `archive/${branchName}-${date}`;
+
+      // Create archive ref pointing at the same commit
+      await this.git(['branch', archiveBranchName, branchName], repoPath);
+
+      if (options.deleteOriginal) {
+        try {
+          await this.git(['branch', '-D', branchName], repoPath);
+        } catch (err) {
+          console.warn(`[GitService] Failed to delete local branch ${branchName}:`, err);
+        }
+      }
+
+      if (options.deleteRemote) {
+        try {
+          await this.git(['push', 'origin', '--delete', branchName], repoPath);
+        } catch {
+          // Remote branch may not exist; non-fatal
+        }
+      }
+
+      return { archiveBranchName };
+    }, 'GIT_ARCHIVE_BRANCH_FAILED');
   }
 
   /**
@@ -1241,6 +1400,162 @@ export class GitService extends BaseService {
   // ==========================================================================
   // COMMIT HISTORY OPERATIONS
   // ==========================================================================
+
+  /**
+   * Compact status snapshot keyed on raw repo path (no sessionId required).
+   * Powers the RepoStatusCard in the Workspace Browser.
+   *
+   * Issues 4 git invocations in parallel:
+   *   1) status --porcelain=v2 -b   (branch + ahead/behind + per-file counts)
+   *   2) stash list                 (count via line count)
+   *   3) worktree list --porcelain  (count via 'worktree ' header count)
+   *   4) log -1 --format=%H|%h|%s|%aI   (last commit)
+   *
+   * Each sub-call is independently fault-tolerant: if any fails (e.g. no
+   * upstream, fresh repo with no commits) we still return what we have.
+   */
+  async getRepoStatus(repoPath: string): Promise<IpcResult<RepoStatus>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await p;
+        } catch {
+          return fallback;
+        }
+      };
+
+      const [statusOut, stashOut, worktreeOut, lastCommitOut] = await Promise.all([
+        safe(this.git(['status', '--porcelain=v2', '-b'], repoPath), ''),
+        safe(this.git(['stash', 'list'], repoPath), ''),
+        safe(this.git(['worktree', 'list', '--porcelain'], repoPath), ''),
+        safe(this.git(['log', '-1', '--format=%H|%h|%s|%aI'], repoPath), ''),
+      ]);
+
+      const parsed = parsePorcelainV2(statusOut);
+      const stashCount = countNonBlankLines(stashOut);
+      const worktreeCount = countWorktreeListPorcelain(worktreeOut);
+      const lastCommit = parseLastCommit(lastCommitOut) ?? undefined;
+
+      const result: RepoStatus = {
+        repoPath,
+        currentBranch: parsed.currentBranch,
+        upstream: parsed.upstream,
+        ahead: parsed.ahead,
+        behind: parsed.behind,
+        modifiedCount: parsed.modifiedCount,
+        stagedCount: parsed.stagedCount,
+        untrackedCount: parsed.untrackedCount,
+        unmergedCount: parsed.unmergedCount,
+        stashCount,
+        worktreeCount,
+        lastCommit,
+        fetchedAt: new Date().toISOString(),
+      };
+      return result;
+    }, 'GIT_GET_REPO_STATUS_FAILED');
+  }
+
+  /**
+   * Enumerate branches with C7 hygiene metadata, keyed on raw repoPath.
+   *
+   * Issues 4 git invocations:
+   *   1) symbolic-ref HEAD               — current branch (may fail in detached)
+   *   2) for-each-ref refs/heads ...     — name + last-commit timestamp
+   *   3) branch --merged <default>       — set of merged branches
+   *   4) branch -r --format ...          — set of remote branch names
+   *   5) worktree list --porcelain       — set of branch names that have worktrees
+   *
+   * Default branch is detected via `symbolic-ref refs/remotes/origin/HEAD`
+   * with `'main'` as the fallback.
+   */
+  async listBranchesForRepo(repoPath: string): Promise<IpcResult<RepoBranchRow[]>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await p;
+        } catch {
+          return fallback;
+        }
+      };
+
+      // Default branch detection
+      let defaultBranch = 'main';
+      const headRef = await safe(
+        this.git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath),
+        ''
+      );
+      if (headRef.startsWith('origin/')) defaultBranch = headRef.slice('origin/'.length);
+
+      const [branchListOut, currentOut, mergedOut, remoteOut, worktreeOut] = await Promise.all([
+        safe(
+          this.git(
+            [
+              'for-each-ref',
+              '--format=%(refname:short)|%(committerdate:unix)',
+              'refs/heads',
+            ],
+            repoPath
+          ),
+          ''
+        ),
+        safe(this.git(['symbolic-ref', '--short', '-q', 'HEAD'], repoPath), ''),
+        safe(this.git(['branch', '--format=%(refname:short)', '--merged', defaultBranch], repoPath), ''),
+        safe(this.git(['branch', '-r', '--format=%(refname:short)'], repoPath), ''),
+        safe(this.git(['worktree', 'list', '--porcelain'], repoPath), ''),
+      ]);
+
+      const currentBranch = currentOut.trim();
+      const mergedSet = new Set(
+        mergedOut
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+      const remoteSet = new Set(
+        remoteOut
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+      // Worktree porcelain blocks: `worktree <path>` then `branch refs/heads/<name>`
+      const worktreeBranches = new Set<string>();
+      for (const line of worktreeOut.split('\n')) {
+        if (line.startsWith('branch refs/heads/')) {
+          worktreeBranches.add(line.slice('branch refs/heads/'.length).trim());
+        }
+      }
+
+      const rows: RepoBranchRow[] = branchListOut
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [name, ts] = line.split('|');
+          const lastCommitMs = Number(ts) > 0 ? Number(ts) * 1000 : 0;
+          // Heuristic: deleted-on-remote = our branch had a tracking remote in
+          // the past (origin/<name> was once a remote), but origin/<name> isn't
+          // present now. We approximate "had remote in the past" by checking
+          // whether origin/<name> is present right now: if NOT present and
+          // origin/HEAD points at <defaultBranch>, only flag user's own
+          // branches that match a known prefix or have no remote at all.
+          // Simplest defensible signal: NOT present in remoteSet AND it's not
+          // the default branch itself.
+          const remoteRef = `origin/${name}`;
+          const deletedOnRemote = !remoteSet.has(remoteRef) && name !== defaultBranch;
+          return {
+            name,
+            isCurrent: name === currentBranch,
+            lastCommitMs,
+            mergedIntoDefault: mergedSet.has(name),
+            deletedOnRemote,
+            hasWorktree: worktreeBranches.has(name),
+          };
+        })
+        .sort((a, b) => b.lastCommitMs - a.lastCommitMs || a.name.localeCompare(b.name));
+
+      return rows;
+    }, 'GIT_LIST_BRANCHES_FOR_REPO_FAILED');
+  }
 
   /**
    * Get commit history for a branch since divergence from base branch

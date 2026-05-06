@@ -74,6 +74,14 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.git.detectSubmodules(repoPath);
   });
 
+  ipcMain.handle(IPC.GIT_GET_REPO_STATUS, async (_, repoPath: string) => {
+    return services.git.getRepoStatus(repoPath);
+  });
+
+  ipcMain.handle(IPC.GIT_LIST_BRANCHES_FOR_REPO, async (_, repoPath: string) => {
+    return services.git.listBranchesForRepo(repoPath);
+  });
+
   // ==========================================================================
   // WATCHER HANDLERS
   // ==========================================================================
@@ -144,6 +152,39 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.config.hasCredential(key);
   });
 
+  // Per-repo workspace settings (C5 Single-Session Mode)
+  ipcMain.handle(IPC.REPO_GET_WORKTREE_MODE, async (_, repoPath: string) => {
+    return { success: true, data: services.config.getRepoWorktreeMode(repoPath) };
+  });
+
+  ipcMain.handle(IPC.REPO_SET_WORKTREE_MODE, async (_, repoPath: string, mode: 'in-place' | 'worktree') => {
+    services.config.setRepoWorktreeMode(repoPath, mode);
+    return { success: true };
+  });
+
+  ipcMain.handle(IPC.REPO_GET_ACTIVE_SESSION_COUNT, async (_, repoPath: string) => {
+    return services.agentInstance.getActiveSessionCountForRepo(repoPath);
+  });
+
+  // Workspaces (Epic A / story A1)
+  ipcMain.handle(IPC.WORKSPACE_LIST, async () => services.workspace.list());
+  ipcMain.handle(IPC.WORKSPACE_GET, async (_, id: string) => services.workspace.get(id));
+  ipcMain.handle(IPC.WORKSPACE_ADD, async (_, input) => services.workspace.add(input));
+  ipcMain.handle(IPC.WORKSPACE_UPDATE, async (_, id: string, patch) => services.workspace.update(id, patch));
+  ipcMain.handle(IPC.WORKSPACE_REMOVE, async (_, id: string) => services.workspace.remove(id));
+  ipcMain.handle(IPC.WORKSPACE_GET_ACTIVE, async () => services.workspace.getActive());
+  ipcMain.handle(IPC.WORKSPACE_SET_ACTIVE, async (_, id: string | null) => services.workspace.setActive(id));
+  ipcMain.handle(IPC.WORKSPACE_SCAN, async (_, id: string) => services.workspace.scan(id));
+  ipcMain.handle(IPC.WORKSPACE_WATCH_START, async (_, id: string) => services.workspace.startWatching(id));
+  ipcMain.handle(IPC.WORKSPACE_WATCH_STOP, async (_, id: string) => services.workspace.stopWatching(id));
+
+  // Project Groups (Epic F / story F1)
+  ipcMain.handle(IPC.PROJECT_GROUP_LIST, async () => services.projectGroup.list());
+  ipcMain.handle(IPC.PROJECT_GROUP_GET, async (_, id: string) => services.projectGroup.get(id));
+  ipcMain.handle(IPC.PROJECT_GROUP_ADD, async (_, input) => services.projectGroup.add(input));
+  ipcMain.handle(IPC.PROJECT_GROUP_UPDATE, async (_, id: string, patch) => services.projectGroup.update(id, patch));
+  ipcMain.handle(IPC.PROJECT_GROUP_REMOVE, async (_, id: string) => services.projectGroup.remove(id));
+
   // ==========================================================================
   // AI HANDLERS (streaming uses on/send pattern)
   // ==========================================================================
@@ -169,6 +210,15 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.handle(IPC.AI_LIST_MODELS, async () => {
     return { success: true, data: services.ai.getAvailableModels() };
+  });
+
+  ipcMain.handle(IPC.AI_IS_CONFIGURED, async () => {
+    return { success: true, data: services.ai.hasApiKey() };
+  });
+
+  ipcMain.handle(IPC.AI_HEALTH_CHECK, async () => {
+    const result = await services.ai.healthCheck();
+    return { success: true, data: result };
   });
 
   ipcMain.on(IPC.AI_STREAM_START, async (_, messages, modelOverride?: string) => {
@@ -562,6 +612,17 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.handle(IPC.GIT_GET_COMMIT_DIFF, async (_, repoPath: string, commitHash: string) => {
     return services.git.getCommitDiff(repoPath, commitHash);
+  });
+
+  ipcMain.handle(IPC.GIT_ANALYZE_STALE_BRANCHES, async (_, repoPath: string, baseBranch?: string, staleDays?: number) => {
+    return services.git.analyzeStaleBranches(repoPath, baseBranch, staleDays);
+  });
+
+  ipcMain.handle(IPC.GIT_ARCHIVE_BRANCH, async (_, repoPath: string, branchName: string, options: {
+    deleteOriginal?: boolean;
+    deleteRemote?: boolean;
+  }) => {
+    return services.git.archiveBranch(repoPath, branchName, options);
   });
 
   // ==========================================================================

@@ -236,6 +236,186 @@ export interface AppConfig {
   autoWatch: boolean;
   autoPush: boolean;
   onboardingCompleted: boolean;
+  /**
+   * Telemetry opt-in (Epic O / story O5). Default `false` — the user must
+   * explicitly opt-in. When `false`, no analytics or usage pings are sent.
+   */
+  telemetryOptIn: boolean;
+  /**
+   * Default landing view shown on app launch (Epic L / story L4).
+   * One of 'morning-check' | 'workspace-browser' | 'last-visited'.
+   */
+  defaultLandingView: 'morning-check' | 'workspace-browser' | 'last-visited';
+}
+
+// =============================================================================
+// WORKSPACE (Epic A — multi-workspace, multi-repo discovery)
+// =============================================================================
+
+/**
+ * A user-defined root folder containing one or more repositories
+ * (e.g. `/Users/x/work`). Workspaces can be added, renamed, removed.
+ */
+export interface Workspace {
+  /** Stable ID (UUID-ish). Persisted across renames. */
+  id: string;
+  /** Human-friendly name; defaults to the basename of `path`. */
+  name: string;
+  /** Absolute filesystem path. */
+  path: string;
+  /** Recursive scan depth (default 2). */
+  scanDepth: number;
+  /** Glob patterns to skip during scans (in addition to defaults). */
+  ignoreGlobs: string[];
+  /** ISO timestamp of when the workspace was added. */
+  createdAt: string;
+  /** ISO timestamp of the most-recent successful scan. */
+  lastScannedAt?: string;
+}
+
+export interface WorkspaceCreateInput {
+  path: string;
+  name?: string;
+  scanDepth?: number;
+  ignoreGlobs?: string[];
+}
+
+export interface WorkspaceUpdateInput {
+  name?: string;
+  scanDepth?: number;
+  ignoreGlobs?: string[];
+}
+
+/**
+ * A repository discovered by `WorkspaceService.scanWorkspace` (story A2).
+ * Each row maps to one Git repo found under a workspace folder.
+ */
+export interface DiscoveredRepo {
+  /** Workspace this repo belongs to. */
+  workspaceId: string;
+  /** Absolute path to the repo root (the directory containing `.git`). */
+  path: string;
+  /** Basename of the repo path. */
+  name: string;
+  /** Depth at which this repo was discovered, relative to workspace root. */
+  depth: number;
+  /** ISO timestamp of discovery. */
+  discoveredAt: string;
+}
+
+/**
+ * Event fired by the WorkspaceService filesystem watcher (story A3).
+ * Renderer subscribes via `window.api.workspace.onRepoChange(...)`.
+ */
+export interface WorkspaceRepoChangeEvent {
+  workspaceId: string;
+  kind: 'repo-added' | 'repo-removed';
+  repoPath: string;
+  depth: number;
+  at: string;
+}
+
+/**
+ * Project Group (Epic F / story F1).
+ *
+ * A user-defined logical grouping of repos (e.g. "Core Stack"). Persistent —
+ * lives outside any individual session — so it can power cross-repo views,
+ * branch-sync visualizers, and bulk actions.
+ */
+export interface ProjectGroup {
+  id: string;
+  name: string;
+  /** Member repo paths (absolute). */
+  repoPaths: string[];
+  /** Optional UI accent color (hex string). */
+  color?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectGroupCreateInput {
+  name: string;
+  repoPaths: string[];
+  color?: string;
+}
+
+export interface ProjectGroupUpdateInput {
+  name?: string;
+  repoPaths?: string[];
+  color?: string;
+}
+
+/**
+ * Branch row enriched with C7 hygiene metadata, surfaced by
+ * `GitService.listBranchesForRepo(repoPath)` and consumed by the
+ * BranchManagerPanel.
+ */
+export interface RepoBranchRow {
+  name: string;
+  /** True iff this is the currently checked-out branch. */
+  isCurrent: boolean;
+  /** Most recent commit timestamp on the branch (ms since epoch). */
+  lastCommitMs: number;
+  /** True iff the branch is fully merged into the default branch. */
+  mergedIntoDefault: boolean;
+  /** True iff the local branch's remote tracking ref is gone. */
+  deletedOnRemote: boolean;
+  /** True iff a worktree references this branch. */
+  hasWorktree: boolean;
+}
+
+/**
+ * Status block surfaced by `GitService.getRepoStatus(repoPath)` and
+ * consumed by the RepoStatusCard renderer atom (Day 1.5).
+ */
+export interface RepoStatus {
+  repoPath: string;
+  currentBranch: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  modifiedCount: number;
+  stagedCount: number;
+  untrackedCount: number;
+  unmergedCount: number;
+  stashCount: number;
+  worktreeCount: number;
+  /** Most recent commit info, if a log exists. */
+  lastCommit?: {
+    sha: string;
+    shortSha: string;
+    subject: string;
+    authoredAt: string;
+  };
+  /** ISO timestamp when the snapshot was produced. */
+  fetchedAt: string;
+}
+
+export interface WorkspaceScanResult {
+  workspaceId: string;
+  scannedAt: string;
+  durationMs: number;
+  repoCount: number;
+  repos: DiscoveredRepo[];
+}
+
+// =============================================================================
+// PER-REPO WORKSPACE SETTINGS
+// =============================================================================
+
+/**
+ * Worktree mode for a repo.
+ * - 'worktree' (default): each session gets an isolated git worktree;
+ *   parallel sessions are allowed.
+ * - 'in-place': agent works on a branch in the main repo (Docker hot-reload friendly);
+ *   only ONE active session is permitted per repo (Single-Session Mode).
+ */
+export type WorktreeMode = 'in-place' | 'worktree';
+
+export interface RepoWorkspaceConfig {
+  repoPath: string;
+  worktreeMode: WorktreeMode;
+  lastUpdated: string;
 }
 
 export interface BranchManagementSettings {

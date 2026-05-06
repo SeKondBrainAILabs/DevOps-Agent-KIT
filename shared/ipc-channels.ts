@@ -30,6 +30,8 @@ export const IPC = {
   GIT_CREATE_WORKTREE: 'git:createWorktree',
   GIT_REMOVE_WORKTREE: 'git:removeWorktree',
   GIT_DETECT_SUBMODULES: 'git:detect-submodules',
+  GIT_GET_REPO_STATUS: 'git:get-repo-status',
+  GIT_LIST_BRANCHES_FOR_REPO: 'git:list-branches-for-repo',
   // Events (main → renderer)
   GIT_STATUS_CHANGED: 'git:statusChanged',
 
@@ -64,6 +66,32 @@ export const IPC = {
   CREDENTIAL_SET: 'credential:set',
   CREDENTIAL_HAS: 'credential:has',
 
+  // Per-repo workspace settings (C5 Single-Session Mode)
+  REPO_GET_WORKTREE_MODE: 'repo:get-worktree-mode',
+  REPO_SET_WORKTREE_MODE: 'repo:set-worktree-mode',
+  REPO_GET_ACTIVE_SESSION_COUNT: 'repo:get-active-session-count',
+
+  // Workspaces (Epic A — multi-workspace, multi-repo discovery)
+  WORKSPACE_LIST: 'workspace:list',
+  WORKSPACE_GET: 'workspace:get',
+  WORKSPACE_ADD: 'workspace:add',
+  WORKSPACE_UPDATE: 'workspace:update',
+  WORKSPACE_REMOVE: 'workspace:remove',
+  WORKSPACE_GET_ACTIVE: 'workspace:get-active',
+  WORKSPACE_SET_ACTIVE: 'workspace:set-active',
+  WORKSPACE_SCAN: 'workspace:scan',
+  WORKSPACE_WATCH_START: 'workspace:watch:start',
+  WORKSPACE_WATCH_STOP: 'workspace:watch:stop',
+  // main → renderer event
+  WORKSPACE_REPO_CHANGE: 'workspace:repo-change',
+
+  // Project Groups (Epic F / story F1)
+  PROJECT_GROUP_LIST: 'project-group:list',
+  PROJECT_GROUP_GET: 'project-group:get',
+  PROJECT_GROUP_ADD: 'project-group:add',
+  PROJECT_GROUP_UPDATE: 'project-group:update',
+  PROJECT_GROUP_REMOVE: 'project-group:remove',
+
   // ==========================================================================
   // AI/CHAT CHANNELS
   // ==========================================================================
@@ -80,6 +108,8 @@ export const IPC = {
   AI_GET_MODE: 'ai:get-mode',
   AI_RELOAD_CONFIG: 'ai:reload-config',
   AI_GET_CONFIG_SOURCES: 'ai:get-config-sources',
+  AI_IS_CONFIGURED: 'ai:is-configured',
+  AI_HEALTH_CHECK: 'ai:health-check',
   // Events (main → renderer)
   AI_STREAM_CHUNK: 'ai:stream:chunk',
   AI_STREAM_END: 'ai:stream:end',
@@ -185,6 +215,8 @@ export const IPC = {
   // Get commit history and detailed diffs for session tracking
   // ==========================================================================
   GIT_GET_COMMIT_HISTORY: 'git:get-commit-history',
+  GIT_ANALYZE_STALE_BRANCHES: 'git:analyze-stale-branches',
+  GIT_ARCHIVE_BRANCH: 'git:archive-branch',
   GIT_GET_COMMIT_DIFF: 'git:get-commit-diff',
 
   // ==========================================================================
@@ -471,6 +503,11 @@ export const REQUEST_CHANNELS = [
   IPC.GIT_CREATE_WORKTREE,
   IPC.GIT_REMOVE_WORKTREE,
   IPC.GIT_DETECT_SUBMODULES,
+  IPC.GIT_GET_REPO_STATUS,
+  IPC.GIT_LIST_BRANCHES_FOR_REPO,
+  IPC.GIT_LIST_WORKTREES,
+  IPC.GIT_ANALYZE_STALE_BRANCHES,
+  IPC.GIT_ARCHIVE_BRANCH,
   IPC.WATCHER_START,
   IPC.WATCHER_STOP,
   IPC.WATCHER_STATUS,
@@ -485,12 +522,32 @@ export const REQUEST_CHANNELS = [
   IPC.CREDENTIAL_GET,
   IPC.CREDENTIAL_SET,
   IPC.CREDENTIAL_HAS,
+  IPC.REPO_GET_WORKTREE_MODE,
+  IPC.REPO_SET_WORKTREE_MODE,
+  IPC.REPO_GET_ACTIVE_SESSION_COUNT,
+  IPC.WORKSPACE_LIST,
+  IPC.WORKSPACE_GET,
+  IPC.WORKSPACE_ADD,
+  IPC.WORKSPACE_UPDATE,
+  IPC.WORKSPACE_REMOVE,
+  IPC.WORKSPACE_GET_ACTIVE,
+  IPC.WORKSPACE_SET_ACTIVE,
+  IPC.WORKSPACE_SCAN,
+  IPC.WORKSPACE_WATCH_START,
+  IPC.WORKSPACE_WATCH_STOP,
+  IPC.PROJECT_GROUP_LIST,
+  IPC.PROJECT_GROUP_GET,
+  IPC.PROJECT_GROUP_ADD,
+  IPC.PROJECT_GROUP_UPDATE,
+  IPC.PROJECT_GROUP_REMOVE,
   IPC.AI_CHAT,
   IPC.AI_CHAT_WITH_MODE,
   IPC.AI_LIST_MODES,
   IPC.AI_GET_MODE,
   IPC.AI_RELOAD_CONFIG,
   IPC.AI_GET_CONFIG_SOURCES,
+  IPC.AI_IS_CONFIGURED,
+  IPC.AI_HEALTH_CHECK,
   IPC.LOG_GET,
   IPC.LOG_CLEAR,
   IPC.DIALOG_OPEN_DIRECTORY,

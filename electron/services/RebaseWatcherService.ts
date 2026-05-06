@@ -492,12 +492,18 @@ export class RebaseWatcherService extends BaseService {
     }
 
     // Otherwise create a transient state for this single rebase
+    // Resolve actual branch name so AI analysis gets proper context
+    let currentBranch = '';
+    try {
+      currentBranch = (await this.gitService.getCurrentBranch(repoPath))?.data || '';
+    } catch { /* fall through — empty is acceptable but not ideal */ }
+
     const state: WatchState = {
       config: {
         sessionId,
         repoPath,
         baseBranch,
-        currentBranch: '',
+        currentBranch,
         rebaseFrequency: 'on-demand',
         pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
       },

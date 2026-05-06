@@ -12,6 +12,7 @@ import type { AgentInstance, ContractType, Contract, ActivityLogEntry, Discovere
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
+import { useConflictStore } from '../../store/conflictStore';
 import { CommitsTab } from './CommitsTab';
 import { McpTab } from './McpTab';
 
@@ -110,6 +111,19 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [editingBaseBranch, setEditingBaseBranch] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
+  const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
+  const showConflictDialog = useConflictStore((state) => state.showDialog);
+
+  useEffect(() => {
+    const check = () => {
+      window.api?.ai?.healthCheck?.().then((result) => {
+        setAiHealth(result.success && result.data ? result.data : { online: false, configured: false, error: 'Health check failed' });
+      }).catch(() => setAiHealth({ online: false, configured: false, error: 'Unreachable' }));
+    };
+    check();
+    const interval = setInterval(check, 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Load instance data to get the prompt
   useEffect(() => {
@@ -204,17 +218,31 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
 
       if (rebaseResult?.success && rebaseResult.data) {
         const resultMessage = rebaseResult.data.message || (rebaseResult.data.success ? 'Synced successfully' : 'Rebase failed');
-        setSyncResult({
-          success: rebaseResult.data.success,
-          message: resultMessage,
-        });
 
-        // Show popup only for failures; success always auto-clears
-        if (!rebaseResult.data.success) {
-          setShowErrorPopup(true);
-        } else {
-          // Clear success message after 5 seconds
+        if (rebaseResult.data.success) {
+          setSyncResult({ success: true, message: resultMessage });
           setTimeout(() => setSyncResult(null), 5000);
+        } else {
+          // Route unresolved-conflict failures to the rich RebaseMergeErrorDialog so
+          // the user has auto-fix-with-backup / manual-fix paths instead of a
+          // dead-end Retry button that just re-hits the same wall.
+          const failed = (rebaseResult.data as { conflictsFailed?: number }).conflictsFailed ?? 0;
+          const resolutions = (rebaseResult.data as { resolutions?: Array<{ file: string }> }).resolutions ?? [];
+          const isConflictFailure = failed > 0 || resolutions.length > 0 || /conflict/i.test(resultMessage);
+
+          if (isConflictFailure) {
+            showConflictDialog({
+              sessionId: session.sessionId,
+              repoPath,
+              baseBranch,
+              currentBranch: session.branchName || '',
+              conflictedFiles: resolutions.map((r) => r.file),
+              errorMessage: resultMessage,
+            });
+          } else {
+            setSyncResult({ success: false, message: resultMessage });
+            setShowErrorPopup(true);
+          }
         }
       } else {
         const errorMessage = rebaseResult?.error?.message || 'Rebase failed - check console for details';
@@ -340,6 +368,21 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
         </div>
       )}
 
+      {/* Offline / Not Connected Banner */}
+      {aiHealth && !aiHealth.online && (
+        <div className="px-4 py-2 bg-red-50 border-b border-red-200 flex items-center gap-2 text-sm text-red-800">
+          <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636a9 9 0 010 12.728M5.636 18.364a9 9 0 010-12.728M15.536 8.464a5 5 0 010 7.072M8.464 15.536a5 5 0 010-7.072" />
+          </svg>
+          <span>
+            {!aiHealth.configured
+              ? 'Not connected — Groq API key not configured. Go to Settings to add your API key.'
+              : `Not connected — unable to reach AI service. ${aiHealth.error || 'Check your internet connection.'}`
+            }
+          </span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="p-4 border-b border-border">
         <div className="flex items-center gap-3 mb-3">
@@ -419,7 +462,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                     d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
                 </svg>
-                {syncing ? 'Syncing...' : 'Sync'}
+                {syncing ? 'Syncing...' : 'Sync (rebase)'}
               </button>
             </div>
 

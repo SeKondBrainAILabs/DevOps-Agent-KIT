@@ -5,14 +5,25 @@
  */
 
 import { BaseService } from './BaseService';
-import type { AppConfig, BranchManagementSettings, Credentials, IpcResult } from '../../shared/types';
+import type {
+  AppConfig,
+  BranchManagementSettings,
+  Credentials,
+  IpcResult,
+  RepoWorkspaceConfig,
+  WorktreeMode,
+} from '../../shared/types';
 import Store from 'electron-store';
 
 interface StoreSchema {
   config: AppConfig;
   credentials: Credentials;
   branchSettings: BranchManagementSettings;
+  /** Per-repo workspace settings keyed by absolute repo path. */
+  repoSettings: Record<string, RepoWorkspaceConfig>;
 }
+
+const DEFAULT_WORKTREE_MODE: WorktreeMode = 'worktree';
 
 const defaultConfig: AppConfig = {
   theme: 'dark',
@@ -21,6 +32,10 @@ const defaultConfig: AppConfig = {
   autoWatch: true,
   autoPush: true,
   onboardingCompleted: false,
+  // O5: opt-in default is false — telemetry stays off until user agrees.
+  telemetryOptIn: false,
+  // L4: default landing view — 'last-visited' so existing users see no surprise.
+  defaultLandingView: 'last-visited',
 };
 
 const defaultBranchSettings: BranchManagementSettings = {
@@ -43,6 +58,7 @@ export class ConfigService extends BaseService {
         config: defaultConfig,
         credentials: {},
         branchSettings: defaultBranchSettings,
+        repoSettings: {},
       },
       // Simple obfuscation for credentials (not strong encryption)
       encryptionKey: 'sekondbrain-kanvas-v1',
@@ -141,6 +157,42 @@ export class ConfigService extends BaseService {
   setBranchSettings(settings: Partial<BranchManagementSettings>): void {
     const current = this.store.get('branchSettings');
     this.store.set('branchSettings', { ...current, ...settings });
+  }
+
+  // ==========================================================================
+  // PER-REPO WORKSPACE SETTINGS (C5 Single-Session Mode)
+  // ==========================================================================
+
+  /**
+   * Get the worktree mode for a repo.
+   * Defaults to 'worktree' (multi-session) when not previously set.
+   */
+  getRepoWorktreeMode(repoPath: string): WorktreeMode {
+    const settings = this.store.get('repoSettings');
+    return settings?.[repoPath]?.worktreeMode ?? DEFAULT_WORKTREE_MODE;
+  }
+
+  /**
+   * Set the worktree mode for a repo.
+   * 'in-place' enables Single-Session Mode (system blocks creating a 2nd active session).
+   * 'worktree' enables multi-session mode (default).
+   */
+  setRepoWorktreeMode(repoPath: string, mode: WorktreeMode): void {
+    const settings = { ...(this.store.get('repoSettings') ?? {}) };
+    settings[repoPath] = {
+      repoPath,
+      worktreeMode: mode,
+      lastUpdated: new Date().toISOString(),
+    };
+    this.store.set('repoSettings', settings);
+  }
+
+  /**
+   * Get the full per-repo workspace config record (or null if not set).
+   */
+  getRepoConfig(repoPath: string): RepoWorkspaceConfig | null {
+    const settings = this.store.get('repoSettings');
+    return settings?.[repoPath] ?? null;
   }
 
   // ==========================================================================

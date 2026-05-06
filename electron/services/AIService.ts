@@ -15,6 +15,8 @@ import Groq from 'groq-sdk';
 export const GROQ_MODELS = {
   'llama-3.3-70b': 'llama-3.3-70b-versatile',
   'kimi-k2': 'moonshotai/kimi-k2-instruct-0905',
+  'gpt-oss-120b': 'openai/gpt-oss-120b',
+  'gpt-oss-20b': 'openai/gpt-oss-20b',
   'qwen-qwq-32b': 'qwen-qwq-32b',
   'qwen3-32b': 'qwen/qwen3-32b',
   'llama-3.1-8b': 'llama-3.1-8b-instant',
@@ -70,6 +72,8 @@ export class AIService extends BaseService {
     return [
       { key: 'llama-3.3-70b', id: GROQ_MODELS['llama-3.3-70b'], description: 'Llama 3.3 70B - General purpose' },
       { key: 'kimi-k2', id: GROQ_MODELS['kimi-k2'], description: 'Kimi K2 - Best for coding/agentic (256K context)' },
+      { key: 'gpt-oss-120b', id: GROQ_MODELS['gpt-oss-120b'], description: 'GPT-OSS 120B - OpenAI open-weight, strong reasoning' },
+      { key: 'gpt-oss-20b', id: GROQ_MODELS['gpt-oss-20b'], description: 'GPT-OSS 20B - OpenAI open-weight, faster' },
       { key: 'qwen3-32b', id: GROQ_MODELS['qwen3-32b'], description: 'Qwen 3 32B - Good for reasoning/code' },
       { key: 'llama-3.1-8b', id: GROQ_MODELS['llama-3.1-8b'], description: 'Llama 3.1 8B - Fast/lightweight' },
     ];
@@ -168,6 +172,19 @@ export class AIService extends BaseService {
    */
   hasApiKey(): boolean {
     return !!this.configService.getCredentialValue('groqApiKey');
+  }
+
+  async healthCheck(): Promise<{ online: boolean; configured: boolean; error?: string }> {
+    const configured = this.hasApiKey();
+    if (!configured) return { online: false, configured: false, error: 'API key not configured' };
+    try {
+      const client = this.getClient();
+      await client.models.list();
+      return { online: true, configured: true };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      return { online: false, configured: true, error: msg };
+    }
   }
 
   // ==========================================================================
