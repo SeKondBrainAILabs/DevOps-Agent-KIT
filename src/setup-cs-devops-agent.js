@@ -170,7 +170,7 @@ async function checkContractsExist(projectRoot) {
     // Find all files that look like contracts
     // We look for files containing "CONTRACT" in the name, excluding typical ignores
     // Use -iname for case-insensitive matching
-    const findCommand = `find "${projectRoot}" -type f \\( -iname "*CONTRACT*.md" -o -iname "*CONTRACT*.json" \\) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/local_deploy/*"`;
+    const findCommand = `find "${projectRoot}" -type f \( -iname "*CONTRACT*.md" -o -iname "*CONTRACT*.json" \) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.worktrees/*"`;
     
     let files = [];
     try {
@@ -853,7 +853,7 @@ if (mode === 'production') {
       `.${agentName.toLowerCase()}-commit-msg`,
       '**/Archive/',
       '*.backup.*',
-      'local_deploy/',
+      '.worktrees/',
       '.file-coordination/'
     ];
     
@@ -1189,7 +1189,7 @@ ${colors.bright}Why:${colors.reset} Customizes file names (e.g., .warp-commit-ms
       explain(`
 ${colors.bright}Save these settings for future sessions?${colors.reset}
 • ${colors.bright}Global:${colors.reset} Saves to ~/.devops-agent/settings.json (applies to all projects)
-• ${colors.bright}Project:${colors.reset} Saves to local_deploy/project-settings.json (this project only)
+• ${colors.bright}Project:${colors.reset} Saves to .worktrees/project-settings.json (this project only)
       `);
       
       const saveChoice = await choose('Where should we save these settings?', [
@@ -1228,7 +1228,7 @@ ${colors.bright}Save these settings for future sessions?${colors.reset}
       explain(`
 ${colors.bright}What:${colors.reset} API Key for Groq (llama-3.1-70b-versatile)
 ${colors.bright}Why:${colors.reset} Required for AI-Optimized Contract Automation System
-${colors.bright}Security:${colors.reset} Stored locally in ${colors.yellow}local_deploy/credentials.json${colors.reset} (gitignored)
+${colors.bright}Security:${colors.reset} Stored locally in ${colors.yellow}~/.devops-agent/credentials.json${colors.reset} (gitignored)
       `);
 
       if (hasKey) {

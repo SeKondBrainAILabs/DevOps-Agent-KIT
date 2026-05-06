@@ -84,8 +84,8 @@ CLI_README.md
 *.local.*
 local-config/
 
-# Local deployment folder (contains deployment scripts and runtime files)
-local_deploy/
+# Worktrees directory (isolated development worktrees)
+.worktrees/
 
 # DevOps session management files
 .devops-commit-*.msg

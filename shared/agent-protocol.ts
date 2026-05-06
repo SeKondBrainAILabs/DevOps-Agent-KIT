@@ -163,6 +163,34 @@ export interface KanvasCommandMessage {
  */
 export const DEVOPS_KIT_DIR = '.S9N_KIT_DevOpsAgent';
 
+// =============================================================================
+// WORKTREE PATHS
+// Standard .worktrees/ directory at repo root for isolated development
+// =============================================================================
+
+export const WORKTREE_PATHS = {
+  /** Base directory for all worktree-related data */
+  baseDir: '.worktrees',
+
+  /** Git worktree checkouts (one subdirectory per session) */
+  worktreesDir: '.worktrees/worktrees',
+
+  /** Session metadata files */
+  sessionsDir: '.worktrees/sessions',
+
+  /** Session lock files */
+  locksDir: '.worktrees/locks',
+
+  /** Generated instructions for agents */
+  instructionsDir: '.worktrees/instructions',
+
+  /** Project-level settings (merge strategy, versioning, etc.) */
+  projectSettings: '.worktrees/project-settings.json',
+
+  /** File coordination for multi-agent locking */
+  coordinationDir: '.worktrees/coordination',
+} as const;
+
 export const KANVAS_PATHS = {
   // Base directory for all DevOps Agent data
   baseDir: DEVOPS_KIT_DIR,

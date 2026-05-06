@@ -39,10 +39,10 @@ import HouseRulesManager from './house-rules-manager.js';
 // ============================================================================
 
 const CONFIG = {
-  sessionsDir: 'local_deploy/sessions',
-  locksDir: 'local_deploy/session-locks',
-  worktreesDir: 'local_deploy/worktrees',
-  instructionsDir: 'local_deploy/instructions',
+  sessionsDir: '.worktrees/sessions',
+  locksDir: '.worktrees/locks',
+  worktreesDir: '.worktrees/worktrees',
+  instructionsDir: '.worktrees/instructions',
   colors: {
     reset: '\x1b[0m',
     bright: '\x1b[1m',
@@ -75,8 +75,8 @@ export class SessionCoordinator {
     this.globalSettingsDir = path.join(homeDir, '.devops-agent');
     this.globalSettingsPath = path.join(this.globalSettingsDir, 'settings.json');
     
-    // Store project-specific settings in local_deploy
-    this.projectSettingsPath = path.join(this.repoRoot, 'local_deploy', 'project-settings.json');
+    // Store project-specific settings in .worktrees
+    this.projectSettingsPath = path.join(this.repoRoot, '.worktrees', 'project-settings.json');
     
     // Package version
     const packageJsonPath = path.join(__dirname, '../package.json');
@@ -116,7 +116,7 @@ export class SessionCoordinator {
     });
     
     // Ensure file-coordination directory
-    const fileCoordinationDir = path.join(this.repoRoot, 'local_deploy', '.file-coordination');
+    const fileCoordinationDir = path.join(this.repoRoot, '.worktrees', 'coordination');
     const activeEditsDir = path.join(fileCoordinationDir, 'active-edits');
     const completedEditsDir = path.join(fileCoordinationDir, 'completed-edits');
     
@@ -495,7 +495,7 @@ export class SessionCoordinator {
       console.log(`${CONFIG.colors.green}✓${CONFIG.colors.reset} Project versioning configured:`);
       console.log(`  Starting: ${CONFIG.colors.bright}${versionInfo.prefix}${versionInfo.startMinor}${CONFIG.colors.reset}`);
       console.log(`  Daily increment: ${CONFIG.colors.bright}${incrementDisplay}${CONFIG.colors.reset}`);
-      console.log(`${CONFIG.colors.dim}Settings saved in local_deploy/project-settings.json${CONFIG.colors.reset}`);
+      console.log(`${CONFIG.colors.dim}Settings saved in .worktrees/project-settings.json${CONFIG.colors.reset}`);
     } else {
       // Project already configured, set environment variables
       process.env.AC_VERSION_PREFIX = projectSettings.versioningStrategy.prefix;
@@ -618,7 +618,7 @@ export class SessionCoordinator {
       fs.mkdirSync(projectDir, { recursive: true });
     }
     fs.writeFileSync(this.projectSettingsPath, JSON.stringify(settings, null, 2));
-    console.log(`${CONFIG.colors.dim}Project settings saved to local_deploy/project-settings.json${CONFIG.colors.reset}`);
+    console.log(`${CONFIG.colors.dim}Project settings saved to .worktrees/project-settings.json${CONFIG.colors.reset}`);
   }
   
   /**
@@ -699,7 +699,7 @@ export class SessionCoordinator {
     if (projectSettings.dockerConfig && projectSettings.dockerConfig.neverAsk === true) {
       // User selected 'Never' - skip Docker configuration
       // Show a subtle message so they know why it's skipped
-      console.log(`${CONFIG.colors.dim}Skipping Docker config (User preference: Never ask). Edit local_deploy/project-settings.json to enable.${CONFIG.colors.reset}`);
+      console.log(`${CONFIG.colors.dim}Skipping Docker config (User preference: Never ask). Edit .worktrees/project-settings.json to enable.${CONFIG.colors.reset}`);
       return { enabled: false, neverAsk: true };
     }
     
@@ -739,7 +739,7 @@ export class SessionCoordinator {
         neverAsk: true
       };
       this.saveProjectSettings(projectSettings);
-      console.log(`${CONFIG.colors.dim}Docker configuration disabled permanently. Edit local_deploy/project-settings.json to change.${CONFIG.colors.reset}`);
+      console.log(`${CONFIG.colors.dim}Docker configuration disabled permanently. Edit .worktrees/project-settings.json to change.${CONFIG.colors.reset}`);
       return { enabled: false, neverAsk: true };
     }
     
@@ -1387,7 +1387,7 @@ export class SessionCoordinator {
             neverAsk: true
           };
           this.saveProjectSettings(projectSettings);
-          console.log(`${CONFIG.colors.dim}Docker configuration disabled permanently. Edit local_deploy/project-settings.json to change.${CONFIG.colors.reset}`);
+          console.log(`${CONFIG.colors.dim}Docker configuration disabled permanently. Edit .worktrees/project-settings.json to change.${CONFIG.colors.reset}`);
           dockerConfig = { enabled: false, neverAsk: true };
         } else {
           const hasDocker = answer === 'y' || answer === 'yes';
@@ -1622,7 +1622,7 @@ INSTRUCTIONS:
 
 1. **Declare your intent** by creating:
    \`\`\`json
-   // File: ${path.join(this.repoRoot, 'local_deploy/.file-coordination/active-edits')}/<agent>-${sessionId}.json
+   // File: ${path.join(this.repoRoot, '.worktrees/coordination/active-edits')}/<agent>-${sessionId}.json
    {
      "agent": "<your-name>",
      "session": "${sessionId}",
@@ -1634,7 +1634,7 @@ INSTRUCTIONS:
    }
    \`\`\`
 
-2. **Check for conflicts** - read all files in \`${path.join(this.repoRoot, 'local_deploy/.file-coordination/active-edits')}\`
+2. **Check for conflicts** - read all files in \`${path.join(this.repoRoot, '.worktrees/coordination/active-edits')}\`
 3. **Only proceed if no conflicts** - wait or choose different files if blocked
 4. **Release files when done** - delete your declaration after edits
 
@@ -1652,7 +1652,7 @@ git branch --show-current
 \`\`\`
 
 ### Step 3: Declare Files Before Editing
-Create your declaration in \`${path.join(this.repoRoot, 'local_deploy/.file-coordination/active-edits')}\`
+Create your declaration in \`${path.join(this.repoRoot, '.worktrees/coordination/active-edits')}\`
 
 ### Step 4: Work on Your Task
 Make changes for: **${task}**
@@ -1664,7 +1664,7 @@ echo "feat: your commit message here" >> .devops-commit-${sessionId}.msg
 \`\`\`
 
 ### Step 6: Release Your File Locks
-Delete your declaration from \`${path.join(this.repoRoot, 'local_deploy/.file-coordination/active-edits')}\`
+Delete your declaration from \`${path.join(this.repoRoot, '.worktrees/coordination/active-edits')}\`
 
 ### Step 7: Automatic Processing
 The DevOps agent will automatically:
@@ -1747,7 +1747,7 @@ The DevOps agent will automatically:
     console.log(``);
     
     console.log(`⚠️ FILE COORDINATION (MANDATORY):`);
-    console.log(`Shared coordination directory: local_deploy/.file-coordination/`);
+    console.log(`Shared coordination directory: .worktrees/coordination/`);
     console.log(``);
     console.log(`⛔ ABSOLUTE RULE: ALWAYS USE THE WORKTREE PATH`);
     console.log(`Even if you compact context or restart, you MUST ALWAYS operate in:`);
@@ -1762,8 +1762,8 @@ The DevOps agent will automatically:
     console.log(`   It MUST be: ${instructions.branchName}`);
     console.log(``);
     console.log(`BEFORE editing ANY files:`);
-    console.log(`1. Check for conflicts: ls ../../../local_deploy/.file-coordination/active-edits/`);
-    console.log(`2. Create declaration: local_deploy/.file-coordination/active-edits/<agent>-${sessionId}.json`);
+    console.log(`1. Check for conflicts: ls ../../../.worktrees/coordination/active-edits/`);
+    console.log(`2. Create declaration: .worktrees/coordination/active-edits/<agent>-${sessionId}.json`);
     console.log(``);
     console.log(`Example declaration:`);
     console.log(`{`);
@@ -1811,7 +1811,7 @@ The DevOps agent will automatically:
    * Create configuration in the worktree
    */
   createWorktreeConfig(worktreePath, sessionData) {
-    // NOTE: File coordination now uses shared local_deploy/.file-coordination/
+    // NOTE: File coordination now uses shared .worktrees/coordination/
     // No need to create per-worktree coordination directories
     
     // Session config file

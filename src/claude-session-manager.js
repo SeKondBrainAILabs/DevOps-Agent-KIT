@@ -39,8 +39,8 @@ const __dirname = dirname(__filename);
 // ============================================================================
 
 const CONFIG = {
-  sessionsFile: 'local_deploy/claude-sessions.json',
-  worktreesDir: 'local_deploy/worktrees',
+  sessionsFile: '.worktrees/claude-sessions.json',
+  worktreesDir: '.worktrees/worktrees',
   sessionPrefix: 'claude-session',
   colors: {
     reset: '\x1b[0m',

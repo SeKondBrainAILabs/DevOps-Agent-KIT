@@ -68,7 +68,7 @@ Each session is completely isolated from others, preventing conflicts and chaos.
   console.log();
   console.log(`${status.folder} ${colors.cyan}Git Worktree${colors.reset}`);
   console.log(`   A separate directory with full git history`);
-  console.log(`   Example: local_deploy/worktrees/abc1-23d4/`);
+  console.log(`   Example: .worktrees/worktrees/abc1-23d4/`);
   console.log();
   console.log(`${status.branch} ${colors.cyan}Dedicated Branch${colors.reset}`);
   console.log(`   Auto-named based on task and date`);
@@ -95,7 +95,7 @@ Each session is completely isolated from others, preventing conflicts and chaos.
       `  ${colors.dim}Task: implement-authentication${colors.reset}`,
       ``,
       `${status.arrow} ${colors.cyan}Step 2:${colors.reset} Session created`,
-      `  ${colors.dim}Workspace: local_deploy/worktrees/abc1/`,
+      `  ${colors.dim}Workspace: .worktrees/worktrees/abc1/${colors.reset}`,
       `  ${colors.dim}Branch: session/implement-authentication_abc1${colors.reset}`,
       ``,
       `${status.arrow} ${colors.cyan}Step 3:${colors.reset} Give instructions to Claude`,
@@ -177,7 +177,7 @@ I'll show you what happens at each stage.
   progressStep(5, 5, 'Session created!');
   console.log();
   console.log(`   ${status.success} Session created: ${colors.cyan}abc1-23d4${colors.reset}`);
-  console.log(`   ${status.folder} Workspace: ${colors.dim}local_deploy/worktrees/abc1-23d4/${colors.reset}`);
+  console.log(`   ${status.folder} Workspace: ${colors.dim}.worktrees/worktrees/abc1-23d4/${colors.reset}`);
   console.log(`   ${status.branch} Branch: ${colors.dim}session/api-authentication_abc1${colors.reset}`);
   console.log();
   console.log(`   ${colors.bright}Next: Copy instructions to your AI assistant${colors.reset}`);
@@ -236,7 +236,7 @@ DevOps Agent provides perfectly formatted instructions to copy-paste.
       `   cat "docs/houserules.md"`,
       ``,
       `${colors.bright}${status.point} STEP 2: Switch to workspace${colors.reset}`,
-      `   cd "local_deploy/worktrees/abc1-23d4"`,
+      `   cd ".worktrees/worktrees/abc1-23d4",
       ``,
       `${colors.bright}${status.point} STEP 3: Declare files before editing${colors.reset}`,
       `   Create: .file-coordination/active-edits/claude-abc1.json`,
@@ -278,7 +278,7 @@ simultaneously without conflicts. Let's see how this works.
   drawSection('Terminal 1: Claude on Backend', [
     `${colors.cyan}s9n-devops-agent create --task api --agent claude${colors.reset}`,
     ``,
-    `${status.folder} Workspace: local_deploy/worktrees/abc1/`,
+    `${status.folder} Workspace: .worktrees/worktrees/abc1/`,
     `${status.lock} Files locked: src/api/*.js, tests/api/*.js`,
     `${status.commit} Status: Working on API endpoints`,
   ]);
@@ -288,7 +288,7 @@ simultaneously without conflicts. Let's see how this works.
   drawSection('Terminal 2: Cursor on Frontend', [
     `${colors.cyan}s9n-devops-agent create --task ui --agent cursor${colors.reset}`,
     ``,
-    `${status.folder} Workspace: local_deploy/worktrees/def2/`,
+    `${status.folder} Workspace: .worktrees/worktrees/def2/`,
     `${status.lock} Files locked: src/components/*.tsx, src/styles/*.css`,
     `${status.commit} Status: Working on UI components`,
   ]);

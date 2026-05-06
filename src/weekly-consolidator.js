@@ -26,7 +26,7 @@ const CONFIG = {
 class WeeklyConsolidator {
   constructor() {
     this.repoRoot = this.getRepoRoot();
-    this.projectSettingsPath = path.join(this.repoRoot, 'local_deploy', 'project-settings.json');
+    this.projectSettingsPath = path.join(this.repoRoot, '.worktrees', 'project-settings.json');
     this.projectSettings = this.loadProjectSettings();
   }
 

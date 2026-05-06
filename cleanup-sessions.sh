@@ -24,20 +24,20 @@ git worktree prune
 
 # Remove specific worktrees if they exist
 for worktree in $(git worktree list --porcelain | grep "worktree" | cut -d' ' -f2 | grep -v "$(git rev-parse --show-toplevel)$"); do
-    if [[ "$worktree" == *"worktrees"* ]] || [[ "$worktree" == *"local_deploy"* ]]; then
+    if [[ "$worktree" == *"worktrees"* ]] || [[ "$worktree" == *".worktrees"* ]]; then
         echo "Removing worktree: $worktree"
         git worktree remove -f "$worktree" 2>/dev/null || true
     fi
 done
 
-# 3. Clean up local_deploy directories
-echo -e "${YELLOW}Cleaning local_deploy directories...${NC}"
-rm -rf local_deploy/worktrees/* 2>/dev/null
-rm -rf local_deploy/session-locks/* 2>/dev/null
-rm -rf local_deploy/sessions/* 2>/dev/null
-rm -rf local_deploy/instructions/* 2>/dev/null
-rm -f local_deploy/claude-sessions.json 2>/dev/null
-rm -f local_deploy/.devops-sessions.json 2>/dev/null
+# 3. Clean up .worktrees directories
+echo -e "${YELLOW}Cleaning .worktrees directories...${NC}"
+rm -rf .worktrees/worktrees/* 2>/dev/null
+rm -rf .worktrees/locks/* 2>/dev/null
+rm -rf .worktrees/sessions/* 2>/dev/null
+rm -rf .worktrees/instructions/* 2>/dev/null
+rm -f .worktrees/claude-sessions.json 2>/dev/null
+rm -f .worktrees/.devops-sessions.json 2>/dev/null
 
 # 4. Clean up any worktrees in wrong locations
 echo -e "${YELLOW}Cleaning up misplaced worktrees...${NC}"
@@ -54,13 +54,13 @@ for branch in $(git branch | grep -E "claude/|warp/|agent/" | tr -d ' '); do
     git branch -D "$branch" 2>/dev/null || true
 done
 
-# 6. Create clean local_deploy structure
+# 6. Create clean .worktrees structure
 echo -e "${YELLOW}Creating clean directory structure...${NC}"
-mkdir -p local_deploy/worktrees
-mkdir -p local_deploy/session-locks
-mkdir -p local_deploy/sessions
-mkdir -p local_deploy/instructions
-mkdir -p local_deploy/logs
+mkdir -p .worktrees/worktrees
+mkdir -p .worktrees/locks
+mkdir -p .worktrees/sessions
+mkdir -p .worktrees/instructions
+mkdir -p .worktrees/logs
 
 echo -e "${GREEN}✅ Cleanup complete!${NC}"
 echo

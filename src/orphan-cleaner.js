@@ -27,9 +27,9 @@ const CONFIG = {
 class OrphanedSessionCleaner {
   constructor() {
     this.repoRoot = this.getRepoRoot();
-    this.locksPath = path.join(this.repoRoot, 'local_deploy', 'session-locks');
-    this.worktreesPath = path.join(this.repoRoot, 'local_deploy', 'worktrees');
-    this.projectSettingsPath = path.join(this.repoRoot, 'local_deploy', 'project-settings.json');
+    this.locksPath = path.join(this.repoRoot, '.worktrees', 'locks');
+    this.worktreesPath = path.join(this.repoRoot, '.worktrees', 'worktrees');
+    this.projectSettingsPath = path.join(this.repoRoot, '.worktrees', 'project-settings.json');
     this.projectSettings = this.loadProjectSettings();
     this.thresholdDays = this.projectSettings?.branchManagement?.orphanSessionThresholdDays || 7;
   }

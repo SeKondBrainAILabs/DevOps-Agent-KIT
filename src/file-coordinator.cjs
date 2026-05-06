@@ -21,9 +21,9 @@ class FileCoordinator {
     // Find repository root (shared across all worktrees)
     this.repoRoot = repoRoot || this.findRepoRoot(workingDir);
     
-    // Use shared coordination directory in local_deploy
+    // Use shared coordination directory in .worktrees
     // This ensures all agents can see each other's file locks
-    this.coordDir = path.join(this.repoRoot, 'local_deploy', '.file-coordination');
+    this.coordDir = path.join(this.repoRoot, '.worktrees', 'coordination');
     this.activeEditsDir = path.join(this.coordDir, 'active-edits');
     this.completedEditsDir = path.join(this.coordDir, 'completed-edits');
     this.conflictsDir = path.join(this.coordDir, 'conflicts');

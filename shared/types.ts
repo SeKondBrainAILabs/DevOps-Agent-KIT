@@ -335,7 +335,7 @@ export interface AgentInstance {
   instructions?: string;
   prompt?: string; // The comprehensive prompt to copy to the coding agent
   sessionId?: string;
-  worktreePath?: string; // Path to isolated worktree (local_deploy/{branchName})
+  worktreePath?: string; // Path to isolated worktree (.worktrees/{branchName})
   error?: string;
   multiRepoEntries?: RepoEntry[]; // Populated repos with worktree paths (multi-repo mode)
 }

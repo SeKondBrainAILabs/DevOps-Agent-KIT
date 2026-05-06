@@ -27,8 +27,8 @@ const CONFIG = {
 class SessionCloser {
   constructor() {
     this.repoRoot = this.getRepoRoot();
-    this.locksPath = path.join(this.repoRoot, 'local_deploy', 'session-locks');
-    this.worktreesPath = path.join(this.repoRoot, 'local_deploy', 'worktrees');
+    this.locksPath = path.join(this.repoRoot, '.worktrees', 'locks');
+    this.worktreesPath = path.join(this.repoRoot, '.worktrees', 'worktrees');
   }
 
   getRepoRoot() {

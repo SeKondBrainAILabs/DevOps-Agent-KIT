@@ -233,9 +233,9 @@ export class WatcherService extends BaseService {
       }
 
       // Register the worktree with GitService so commits can work
-      // For worktrees, repoPath is the parent of local_deploy
-      const repoPath = worktreePath.includes('/local_deploy/')
-        ? worktreePath.split('/local_deploy/')[0]
+      // For worktrees, repoPath is the parent of .worktrees
+      const repoPath = worktreePath.includes('/.worktrees/')
+        ? worktreePath.split('/.worktrees/')[0]
         : worktreePath;
       this.gitService.registerWorktree(sessionId, repoPath, worktreePath);
       console.log(`[WatcherService] Registered worktree for ${sessionId}: ${worktreePath} (repo: ${repoPath})`);

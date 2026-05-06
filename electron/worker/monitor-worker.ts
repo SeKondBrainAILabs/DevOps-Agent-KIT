@@ -100,6 +100,14 @@ function handleCommand(command: WorkerCommand): void {
         kanvasHeartbeat.stop();
         break;
 
+      // Configuration
+      case 'configure':
+        if (command.gitPath) {
+          rebaseMonitor.setGitPath(command.gitPath);
+          workerLog.info('MonitorWorker', `Configured git binary: ${command.gitPath}`);
+        }
+        break;
+
       // Health check
       case 'ping':
         emit({
