@@ -4,7 +4,6 @@
  * Supports mode-based prompts via AIConfigRegistry
  */
 
-import 'groq-sdk/shims/node';
 import { BaseService } from './BaseService';
 import { IPC } from '../../shared/ipc-channels';
 import type { ChatMessage, IpcResult } from '../../shared/types';
