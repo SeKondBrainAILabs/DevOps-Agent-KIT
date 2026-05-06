@@ -27,8 +27,8 @@ const CONFIG = {
 class BranchConfigManager {
   constructor() {
     this.repoRoot = this.getRepoRoot();
-    this.localDeployDir = path.join(this.repoRoot, 'local_deploy');
-    this.projectSettingsPath = path.join(this.localDeployDir, 'project-settings.json');
+    this.worktreesDir = path.join(this.repoRoot, '.worktrees');
+    this.projectSettingsPath = path.join(this.worktreesDir, 'project-settings.json');
     this.defaultSettings = this.getDefaultSettings();
     this.ensureDirectories();
   }
@@ -43,8 +43,8 @@ class BranchConfigManager {
   }
 
   ensureDirectories() {
-    if (!fs.existsSync(this.localDeployDir)) {
-      fs.mkdirSync(this.localDeployDir, { recursive: true });
+    if (!fs.existsSync(this.worktreesDir)) {
+      fs.mkdirSync(this.worktreesDir, { recursive: true });
     }
   }
 

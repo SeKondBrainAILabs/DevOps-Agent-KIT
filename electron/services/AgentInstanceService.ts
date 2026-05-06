@@ -384,8 +384,8 @@ ${DEVOPS_KIT_DIR}/
         if (!gitignore.includes('.devops-commit-')) {
           gitignore += '\n# DevOps commit message files\n.devops-commit-*.msg\n';
         }
-        if (!gitignore.includes('local_deploy/')) {
-          gitignore += '\n# Local worktrees for isolated development\nlocal_deploy/\n';
+        if (!gitignore.includes('.worktrees/')) {
+          gitignore += '\n# Local worktrees for isolated development\n.worktrees/\n';
         }
         if (!gitignore.includes('.agent-config')) {
           gitignore += '\n# Agent session config (auto-generated per session)\n.agent-config\n';
@@ -676,7 +676,10 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
-   * Create branch if it doesn't exist
+   * Create branch if it doesn't exist.
+   * Uses `git branch` (not `git checkout -b`) to avoid checking out the branch
+   * in the main repo, which would conflict with `git worktree add` since a branch
+   * can only be checked out in one worktree at a time.
    */
   private async createBranchIfNeeded(config: AgentInstanceConfig): Promise<void> {
     try {
@@ -684,12 +687,9 @@ ${DEVOPS_KIT_DIR}/
       const branchResult = await execaCmd('git', ['branch', '--list', config.branchName], { cwd: config.repoPath });
 
       if (!branchResult.stdout.trim()) {
-        // Branch doesn't exist, create it
-        await execaCmd('git', ['checkout', '-b', config.branchName, config.baseBranch], { cwd: config.repoPath });
+        // Branch doesn't exist — create it without checking it out
+        await execaCmd('git', ['branch', config.branchName, config.baseBranch], { cwd: config.repoPath });
         console.log(`[AgentInstanceService] Created branch ${config.branchName} from ${config.baseBranch}`);
-
-        // Switch back to original branch
-        await execaCmd('git', ['checkout', '-'], { cwd: config.repoPath });
       }
     } catch (error) {
       console.warn(`[AgentInstanceService] Could not create branch: ${error}`);
@@ -699,12 +699,12 @@ ${DEVOPS_KIT_DIR}/
 
   /**
    * Create worktree for isolated development
-   * Creates worktree in local_deploy/{branchName} directory
+   * Creates worktree in .worktrees/{branchName} directory
    */
   private async createWorktreeIfNeeded(config: AgentInstanceConfig): Promise<string> {
     try {
-      // Worktree directory: local_deploy/{branchName}
-      const worktreeDir = join(config.repoPath, 'local_deploy', config.branchName);
+      // Worktree directory: .worktrees/{branchName}
+      const worktreeDir = join(config.repoPath, '.worktrees', config.branchName);
 
       // Check if worktree already exists
       if (existsSync(worktreeDir)) {
@@ -712,10 +712,10 @@ ${DEVOPS_KIT_DIR}/
         return worktreeDir;
       }
 
-      // Ensure local_deploy directory exists
-      const localDeployDir = join(config.repoPath, 'local_deploy');
-      if (!existsSync(localDeployDir)) {
-        await mkdir(localDeployDir, { recursive: true });
+      // Ensure .worktrees directory exists
+      const worktreesBaseDir = join(config.repoPath, '.worktrees');
+      if (!existsSync(worktreesBaseDir)) {
+        await mkdir(worktreesBaseDir, { recursive: true });
       }
 
       // Create worktree
@@ -898,7 +898,7 @@ ${DEVOPS_KIT_DIR}/
 
   /**
    * Copy House_Rules_Contracts/ from main repo to worktree root
-   * So agents working in local_deploy/ can read contract docs
+   * So agents working in .worktrees/ can read contract docs
    */
   private async copyContractsToWorktree(worktreePath: string, mainRepoPath: string): Promise<void> {
     try {
@@ -975,7 +975,7 @@ ${DEVOPS_KIT_DIR}/
   /**
    * Create multi-repo environment after primary worktree is ready.
    * For submodule secondaries: create branch in-place inside the submodule dir.
-   * For external secondaries: create branch + worktree in that repo's local_deploy/.
+   * For external secondaries: create branch + worktree in that repo's .worktrees/.
    */
   private async createMultiRepoEnvironment(
     config: AgentInstanceConfig,
@@ -1034,27 +1034,28 @@ ${DEVOPS_KIT_DIR}/
             isSubmodule: true,
           });
         } else {
-          // External repo: create worktree in that repo's local_deploy/
+          // External repo: create worktree in that repo's .worktrees/
           const externalRepoPath = secondary.repoPath;
-          const worktreeDir = join(externalRepoPath, 'local_deploy', branchName);
+          const worktreeDir = join(externalRepoPath, '.worktrees', branchName);
 
           if (!existsSync(worktreeDir)) {
-            // Create branch if needed
+            // Create branch if needed — use `git branch` (not checkout -b)
+            // to avoid checking out the branch in the main repo,
+            // which would conflict with worktree add
             try {
               const branchResult = await execaCmd('git', ['branch', '--list', branchName], { cwd: externalRepoPath });
               if (!branchResult.stdout.trim()) {
                 const base = secondary.baseBranch || 'main';
-                await execaCmd('git', ['checkout', '-b', branchName, base], { cwd: externalRepoPath });
-                await execaCmd('git', ['checkout', '-'], { cwd: externalRepoPath });
+                await execaCmd('git', ['branch', branchName, base], { cwd: externalRepoPath });
               }
             } catch {
               // Branch creation may fail, continue
             }
 
             // Create worktree
-            const localDeployDir = join(externalRepoPath, 'local_deploy');
-            if (!existsSync(localDeployDir)) {
-              await mkdir(localDeployDir, { recursive: true });
+            const worktreesBaseDir = join(externalRepoPath, '.worktrees');
+            if (!existsSync(worktreesBaseDir)) {
+              await mkdir(worktreesBaseDir, { recursive: true });
             }
             try {
               await execaCmd('git', ['worktree', 'add', worktreeDir, branchName], { cwd: externalRepoPath });

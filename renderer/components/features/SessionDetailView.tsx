@@ -5186,8 +5186,8 @@ function generateDefaultPrompt(session: SessionReport): string {
     // Explicit worktree path is set and different from repo
     workDir = session.worktreePath;
   } else if (session.branchName && session.repoPath) {
-    // Try to infer worktree path: repoPath/local_deploy/branchName
-    const inferredWorktree = `${session.repoPath}/local_deploy/${session.branchName}`;
+    // Try to infer worktree path: repoPath/.worktrees/branchName
+    const inferredWorktree = `${session.repoPath}/.worktrees/${session.branchName}`;
     workDir = inferredWorktree;
   }
 

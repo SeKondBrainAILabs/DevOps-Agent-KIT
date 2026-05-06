@@ -62,8 +62,8 @@ export const helpTopics = {
   its own isolated workspace.
   
   ${status.folder} Main repo: /your/project
-  ${status.folder} Session 1: /your/project/local_deploy/worktrees/abc1
-  ${status.folder} Session 2: /your/project/local_deploy/worktrees/def2`,
+  ${status.folder} Session 1: /your/project/.worktrees/worktrees/abc1
+  ${status.folder} Session 2: /your/project/.worktrees/worktrees/def2`,
       
       'Why Worktrees?': `
   ${status.checkmark} Work on multiple features simultaneously
@@ -205,7 +205,7 @@ export const helpTopics = {
   ${status.checkmark} Aligned with daily branch structure`,
       
       'Configuration': `
-  Set in local_deploy/project-settings.json:
+  Set in .worktrees/project-settings.json:
   
   {
     "versionPrefix": "v0.",

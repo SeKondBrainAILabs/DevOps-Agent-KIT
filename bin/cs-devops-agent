@@ -130,7 +130,7 @@ switch(command) {
     } else if (subCmd === 'status') {
       console.log('Credentials Status:');
       console.log(`- Groq API Key: ${credentialsManager.hasGroqApiKey() ? '✅ Configured' : '❌ Missing'}`);
-      console.log(`- Storage: ${credentialsManager.hasGroqApiKey() ? 'local_deploy/credentials.json' : 'N/A'}`);
+      console.log(`- Storage: ${credentialsManager.hasGroqApiKey() ? '~/.devops-agent/credentials.json' : 'N/A'}`);
     } else if (subCmd === 'clear') {
       credentialsManager.clearAll();
       console.log('✅ All credentials cleared.');

@@ -499,7 +499,7 @@ When you want to perform an action, use the available tools.`;
     const centralExists = fs.existsSync(contractsDir);
     
     // Recursive search for contracts (similar to setup script)
-    const findCommand = `find "${this.repoRoot}" -type f \\( -iname "*CONTRACT*.md" -o -iname "*CONTRACT*.json" \\) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/local_deploy/*"`;
+    const findCommand = `find "${this.repoRoot}" -type f \\( -iname "*CONTRACT*.md" -o -iname "*CONTRACT*.json" \\) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.worktrees/*"`;
     
     let allFiles = [];
     try {
@@ -548,8 +548,8 @@ When you want to perform an action, use the available tools.`;
     // Note: In a real implementation we might want to refactor SessionCoordinator to be more modular
     // For now, we'll check the file system directly which is safer/faster for this tool
     
-    const sessionsDir = path.join(this.repoRoot, 'local_deploy/sessions');
-    const locksDir = path.join(this.repoRoot, 'local_deploy/session-locks');
+    const sessionsDir = path.join(this.repoRoot, '.worktrees/sessions');
+    const locksDir = path.join(this.repoRoot, '.worktrees/locks');
     
     let activeSessions = [];
     let activeLocks = [];

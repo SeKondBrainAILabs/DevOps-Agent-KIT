@@ -49,7 +49,7 @@ const STEPS: OnboardingStep[] = [
     ),
     items: [
       { icon: '📂', title: 'Create a session', desc: 'Pick a repo, name your branch, and choose an agent type' },
-      { icon: '🔀', title: 'Git worktree', desc: 'Each session works in local_deploy/<branch> — fully isolated from main' },
+      { icon: '🔀', title: 'Git worktree', desc: 'Each session works in .worktrees/<branch> — fully isolated from main' },
       { icon: '👁️', title: 'File watcher', desc: 'Kanvas watches for changes and auto-commits with smart messages' },
       { icon: '📋', title: 'Contracts', desc: 'API, schema, and feature contracts are auto-generated from your code' },
     ],

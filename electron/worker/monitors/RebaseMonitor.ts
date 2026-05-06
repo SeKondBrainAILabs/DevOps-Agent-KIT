@@ -21,8 +21,14 @@ interface RebaseMonitorSession {
 
 export class RebaseMonitor {
   private sessions: Map<string, RebaseMonitorSession> = new Map();
+  private gitBinary = 'git'; // Default, overridden by configure
 
   constructor(private emit: (event: WorkerEvent) => void) {}
+
+  /** Set the resolved git binary path (called once on worker startup) */
+  setGitPath(gitPath: string): void {
+    this.gitBinary = gitPath;
+  }
 
   start(
     sessionId: string,
@@ -83,7 +89,7 @@ export class RebaseMonitor {
 
     try {
       // Fetch latest from remote
-      await execFileAsync('git', ['fetch', remoteName, '--no-tags', '--quiet'], {
+      await execFileAsync(this.gitBinary, ['fetch', remoteName, '--no-tags', '--quiet'], {
         cwd: repoPath,
         timeout: 30000,
       });
@@ -95,7 +101,7 @@ export class RebaseMonitor {
 
       try {
         const { stdout } = await execFileAsync(
-          'git',
+          this.gitBinary,
           ['rev-list', '--left-right', '--count', `HEAD...${remoteBranch}`],
           { cwd: repoPath, timeout: 10000 }
         );
@@ -110,7 +116,7 @@ export class RebaseMonitor {
       let localBranch = 'HEAD';
       try {
         const { stdout } = await execFileAsync(
-          'git',
+          this.gitBinary,
           ['rev-parse', '--abbrev-ref', 'HEAD'],
           { cwd: repoPath, timeout: 5000 }
         );

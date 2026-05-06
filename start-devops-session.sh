@@ -76,7 +76,7 @@ show_header() {
 
 # Function to list existing sessions
 list_sessions() {
-    local sessions_dir="local_deploy/session-locks"
+    local sessions_dir=".worktrees/locks"
     
     if [[ ! -d "$sessions_dir" ]] || [[ -z "$(ls -A $sessions_dir 2>/dev/null)" ]]; then
         echo -e "${YELLOW}No existing sessions found.${NC}"
@@ -181,7 +181,7 @@ select_session() {
     echo -e "  ${BOLD}${GREEN}N)${NC} Create a ${BOLD}new${NC} session"
     
     # List existing sessions
-    local sessions_dir="local_deploy/session-locks"
+    local sessions_dir=".worktrees/locks"
     local session_files=()
     
     if [[ -d "$sessions_dir" ]] && [[ -n "$(ls -A $sessions_dir 2>/dev/null)" ]]; then

@@ -68,7 +68,7 @@ function searchDockerFilesRecursive(dir, maxDepth = 3, currentDepth = 0, label =
           location: label || path.relative(process.cwd(), dir) || 'current directory'
         });
       } else if (entry.isDirectory() && !entry.name.startsWith('.') && 
-                 entry.name !== 'node_modules' && entry.name !== 'local_deploy') {
+                 entry.name !== 'node_modules' && entry.name !== '.worktrees') {
         // Recursively search subdirectories
         const subResults = searchDockerFilesRecursive(fullPath, maxDepth, currentDepth + 1, label);
         found.push(...subResults);

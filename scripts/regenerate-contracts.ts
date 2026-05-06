@@ -9,7 +9,7 @@ import path from 'path';
 // Simulate the contract generation without needing the full Electron app
 // This script will call the AI service directly to regenerate contracts
 
-const REPO_PATH = process.argv[2] || '/Volumes/Simba User Data/Development/Linkedin-New-Summary/local_deploy/claude-session-20260114-conceptwork';
+const REPO_PATH = process.argv[2] || '/Volumes/Simba User Data/Development/Linkedin-New-Summary/.worktrees/claude-session-20260114-conceptwork';
 
 const CONTRACT_TYPES = ['infra', 'features', 'integrations', 'events'];
 
