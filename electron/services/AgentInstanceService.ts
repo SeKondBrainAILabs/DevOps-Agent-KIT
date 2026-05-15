@@ -62,7 +62,9 @@ import type {
   RepoRole,
 } from '../../shared/types';
 import { generateSecondaryBranchName } from '../../shared/types';
+import { evaluateSingleSessionGuard } from '../../shared/single-session-guard';
 import type { TerminalLogService } from './TerminalLogService';
+import type { ConfigService } from './ConfigService';
 import { MCP_CONFIG_FILE, CONTRACTS_PATHS } from '../../shared/agent-protocol';
 
 interface SessionState {
@@ -84,6 +86,7 @@ export class AgentInstanceService extends BaseService {
   private instances: Map<string, AgentInstance> = new Map();
   private terminalLogService: TerminalLogService | null = null;
   private mcpServerUrl: string | null = null;
+  private configService: ConfigService | null = null;
 
   /**
    * Callback invoked after a single-repo session is created.
@@ -112,6 +115,36 @@ export class AgentInstanceService extends BaseService {
    */
   setMcpServerUrl(url: string | null): void {
     this.mcpServerUrl = url;
+  }
+
+  /**
+   * Inject ConfigService so we can read per-repo worktree-mode settings.
+   * Used to enforce Single-Session Mode (Epic C, story C5).
+   */
+  setConfigService(svc: ConfigService): void {
+    this.configService = svc;
+    console.log('[AgentInstanceService] ConfigService configured');
+  }
+
+  /**
+   * Return all sessions for a given repo that are currently active
+   * (i.e. not 'completed' or 'closed'). Used by Single-Session Mode
+   * checks and by the renderer to power session-count badges.
+   */
+  getActiveSessionsForRepo(repoPath: string): AgentInstance[] {
+    return Array.from(this.instances.values()).filter(
+      (inst) =>
+        inst.config.repoPath === repoPath &&
+        inst.status !== 'completed' &&
+        inst.status !== 'closed'
+    );
+  }
+
+  /**
+   * IPC-friendly count of active sessions for a repo.
+   */
+  getActiveSessionCountForRepo(repoPath: string): IpcResult<number> {
+    return { success: true, data: this.getActiveSessionsForRepo(repoPath).length };
   }
 
   constructor() {
@@ -454,6 +487,17 @@ ${DEVOPS_KIT_DIR}/
             message: `Branch "${config.branchName}" is already in use by an active session. Please use a different branch name.`,
           },
         };
+      }
+
+      // Single-Session Mode guard (Epic C / C5):
+      // when this repo has worktrees disabled, only ONE active session is allowed.
+      if (this.configService) {
+        const mode = this.configService.getRepoWorktreeMode(config.repoPath);
+        const activeCount = this.getActiveSessionsForRepo(config.repoPath).length;
+        const guard = evaluateSingleSessionGuard(mode, activeCount);
+        if (guard.blocked && guard.error) {
+          return { success: false, error: guard.error };
+        }
       }
 
       // Generate unique ID

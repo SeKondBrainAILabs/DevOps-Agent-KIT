@@ -15,7 +15,15 @@ import type {
   BranchInfo,
   FileStatus,
   IpcResult,
+  RepoStatus,
+  RepoBranchRow,
 } from '../../shared/types';
+import {
+  countNonBlankLines,
+  countWorktreeListPorcelain,
+  parseLastCommit,
+  parsePorcelainV2,
+} from '../../shared/repo-status-parser';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -1392,6 +1400,162 @@ export class GitService extends BaseService {
   // ==========================================================================
   // COMMIT HISTORY OPERATIONS
   // ==========================================================================
+
+  /**
+   * Compact status snapshot keyed on raw repo path (no sessionId required).
+   * Powers the RepoStatusCard in the Workspace Browser.
+   *
+   * Issues 4 git invocations in parallel:
+   *   1) status --porcelain=v2 -b   (branch + ahead/behind + per-file counts)
+   *   2) stash list                 (count via line count)
+   *   3) worktree list --porcelain  (count via 'worktree ' header count)
+   *   4) log -1 --format=%H|%h|%s|%aI   (last commit)
+   *
+   * Each sub-call is independently fault-tolerant: if any fails (e.g. no
+   * upstream, fresh repo with no commits) we still return what we have.
+   */
+  async getRepoStatus(repoPath: string): Promise<IpcResult<RepoStatus>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await p;
+        } catch {
+          return fallback;
+        }
+      };
+
+      const [statusOut, stashOut, worktreeOut, lastCommitOut] = await Promise.all([
+        safe(this.git(['status', '--porcelain=v2', '-b'], repoPath), ''),
+        safe(this.git(['stash', 'list'], repoPath), ''),
+        safe(this.git(['worktree', 'list', '--porcelain'], repoPath), ''),
+        safe(this.git(['log', '-1', '--format=%H|%h|%s|%aI'], repoPath), ''),
+      ]);
+
+      const parsed = parsePorcelainV2(statusOut);
+      const stashCount = countNonBlankLines(stashOut);
+      const worktreeCount = countWorktreeListPorcelain(worktreeOut);
+      const lastCommit = parseLastCommit(lastCommitOut) ?? undefined;
+
+      const result: RepoStatus = {
+        repoPath,
+        currentBranch: parsed.currentBranch,
+        upstream: parsed.upstream,
+        ahead: parsed.ahead,
+        behind: parsed.behind,
+        modifiedCount: parsed.modifiedCount,
+        stagedCount: parsed.stagedCount,
+        untrackedCount: parsed.untrackedCount,
+        unmergedCount: parsed.unmergedCount,
+        stashCount,
+        worktreeCount,
+        lastCommit,
+        fetchedAt: new Date().toISOString(),
+      };
+      return result;
+    }, 'GIT_GET_REPO_STATUS_FAILED');
+  }
+
+  /**
+   * Enumerate branches with C7 hygiene metadata, keyed on raw repoPath.
+   *
+   * Issues 4 git invocations:
+   *   1) symbolic-ref HEAD               — current branch (may fail in detached)
+   *   2) for-each-ref refs/heads ...     — name + last-commit timestamp
+   *   3) branch --merged <default>       — set of merged branches
+   *   4) branch -r --format ...          — set of remote branch names
+   *   5) worktree list --porcelain       — set of branch names that have worktrees
+   *
+   * Default branch is detected via `symbolic-ref refs/remotes/origin/HEAD`
+   * with `'main'` as the fallback.
+   */
+  async listBranchesForRepo(repoPath: string): Promise<IpcResult<RepoBranchRow[]>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await p;
+        } catch {
+          return fallback;
+        }
+      };
+
+      // Default branch detection
+      let defaultBranch = 'main';
+      const headRef = await safe(
+        this.git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath),
+        ''
+      );
+      if (headRef.startsWith('origin/')) defaultBranch = headRef.slice('origin/'.length);
+
+      const [branchListOut, currentOut, mergedOut, remoteOut, worktreeOut] = await Promise.all([
+        safe(
+          this.git(
+            [
+              'for-each-ref',
+              '--format=%(refname:short)|%(committerdate:unix)',
+              'refs/heads',
+            ],
+            repoPath
+          ),
+          ''
+        ),
+        safe(this.git(['symbolic-ref', '--short', '-q', 'HEAD'], repoPath), ''),
+        safe(this.git(['branch', '--format=%(refname:short)', '--merged', defaultBranch], repoPath), ''),
+        safe(this.git(['branch', '-r', '--format=%(refname:short)'], repoPath), ''),
+        safe(this.git(['worktree', 'list', '--porcelain'], repoPath), ''),
+      ]);
+
+      const currentBranch = currentOut.trim();
+      const mergedSet = new Set(
+        mergedOut
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+      const remoteSet = new Set(
+        remoteOut
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+      // Worktree porcelain blocks: `worktree <path>` then `branch refs/heads/<name>`
+      const worktreeBranches = new Set<string>();
+      for (const line of worktreeOut.split('\n')) {
+        if (line.startsWith('branch refs/heads/')) {
+          worktreeBranches.add(line.slice('branch refs/heads/'.length).trim());
+        }
+      }
+
+      const rows: RepoBranchRow[] = branchListOut
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [name, ts] = line.split('|');
+          const lastCommitMs = Number(ts) > 0 ? Number(ts) * 1000 : 0;
+          // Heuristic: deleted-on-remote = our branch had a tracking remote in
+          // the past (origin/<name> was once a remote), but origin/<name> isn't
+          // present now. We approximate "had remote in the past" by checking
+          // whether origin/<name> is present right now: if NOT present and
+          // origin/HEAD points at <defaultBranch>, only flag user's own
+          // branches that match a known prefix or have no remote at all.
+          // Simplest defensible signal: NOT present in remoteSet AND it's not
+          // the default branch itself.
+          const remoteRef = `origin/${name}`;
+          const deletedOnRemote = !remoteSet.has(remoteRef) && name !== defaultBranch;
+          return {
+            name,
+            isCurrent: name === currentBranch,
+            lastCommitMs,
+            mergedIntoDefault: mergedSet.has(name),
+            deletedOnRemote,
+            hasWorktree: worktreeBranches.has(name),
+          };
+        })
+        .sort((a, b) => b.lastCommitMs - a.lastCommitMs || a.name.localeCompare(b.name));
+
+      return rows;
+    }, 'GIT_LIST_BRANCHES_FOR_REPO_FAILED');
+  }
 
   /**
    * Get commit history for a branch since divergence from base branch

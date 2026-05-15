@@ -13,11 +13,13 @@ import { StatusBar } from './components/layouts/StatusBar';
 import { DashboardCanvas } from './components/features/DashboardCanvas';
 import { SessionDetailView } from './components/features/SessionDetailView';
 import { UniversalCommitsView } from './components/features/UniversalCommitsView';
+import { WorkspaceBrowserView } from './components/features/WorkspaceBrowserView';
 import { HomeArtefactLeft } from './components/ui/HomeArtefactLeft';
 import { NewSessionWizard } from './components/features/NewSessionWizard';
 import { CloseSessionDialog } from './components/features/CloseSessionDialog';
 import { SettingsModal } from './components/features/SettingsModal';
 import { CreateAgentWizard } from './components/features/CreateAgentWizard';
+import { RepoDetailModal } from './components/features/RepoDetailModal';
 import { RebaseMergeErrorDialog } from './components/features/RebaseMergeErrorDialog';
 import { OnboardingModal } from './components/features/OnboardingModal';
 import { useAgentStore, selectAgentList, selectSessionById } from './store/agentStore';
@@ -49,6 +51,9 @@ export default function App(): React.ReactElement {
     setShowSettingsModal,
     showCreateAgentWizard,
     setShowCreateAgentWizard,
+    createAgentWizardRepoPath,
+    repoDetailPath,
+    closeRepoDetail,
     showOnboarding,
     setShowOnboarding,
   } = useUIStore();
@@ -203,6 +208,8 @@ export default function App(): React.ReactElement {
       onDelete={handleDeleteSession}
       onRestart={handleRestartSession}
     />
+  ) : mainView === 'workspaces' ? (
+    <WorkspaceBrowserView />
   ) : mainView === 'commits' ? (
     <UniversalCommitsView />
   ) : mainView === 'artefacts' ? (
@@ -248,7 +255,13 @@ export default function App(): React.ReactElement {
       )}
 
       {showCreateAgentWizard && (
-        <CreateAgentWizard onClose={() => setShowCreateAgentWizard(false)} />
+        <CreateAgentWizard
+          onClose={() => setShowCreateAgentWizard(false)}
+          initialRepoPath={createAgentWizardRepoPath}
+        />
+      )}
+      {repoDetailPath && (
+        <RepoDetailModal repoPath={repoDetailPath} onClose={closeRepoDetail} />
       )}
 
       {/* Onboarding - shown on first launch */}

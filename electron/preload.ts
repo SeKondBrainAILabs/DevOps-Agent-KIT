@@ -23,6 +23,15 @@ import type {
   ActivityLogEntry,
   AppConfig,
   Credentials,
+  WorktreeMode,
+  Workspace,
+  WorkspaceCreateInput,
+  WorkspaceUpdateInput,
+  WorkspaceScanResult,
+  WorkspaceRepoChangeEvent,
+  ProjectGroup,
+  ProjectGroupCreateInput,
+  ProjectGroupUpdateInput,
   IpcResult,
   RepoVersionInfo,
   RepoVersionSettings,
@@ -118,6 +127,18 @@ const api = {
 
     detectSubmodules: (repoPath: string): Promise<IpcResult<Array<{ name: string; path: string; url: string }>>> =>
       ipcRenderer.invoke(IPC.GIT_DETECT_SUBMODULES, repoPath),
+
+    /** Compact status snapshot for the RepoStatusCard (Day 1.5). */
+    getRepoStatus: (repoPath: string): Promise<IpcResult<import('../shared/types').RepoStatus>> =>
+      ipcRenderer.invoke(IPC.GIT_GET_REPO_STATUS, repoPath),
+
+    /** Branches with C7 hygiene metadata (Day 2). */
+    listBranchesForRepo: (repoPath: string): Promise<IpcResult<import('../shared/types').RepoBranchRow[]>> =>
+      ipcRenderer.invoke(IPC.GIT_LIST_BRANCHES_FOR_REPO, repoPath),
+
+    /** Worktree list keyed on repoPath (Day 2). */
+    listWorktrees: (repoPath: string): Promise<IpcResult<Array<{ path: string; branch: string; head: string; bare: boolean }>>> =>
+      ipcRenderer.invoke(IPC.GIT_LIST_WORKTREES, repoPath),
 
     getChangedFiles: (repoPath: string, baseBranch?: string): Promise<IpcResult<Array<{
       path: string;
@@ -336,6 +357,68 @@ const api = {
 
     has: (key: keyof Credentials): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke(IPC.CREDENTIAL_HAS, key),
+  },
+
+  // ==========================================================================
+  // PER-REPO WORKSPACE API (C5 Single-Session Mode)
+  // ==========================================================================
+  repoWorkspace: {
+    getWorktreeMode: (repoPath: string): Promise<IpcResult<WorktreeMode>> =>
+      ipcRenderer.invoke(IPC.REPO_GET_WORKTREE_MODE, repoPath),
+
+    setWorktreeMode: (repoPath: string, mode: WorktreeMode): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.REPO_SET_WORKTREE_MODE, repoPath, mode),
+
+    getActiveSessionCount: (repoPath: string): Promise<IpcResult<number>> =>
+      ipcRenderer.invoke(IPC.REPO_GET_ACTIVE_SESSION_COUNT, repoPath),
+  },
+
+  // ==========================================================================
+  // WORKSPACE API (Epic A — multi-workspace, multi-repo discovery)
+  // ==========================================================================
+  workspace: {
+    list: (): Promise<IpcResult<Workspace[]>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_LIST),
+    get: (id: string): Promise<IpcResult<Workspace>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_GET, id),
+    add: (input: WorkspaceCreateInput): Promise<IpcResult<Workspace>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_ADD, input),
+    update: (id: string, patch: WorkspaceUpdateInput): Promise<IpcResult<Workspace>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_UPDATE, id, patch),
+    remove: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_REMOVE, id),
+    getActive: (): Promise<IpcResult<Workspace | null>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_GET_ACTIVE),
+    setActive: (id: string | null): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_SET_ACTIVE, id),
+    scan: (id: string): Promise<IpcResult<WorkspaceScanResult>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_SCAN, id),
+    startWatching: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_WATCH_START, id),
+    stopWatching: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.WORKSPACE_WATCH_STOP, id),
+    /** Subscribe to repo-added / repo-removed events. Returns an unsubscribe fn. */
+    onRepoChange: (cb: (event: WorkspaceRepoChangeEvent) => void): (() => void) => {
+      const handler = (_: unknown, event: WorkspaceRepoChangeEvent) => cb(event);
+      ipcRenderer.on(IPC.WORKSPACE_REPO_CHANGE, handler);
+      return () => ipcRenderer.removeListener(IPC.WORKSPACE_REPO_CHANGE, handler);
+    },
+  },
+
+  // ==========================================================================
+  // PROJECT GROUP API (Epic F — cross-repo project groups)
+  // ==========================================================================
+  projectGroup: {
+    list: (): Promise<IpcResult<ProjectGroup[]>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_LIST),
+    get: (id: string): Promise<IpcResult<ProjectGroup>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_GET, id),
+    add: (input: ProjectGroupCreateInput): Promise<IpcResult<ProjectGroup>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_ADD, input),
+    update: (id: string, patch: ProjectGroupUpdateInput): Promise<IpcResult<ProjectGroup>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_UPDATE, id, patch),
+    remove: (id: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.PROJECT_GROUP_REMOVE, id),
   },
 
   // ==========================================================================
