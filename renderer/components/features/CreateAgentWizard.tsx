@@ -101,6 +101,9 @@ export function CreateAgentWizard({ onClose, initialRepoPath }: CreateAgentWizar
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [featureOrgChoice, setFeatureOrgChoice] = useState<FeatureOrgStructure>('feature-folders');
 
+  // Custom agent MCP opt-in
+  const [customMcpEnabled, setCustomMcpEnabled] = useState(false);
+
   // Multi-repo settings
   const [multiRepoEnabled, setMultiRepoEnabled] = useState(false);
   const [detectedSubmodules, setDetectedSubmodules] = useState<Array<{ name: string; path: string; url: string }>>([]);
@@ -260,6 +263,7 @@ export function CreateAgentWizard({ onClose, initialRepoPath }: CreateAgentWizar
         systemPrompt: settings.systemPrompt,
         contextPreservation: settings.contextPreservation,
         multiRepo,
+        customMcpEnabled: agentType === 'custom' ? customMcpEnabled : undefined,
       };
 
       const result = await window.api?.instance?.create(config);
@@ -452,6 +456,8 @@ export function CreateAgentWizard({ onClose, initialRepoPath }: CreateAgentWizar
                 <AgentTypeSelector
                   selectedType={agentType}
                   onSelect={handleAgentSelect}
+                  customMcpEnabled={customMcpEnabled}
+                  onCustomMcpChange={setCustomMcpEnabled}
                 />
               </div>
             </div>

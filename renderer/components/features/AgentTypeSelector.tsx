@@ -93,6 +93,18 @@ const AGENT_TYPES: AgentTypeInfo[] = [
     ),
   },
   {
+    type: 'codex',
+    name: 'Codex',
+    description: 'OpenAI autonomous coding agent with MCP',
+    launchMethod: 'CLI',
+    color: 'bg-emerald-600',
+    icon: (
+      <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
     type: 'custom',
     name: 'Custom Agent',
     description: 'Any tool with Kanvas integration',
@@ -109,9 +121,11 @@ const AGENT_TYPES: AgentTypeInfo[] = [
 interface AgentTypeSelectorProps {
   selectedType: AgentType | null;
   onSelect: (type: AgentType) => void;
+  customMcpEnabled?: boolean;
+  onCustomMcpChange?: (enabled: boolean) => void;
 }
 
-export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorProps): React.ReactElement {
+export function AgentTypeSelector({ selectedType, onSelect, customMcpEnabled, onCustomMcpChange }: AgentTypeSelectorProps): React.ReactElement {
   return (
     <div className="space-y-4">
       <label className="label">Select Agent Type</label>
@@ -177,6 +191,40 @@ export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorP
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* MCP toggle — only shown for custom agents */}
+      {selectedType === 'custom' && onCustomMcpChange && (
+        <div className="p-4 rounded-xl bg-surface-secondary border border-border">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-medium text-text-primary text-sm">Does this agent support MCP?</h4>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Enables MCP server URL in the generated instructions for full KIT dashboard integration.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onCustomMcpChange(!customMcpEnabled)}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                customMcpEnabled ? 'bg-kanvas-blue' : 'bg-gray-600'
+              }`}
+              role="switch"
+              aria-checked={customMcpEnabled}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                  customMcpEnabled ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+          {customMcpEnabled && (
+            <p className="mt-2 text-xs text-kanvas-blue">
+              ✓ MCP server URL will be included in the setup instructions.
+            </p>
+          )}
         </div>
       )}
     </div>

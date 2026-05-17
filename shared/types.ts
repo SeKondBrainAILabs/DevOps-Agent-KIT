@@ -9,7 +9,7 @@
 
 export type SessionStatus = 'idle' | 'active' | 'watching' | 'paused' | 'error' | 'closed';
 
-export type AgentType = 'claude' | 'cursor' | 'copilot' | 'cline' | 'aider' | 'warp' | 'custom';
+export type AgentType = 'claude' | 'codex' | 'cursor' | 'copilot' | 'cline' | 'aider' | 'warp' | 'custom';
 
 export interface Session {
   id: string;
@@ -505,6 +505,8 @@ export interface AgentInstanceConfig {
   contextPreservation: string;
   // Multi-repo mode (optional, advanced)
   multiRepo?: MultiRepoConfig;
+  // Custom agent: whether the agent supports MCP
+  customMcpEnabled?: boolean;
 }
 
 export interface AgentInstance {

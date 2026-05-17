@@ -566,9 +566,10 @@ ${DEVOPS_KIT_DIR}/
         ...instructionVars,
         repoPath: workingDirectory, // CRITICAL: Use worktree path, not main repo
         mcpUrl: this.mcpServerUrl || undefined,
+        customMcpEnabled: config.customMcpEnabled,
       };
       instance.instructions = getAgentInstructions(config.agentType, finalInstructionVars);
-      if (config.agentType === 'claude') {
+      if (config.agentType === 'claude' || config.agentType === 'codex') {
         instance.prompt = generateClaudePrompt(finalInstructionVars);
       }
 

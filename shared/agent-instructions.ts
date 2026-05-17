@@ -15,6 +15,8 @@ export interface InstructionVars {
   contextPreservation: string;
   rebaseFrequency: string;
   mcpUrl?: string;
+  // Custom agent MCP opt-in
+  customMcpEnabled?: boolean;
   // Multi-repo fields
   multiRepoEntries?: RepoEntry[];
   commitScope?: 'all' | 'per-repo';
@@ -29,6 +31,7 @@ export function getAgentInstructions(
 ): string {
   const templates: Record<AgentType, (vars: InstructionVars) => string> = {
     claude: getClaudeInstructions,
+    codex: getCodexInstructions,
     cursor: getCursorInstructions,
     copilot: getCopilotInstructions,
     cline: getClineInstructions,
@@ -546,7 +549,77 @@ Use Warp AI (# key) to get help with your task. Activity tracked via git commits
 `;
 }
 
+function getCodexInstructions(vars: InstructionVars): string {
+  const mcpSection = vars.mcpUrl ? `
+### MCP Server Connection
+Connect Codex CLI to KIT's MCP server so it can log commits and read session context:
+
+\`\`\`bash
+codex --mcp-server "${vars.mcpUrl}" --session-id "${vars.sessionId}"
+\`\`\`
+
+Or add to your \`~/.codex/config.json\`:
+\`\`\`json
+{
+  "mcpServers": {
+    "kit": {
+      "url": "${vars.mcpUrl}",
+      "sessionId": "${vars.sessionId}"
+    }
+  }
+}
+\`\`\`
+
+**Available MCP tools:**
+- \`kit_log_commit\` — record commits with context
+- \`kit_get_session\` — read current session state
+- \`kit_update_status\` — push status updates to KIT dashboard
+` : `
+### Activity Tracking (No MCP)
+Set these environment variables before starting Codex:
+\`\`\`bash
+export KANVAS_SESSION_ID="${vars.sessionId}"
+export KANVAS_REPO_PATH="${vars.repoPath}"
+export KANVAS_BRANCH="${vars.branchName}"
+\`\`\`
+`;
+
+  return `## Codex Agent Setup for ${vars.repoName}
+
+### Repository
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+\`\`\`
+
+### Task
+${vars.taskDescription}
+${mcpSection}
+### System Context
+${vars.systemPrompt}
+
+---
+
+Run Codex in full-auto mode with: \`codex --approval-mode full-auto\`
+Activity will appear in the KIT dashboard once the MCP server is connected.
+`;
+}
+
 function getCustomInstructions(vars: InstructionVars): string {
+  const mcpSection = vars.customMcpEnabled && vars.mcpUrl ? `
+### MCP Server (Detected as Supported)
+Connect your agent to KIT's MCP server for full dashboard integration:
+
+**MCP Server URL:** \`${vars.mcpUrl}\`
+**Session ID:** \`${vars.sessionId}\`
+
+Configure your agent to use this MCP server URL. Once connected the following
+tools become available:
+- \`kit_log_commit\` — record commits with context
+- \`kit_get_session\` — read current session state
+- \`kit_update_status\` — push status updates to KIT dashboard
+` : '';
+
   return `## Custom Agent Setup for ${vars.repoName}
 
 ### Kanvas Integration
@@ -616,7 +689,7 @@ git checkout ${vars.branchName}
 ---
 
 Your custom agent's activity will appear in KIT when files are written correctly.
-`;
+${mcpSection}`;
 }
 
 /**
@@ -625,6 +698,7 @@ Your custom agent's activity will appear in KIT when files are written correctly
 export function getAgentTypeDescription(agentType: AgentType): string {
   const descriptions: Record<AgentType, string> = {
     claude: 'Claude Code - Full AI coding assistant with terminal access',
+    codex: 'Codex CLI - OpenAI\'s autonomous coding agent with MCP support',
     cursor: 'Cursor IDE - AI-powered code editing and completion',
     copilot: 'GitHub Copilot - AI pair programmer in VS Code',
     cline: 'Cline - Autonomous coding agent for VS Code',
@@ -642,6 +716,7 @@ export function getAgentTypeDescription(agentType: AgentType): string {
 export function getAgentLaunchMethod(agentType: AgentType): 'cli' | 'ide' | 'terminal' | 'manual' {
   const methods: Record<AgentType, 'cli' | 'ide' | 'terminal' | 'manual'> = {
     claude: 'cli',
+    codex: 'cli',
     cursor: 'ide',
     copilot: 'ide',
     cline: 'ide',

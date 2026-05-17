@@ -12,6 +12,7 @@ interface NewSessionWizardProps {
 
 const agentTypes: { value: AgentType; label: string }[] = [
   { value: 'claude', label: 'Claude' },
+  { value: 'codex', label: 'Codex' },
   { value: 'cursor', label: 'Cursor' },
   { value: 'copilot', label: 'GitHub Copilot' },
   { value: 'cline', label: 'Cline' },
