@@ -369,7 +369,13 @@ Ladder in `shared/node-modules-plan.ts` (pure) + `provisionNodeModules()`: (1) n
 
 **Grace period:** never reap younger than `max(10 min, TTL)` from `createdAt`.
 
-**Re-entrancy guard + the right safety check.** Use `git.getWorktreeSafetyInfo` (local, no network — the one `checkForStaleSessions` uses), not `getDeleteSafetyInfo` (two 15s fetches + an untimed `ls-remote`; 20 candidates could exceed the 5-minute interval and overlap passes). Add an in-flight boolean.
+**Re-entrancy guard + the right safety check.** Not `getDeleteSafetyInfo` (two 15s fetches + an untimed `ls-remote`; 20 candidates could exceed the 5-minute interval and overlap passes). Add an in-flight boolean.
+
+> **CORRECTED DURING IMPLEMENTATION — `getWorktreeSafetyInfo` is unsafe here.** This section originally said to use it. It compares HEAD against a hardcoded `main` and `development`, both wrapped in a swallow-all `safe()`. On a repo whose primary branch is `trunk` or `master` **both comparisons fail silently** and it returns `unmergedCommitCount: 0` with `mergedIntoBranches: ['main','development']` — a branch full of unmerged work presented as clean and fully merged. Verified against a real repo holding a real unmerged commit, and pinned as a regression test in `ReapSafetyInfo.test.ts`.
+>
+> That is survivable for the dialog it feeds, where a human reads the result. It is **not** survivable for the reaper, which would have read it as authorisation to delete the worktree *and* the local branch — the exact "clean + merged ⇒ delete" rule below.
+>
+> Implemented instead as `GitService.getReapSafetyInfo(worktreePath, baseBranch)`, which compares against the session's **own recorded base branch** and returns `conclusive: false` when the comparison cannot be made. An inconclusive result never authorises deletion; a failed probe is inconclusive, never clean.
 
 **On expiry — safe by default:** observer → full delete; clean+merged worktree session → `deleteInstanceWithCleanup({deleteWorktree, deleteLocalBranch})`, **never** `deleteRemoteBranch`; uncommitted/unmerged → snapshot ref + status `closed` + teardown, **no delete**; `worktreeStatus:'failed'` → teardown only, never git-touch.
 
@@ -415,6 +421,11 @@ Ladder in `shared/node-modules-plan.ts` (pure) + `provisionNodeModules()`: (1) n
 ---
 
 ## Verification
+
+> **CORRECTED DURING IMPLEMENTATION — `npm run build` is not a type gate.** Several stories were signed off on the strength of a green build. electron-vite compiles with **esbuild, which strips TypeScript types without checking them**: a clean build proves the code parses and nothing more. Two undeclared properties on `AgentInstance` (`closedAt`, `closeReason`, assigned by `markSessionClosed` in M2) shipped this way, and a `declareFiles` arity change in H6 broke three call sites with the build still green.
+>
+> The gate is `scripts/typecheck-gate.sh`: it runs `tsc --noEmit` over **both** tsconfigs, strips line numbers, and diffs against a recorded baseline, failing on anything new. Checking only `tsconfig.electron.json` leaves the renderer ungated, which is how those two got in. The project does not type-check cleanly today (~785 errors, mostly `TS7006` implicit-any on pre-`noImplicitAny` code), so a zero-error gate is not reachable without an unrelated cleanup — hence the baseline.
+
 
 **Unit / integration** (`jest.kanvas.config.cjs`, `tests/kanvas/unit/`): per-story tests above. **`tests/kanvas/integration/McpAgentStory.test.ts` already exists** with its own binder + tool-capture harness — extend it, don't create it. All other named test and component files were verified to exist.
 
