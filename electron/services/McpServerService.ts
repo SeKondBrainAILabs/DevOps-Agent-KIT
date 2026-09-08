@@ -97,6 +97,11 @@ export interface McpServiceDeps {
     descendantSessionIds: (sessionId: string) => string[];
     closeSessions: (selector: any, opts?: any) => Promise<any>;
     directChildSessionIds: (sessionId: string) => string[];
+    // M5 — control tools.
+    restartSession: (sessionId: string, sessionData?: any, commitChanges?: boolean) => Promise<any>;
+    adoptSession: (input: any) => Promise<any>;
+    updateSession: (sessionId: string, patch: any) => Promise<any>;
+    extendSession: (sessionId: string, opts: { minutes: number }) => Promise<any>;
   };
   agentInstanceService?: {
     listInstances: () => { success: boolean; data?: any[] };

@@ -1720,6 +1720,160 @@ export function registerTools(
     })
   );
 
+  // ── M5: control tools ──────────────────────────────────────────────────
+  srv.tool(
+    'kit_restart_session',
+    'Restart a KIT session: stop it, re-create its worktree from the current base, and bring the watcher back up. The session keeps working under its ORIGINAL id as well as a new one, so a subagent already launched with the old id keeps working. Use when a session is wedged; use kit_close_session when the work is finished.',
+    {
+      target_session_id: z.string().describe('The session to restart. This is the TARGET — pass your own id as caller_session_id.'),
+      caller_session_id: z.string().optional().describe('YOUR session id.'),
+      commit_changes: z.boolean().optional().describe('Commit any uncommitted work before restarting. Default true — setting this false risks losing it.'),
+    },
+    withCallLog('kit_restart_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.restartSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.restartSession(
+        args.target_session_id,
+        undefined,
+        args.commit_changes !== false
+      );
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Restart failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message, retryable: false,
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        session_id: result.data?.sessionId,
+        previous_session_id: args.target_session_id,
+        instance_id: result.data?.id,
+        worktree_path: result.data?.worktreePath ?? null,
+        branch: result.data?.config?.branchName,
+        note: 'The previous session id still resolves for MCP calls, so a subagent launched with it keeps working.',
+      }) }] };
+    })
+  );
+
+  srv.tool(
+    'kit_adopt_session',
+    'Bring an EXISTING branch or worktree under KIT management without creating anything. Use when work already exists — a branch a human made, or one from a session KIT has lost track of. The adopted session is recorded as human-owned: you can manage it, but you can never destructively close it.',
+    {
+      repo_path: z.string().describe('Absolute path to the repository.'),
+      branch_name: z.string().describe('The existing branch to adopt.'),
+      base_branch: z.string().optional().describe('What this branch merges back into. Defaults to development.'),
+      worktree_path: z.string().optional().describe('Where the branch is checked out, if not the repo root. Adopted as-is; no worktree is created.'),
+      agent_type: z.string().optional().describe('Agent working in it. Defaults to claude.'),
+      task: z.string().optional().describe('What this session is for.'),
+      caller_session_id: z.string().optional().describe('YOUR session id, recorded as the parent.'),
+      if_exists: z.enum(['refuse', 'take_over']).optional().describe('What to do when a live session already owns the branch. Default refuse. take_over works only on agent-created sessions — never on a human\'s.'),
+    },
+    withCallLog('kit_adopt_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.adoptSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.adoptSession({
+        repoPath: args.repo_path,
+        branchName: args.branch_name,
+        baseBranch: args.base_branch,
+        worktreePath: args.worktree_path,
+        agentType: args.agent_type,
+        task: args.task,
+        callerSessionId: args.caller_session_id,
+        ifExists: args.if_exists,
+      });
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Adopt failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message, retryable: false,
+          instruction: err.instruction,
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        session_id: result.data?.sessionId,
+        instance_id: result.data?.id,
+        worktree_path: result.data?.worktreePath ?? null,
+        branch: result.data?.config?.branchName,
+        created_by: 'adopted',
+        note: 'Recorded as adopted, not agent-created. You may close it safely, but never destructively — the branch belongs to a human.',
+      }) }] };
+    })
+  );
+
+  srv.tool(
+    'kit_update_session',
+    "Change a live session's settings. Turning auto_commit on or off starts or stops its file watcher, and rebase_frequency starts or stops its rebase watcher, so these take effect immediately. The branch name cannot be changed — close the session and start a new one instead.",
+    {
+      target_session_id: z.string().describe('The session to update. This is the TARGET — pass your own id as caller_session_id.'),
+      caller_session_id: z.string().optional().describe('YOUR session id.'),
+      task: z.string().optional().describe('New task description.'),
+      base_branch: z.string().optional().describe('New base branch to merge back into.'),
+      auto_commit: z.boolean().optional().describe('Start or stop the auto-commit file watcher.'),
+      rebase_frequency: z.enum(['never', 'daily', 'weekly', 'on-demand']).optional().describe('Start, stop or re-schedule the rebase watcher.'),
+      system_prompt: z.string().optional().describe('New system prompt.'),
+      ttl_minutes: z.number().optional().describe('New lifetime from creation, in minutes. Also resets the expiry deadline.'),
+    },
+    withCallLog('kit_update_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.updateSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.updateSession(args.target_session_id, {
+        taskDescription: args.task,
+        baseBranch: args.base_branch,
+        autoCommit: args.auto_commit,
+        rebaseFrequency: args.rebase_frequency,
+        systemPrompt: args.system_prompt,
+        ttlMinutes: args.ttl_minutes,
+      });
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Update failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message, retryable: false,
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true, session_id: result.data?.sessionId, updated: result.data?.updated ?? [],
+      }) }] };
+    })
+  );
+
+  srv.tool(
+    'kit_extend_session',
+    'Push a session\'s expiry deadline out so the reaper does not clean it up while it is still working. Capped at one extension of up to 4 hours per window — if you need longer than that, the session should probably be finished and a new one started.',
+    {
+      target_session_id: z.string().describe('The session to extend. This is the TARGET — pass your own id as caller_session_id.'),
+      caller_session_id: z.string().optional().describe('YOUR session id.'),
+      minutes: z.number().describe('How much longer it needs, in minutes. Maximum 240.'),
+    },
+    withCallLog('kit_extend_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.extendSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.extendSession(args.target_session_id, {
+        minutes: args.minutes,
+      });
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Extend failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message,
+          retryable: err.code === 'EXTENSION_LIMIT_REACHED',
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        session_id: result.data?.sessionId,
+        expires_at: result.data?.expiresAt,
+        extensions_used: result.data?.extensionsUsed,
+      }) }] };
+    })
+  );
+
   srv.tool(
     'kit_close_sessions',
     'Close many KIT sessions at once — typically everything you spawned. Same SAFE default and same per-session refusals as kit_close_session; failures are reported per session and never abort the batch. Requires a scope: session_ids, parent_session_id or repo_path.',

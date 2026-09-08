@@ -532,47 +532,16 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     agentType?: string;
     task?: string;
   }, commitChanges?: boolean) => {
-    // SECOND COMPOSE SITE — still inline, deliberately.
-    //
-    // INSTANCE_CREATE now goes through SessionOrchestrator.startSession, but
-    // restart also composes a session (stop old watcher -> restartInstance ->
-    // start new watcher) and is NOT yet routed through the orchestrator. It is
-    // moved in M5 (kit_restart_session), which has to solve a problem create
-    // does not: restart must tear down WITHOUT unbinding MCP, because H2 makes
-    // teardown unregister every predecessor alias and restart re-aliases them
-    // immediately afterwards (AgentInstanceService:3063). Unbinding here would
-    // break any in-flight kit_commit in that window, permanently if the
-    // create half then fails.
-    //
-    // Until M5 lands, this is the only place other than the orchestrator and
-    // the startup rehydration loop that starts a watcher.
-
-    // Tear down the outgoing session's background resources. Note this stops
-    // the rebase watcher too, which the old inline `watcher.stop()` did not —
-    // a restarted session used to leave its previous rebase interval running.
-    //
-    // unbindMcp:false is load-bearing. restartInstance re-aliases the OLD
-    // session id onto the NEW worktree a few steps later
-    // (aliasOldSessionInBinder, AgentInstanceService:2274). Unbinding here
-    // would open a window in which the old id resolves to nothing, so an
-    // in-flight kit_commit from a subagent launched with that id would get
-    // "Unknown session" — permanently, if the create half then fails and the
-    // re-alias never runs.
-    await services.sessionOrchestrator.teardownSession(sessionId, { unbindMcp: false });
-
-    const result = await services.agentInstance.restartInstance(sessionId, sessionData, commitChanges);
-
-    // Start watcher for new session (use worktree path if available)
-    if (result.success && result.data?.sessionId) {
-      const watchPath = result.data.worktreePath || result.data.config?.repoPath;
-      if (watchPath) {
-        services.watcher.startWithPath(result.data.sessionId, watchPath).catch((err) => {
-          console.warn('[IPC] Failed to start watcher for restarted session:', err);
-        });
-      }
-    }
-
-    return result;
+    // M5 closed the second compose site. Teardown (without unbinding MCP),
+    // restartInstance, and the watcher start now all live in
+    // SessionOrchestrator.restartSession, so a non-IPC caller — the
+    // kit_restart_session tool — gets a restarted session with a running
+    // watcher rather than one that silently never auto-commits.
+    return services.sessionOrchestrator.restartSession(
+      sessionId,
+      sessionData as Parameters<typeof services.sessionOrchestrator.restartSession>[1],
+      commitChanges
+    );
   });
 
   ipcMain.handle(IPC.INSTANCE_GET_LAST_CHANGE, async (_, sessionId: string) => {

@@ -82,6 +82,23 @@ export interface OrchestratorAgentInstanceService {
    * acted on — the reaper's own idempotence marker, independent of status.
    */
   markSessionReaped?(sessionId: string, action: string): IpcResult<void>;
+  restartInstance?(
+    sessionId: string,
+    sessionData?: {
+      repoPath: string;
+      branchName: string;
+      baseBranch?: string;
+      worktreePath?: string;
+      agentType?: AgentType;
+      task?: string;
+    },
+    commitChanges?: boolean
+  ): Promise<IpcResult<AgentInstance>>;
+  /** Apply a validated config patch to a live session (M5). */
+  updateSessionConfig?(
+    sessionId: string,
+    patch: Record<string, unknown>
+  ): Promise<IpcResult<void>>;
 }
 
 export interface CloseSessionOptions {
@@ -156,6 +173,15 @@ export interface OrchestratorWatcherService {
 /** The slice of RebaseWatcherService the orchestrator needs. */
 export interface OrchestratorRebaseWatcherService {
   stopWatching(sessionId: string): Promise<IpcResult<void>>;
+  startWatching?(config: {
+    sessionId: string;
+    repoPath: string;
+    worktreePath?: string;
+    baseBranch: string;
+    currentBranch: string;
+    rebaseFrequency: string;
+    pollIntervalMs: number;
+  }): Promise<IpcResult<void>>;
 }
 
 /** The slice of McpSessionBinder the orchestrator needs. */
@@ -992,6 +1018,330 @@ export class SessionOrchestrator {
       reapedAt: instance.reapedAt,
     };
   }
+
+  /**
+   * Restart a session (M5).
+   *
+   * This is the SECOND compose site the S1 story left open: `INSTANCE_RESTART`
+   * previously did teardown -> restartInstance -> startWithPath inline, which
+   * meant a non-IPC caller restarting a session got one with no watcher and
+   * therefore no auto-commit.
+   *
+   * `unbindMcp: false` is the load-bearing detail and the reason this cannot
+   * just reuse the close path. H2 made teardown unregister the session AND
+   * every predecessor alias; `restartInstance` re-aliases the old id onto the
+   * new worktree a few steps later. Unbinding in between opens a window where
+   * the old id resolves to nothing — any in-flight `kit_commit` from a subagent
+   * launched with that id fails with "Unknown session", and permanently so if
+   * the create half then fails and the re-alias never runs.
+   */
+  async restartSession(
+    sessionId: string,
+    sessionData?: {
+      repoPath: string;
+      branchName: string;
+      baseBranch?: string;
+      worktreePath?: string;
+      agentType?: AgentType;
+      task?: string;
+    },
+    commitChanges = true
+  ): Promise<IpcResult<AgentInstance>> {
+    const restart = this.deps.agentInstance.restartInstance;
+    if (!restart) {
+      return {
+        success: false,
+        error: { code: 'SERVICE_UNAVAILABLE', message: 'restartInstance is not available' },
+      };
+    }
+
+    await this.teardownSession(sessionId, { unbindMcp: false });
+
+    const result = await restart.call(
+      this.deps.agentInstance,
+      sessionId,
+      sessionData,
+      commitChanges
+    );
+
+    if (result.success && result.data?.sessionId) {
+      // Fire-and-forget, exactly as startSession does: a watcher failure must
+      // not turn a successful restart into a failure the caller has to unpick.
+      const watchPath = result.data.worktreePath || result.data.config?.repoPath;
+      if (watchPath) {
+        Promise.resolve(
+          this.deps.watcher.startWithPath(result.data.sessionId, watchPath)
+        ).catch((err) => {
+          console.warn('[SessionOrchestrator] watcher failed to start after restart:', err);
+        });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Adopt an existing branch/worktree a human already had (M5).
+   *
+   * `createdBy` is stamped 'adopted', never 'mcp'. That distinction is the
+   * whole safety story: `evaluateClosePermission` allows a safe close of an
+   * adopted session but refuses a destructive one, so an agent can manage a
+   * human's branch without being able to demolish it. Recording 'mcp' here
+   * would let an agent adopt any branch and then legally delete its worktree,
+   * straight through the epic's central fail-safe.
+   */
+  async adoptSession(input: {
+    repoPath: string;
+    branchName: string;
+    baseBranch?: string;
+    worktreePath?: string;
+    agentType?: AgentType;
+    task?: string;
+    callerSessionId?: string;
+    ifExists?: 'refuse' | 'take_over';
+  }): Promise<IpcResult<AgentInstance>> {
+    const { ifExists = 'refuse' } = input;
+
+    const existing = this.listSessions().find(
+      (i) =>
+        i.config?.repoPath === input.repoPath &&
+        i.config?.branchName === input.branchName &&
+        !['closed', 'completed', 'failed'].includes(String(i.status))
+    );
+
+    if (existing) {
+      if (ifExists !== 'take_over') {
+        return {
+          success: false,
+          error: {
+            code: 'BRANCH_IN_USE',
+            message: `Session ${existing.sessionId} is already active on '${input.branchName}'.`,
+          },
+        };
+      }
+      // take_over is restricted to agent-created sessions. Without this it is
+      // a way to seize a human's session: adopt with take_over, then own it.
+      if (existing.config?.createdBy !== 'mcp') {
+        return {
+          success: false,
+          error: {
+            code: 'NOT_PERMITTED',
+            message:
+              `Session ${existing.sessionId} on '${input.branchName}' was not created by an agent, ` +
+              'so it cannot be taken over. Ask the user to close it first.',
+          },
+        };
+      }
+      if (existing.sessionId) {
+        await this.teardownSession(existing.sessionId);
+        this.deps.agentInstance.markSessionClosed(existing.sessionId, {
+          reason: `taken over by ${input.callerSessionId ?? 'an agent'}`,
+          closedBy: 'adopt',
+        });
+      }
+    }
+
+    return this.deps.agentInstance.createInstance({
+      repoPath: input.repoPath,
+      agentType: (input.agentType ?? 'claude') as AgentType,
+      taskDescription: input.task ?? 'Adopted session',
+      branchName: input.branchName,
+      baseBranch: input.baseBranch ?? 'development',
+      // The branch and worktree already exist; adoption must not try to create
+      // them again. `adoptedWorktreePath` below is what actually prevents that
+      // — `createWorktreeIfNeeded` does not consult `useWorktree`.
+      useWorktree: Boolean(input.worktreePath),
+      autoCommit: true,
+      commitInterval: 30,
+      rebaseFrequency: 'never',
+      systemPrompt: '',
+      contextPreservation: '',
+      createdBy: 'adopted',
+      parentSessionId: input.callerSessionId,
+      adoptedWorktreePath: input.worktreePath,
+    } as unknown as AgentInstanceConfig);
+  }
+
+  /**
+   * Change a live session's configuration (M5).
+   *
+   * `branchName` is deliberately NOT updatable. A live worktree directory, the
+   * file watcher's key, the binder entry and the on-disk session report all key
+   * on the branch name; renaming one under a running session has no safe
+   * implementation, so it is refused rather than half-supported.
+   */
+  async updateSession(
+    sessionId: string,
+    patch: {
+      taskDescription?: string;
+      baseBranch?: string;
+      autoCommit?: boolean;
+      rebaseFrequency?: string;
+      systemPrompt?: string;
+      ttlMinutes?: number;
+    }
+  ): Promise<IpcResult<{ sessionId: string; updated: string[] }>> {
+    if ((patch as Record<string, unknown>).branchName !== undefined) {
+      return {
+        success: false,
+        error: {
+          code: 'NOT_PERMITTED',
+          message:
+            'branch_name cannot be changed on a live session — the worktree, watcher, ' +
+            'MCP binding and session file all key on it. Close the session and start a new one.',
+        },
+      };
+    }
+
+    const keys = Object.keys(patch).filter(
+      (k) => (patch as Record<string, unknown>)[k] !== undefined
+    );
+    if (keys.length === 0) {
+      return {
+        success: false,
+        error: { code: 'NO_UPDATES', message: 'No fields to update.' },
+      };
+    }
+
+    const instance = this.listSessions().find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance?.sessionId) {
+      return {
+        success: false,
+        error: { code: 'NOT_FOUND', message: `No session ${sessionId}` },
+      };
+    }
+    const liveId = instance.sessionId;
+
+    const applied = await this.deps.agentInstance.updateSessionConfig?.(liveId, patch);
+    if (applied && applied.success === false) return applied as any;
+
+    // Side effects. These are the reason update is a lifecycle operation and
+    // not a store write: the two flags each own a background process.
+    if (patch.autoCommit !== undefined && patch.autoCommit !== instance.config?.autoCommit) {
+      if (patch.autoCommit) {
+        const watchPath = instance.worktreePath || instance.config?.repoPath;
+        if (watchPath) {
+          Promise.resolve(this.deps.watcher.startWithPath(liveId, watchPath)).catch((err) => {
+            console.warn('[SessionOrchestrator] watcher failed to start on update:', err);
+          });
+        }
+      } else {
+        await this.deps.watcher.stopAll(liveId);
+      }
+    }
+
+    if (
+      patch.rebaseFrequency !== undefined &&
+      patch.rebaseFrequency !== instance.config?.rebaseFrequency
+    ) {
+      if (patch.rebaseFrequency === 'never') {
+        await this.deps.rebaseWatcher.stopWatching(liveId);
+      } else if (this.deps.rebaseWatcher.startWatching) {
+        // Stop first: startWatching on an already-watched session would
+        // otherwise stack a second interval.
+        await this.deps.rebaseWatcher.stopWatching(liveId);
+        await this.deps.rebaseWatcher.startWatching({
+          sessionId: liveId,
+          repoPath: instance.config?.repoPath ?? '',
+          worktreePath: instance.worktreePath,
+          baseBranch: patch.baseBranch ?? instance.config?.baseBranch ?? 'development',
+          currentBranch: instance.config?.branchName ?? '',
+          rebaseFrequency: patch.rebaseFrequency,
+          pollIntervalMs: 60_000,
+        });
+      }
+    }
+
+    return { success: true, data: { sessionId: liveId, updated: keys } };
+  }
+
+  /**
+   * Push a session's expiry out (M5).
+   *
+   * Capped at one 4-hour extension per window so a runaway agent cannot keep
+   * itself alive indefinitely by extending on a loop — which would make the
+   * reaper's hard ceiling unreachable. Every extension is recorded.
+   */
+  async extendSession(
+    sessionId: string,
+    opts: { minutes: number; now?: Date }
+  ): Promise<IpcResult<{ sessionId: string; expiresAt: string; extensionsUsed: number }>> {
+    const now = opts.now ?? new Date();
+    const MAX_EXTENSION_MINUTES = 240;
+
+    if (!Number.isFinite(opts.minutes) || opts.minutes <= 0) {
+      return {
+        success: false,
+        error: { code: 'INVALID_INPUT', message: 'minutes must be a positive number.' },
+      };
+    }
+    if (opts.minutes > MAX_EXTENSION_MINUTES) {
+      return {
+        success: false,
+        error: {
+          code: 'EXTENSION_TOO_LONG',
+          message: `A single extension is capped at ${MAX_EXTENSION_MINUTES} minutes.`,
+        },
+      };
+    }
+
+    const instance = this.listSessions().find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance?.sessionId) {
+      return {
+        success: false,
+        error: { code: 'NOT_FOUND', message: `No session ${sessionId}` },
+      };
+    }
+    const liveId = instance.sessionId;
+
+    // One extension per window: the window being the period the last extension
+    // bought. Once it has elapsed, another is allowed.
+    const previous = this.extensions.get(liveId);
+    if (previous && now.getTime() < previous.windowEndsAt) {
+      return {
+        success: false,
+        error: {
+          code: 'EXTENSION_LIMIT_REACHED',
+          message:
+            'This session has already been extended once in the current window. ' +
+            `Another extension is available after ${new Date(previous.windowEndsAt).toISOString()}.`,
+        },
+      };
+    }
+
+    // Extend from the later of now and the current expiry: extending from a
+    // deadline already in the past would produce one still in the past.
+    const currentExpiry = instance.expiresAt ? Date.parse(instance.expiresAt) : NaN;
+    const base = Number.isFinite(currentExpiry)
+      ? Math.max(currentExpiry, now.getTime())
+      : now.getTime();
+    const expiresAt = new Date(base + opts.minutes * 60_000).toISOString();
+
+    const used = (previous?.count ?? 0) + 1;
+    this.extensions.set(liveId, { count: used, windowEndsAt: base + opts.minutes * 60_000 });
+
+    const applied = await this.deps.agentInstance.updateSessionConfig?.(liveId, { expiresAt });
+    if (applied && applied.success === false) return applied as any;
+
+    console.log(
+      `[SessionOrchestrator] session ${liveId} extended by ${opts.minutes}m to ${expiresAt} (extension #${used})`
+    );
+
+    return { success: true, data: { sessionId: liveId, expiresAt, extensionsUsed: used } };
+  }
+
+  /** Per-session extension bookkeeping for `extendSession`. */
+  private extensions = new Map<string, { count: number; windowEndsAt: number }>();
 
   expandSessionAliases(sessionId: string): string[] {
     const match = this.listSessions().find(

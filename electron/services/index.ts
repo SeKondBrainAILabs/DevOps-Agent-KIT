@@ -463,6 +463,11 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     descendantSessionIds: (id) => sessionOrchestrator.descendantSessionIds(id),
     closeSessions: (sel, opts) => sessionOrchestrator.closeSessions(sel, opts),
     directChildSessionIds: (id) => sessionOrchestrator.directChildSessionIds(id),
+    restartSession: (sessionId, sessionData, commitChanges) =>
+      sessionOrchestrator.restartSession(sessionId, sessionData, commitChanges),
+    adoptSession: (input) => sessionOrchestrator.adoptSession(input),
+    updateSession: (sessionId, patch) => sessionOrchestrator.updateSession(sessionId, patch),
+    extendSession: (sessionId, opts) => sessionOrchestrator.extendSession(sessionId, opts),
   });
 
   services = {

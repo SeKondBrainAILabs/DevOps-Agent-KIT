@@ -1044,6 +1044,26 @@ ${DEVOPS_KIT_DIR}/
     let worktreeDir: string;
     let status: WorktreeStatus;
 
+    // Adoption (M5): the caller is taking over a checkout that already exists
+    // at a path KIT did not create. Honour it rather than falling through to
+    // `git worktree add`, which would fail with "already checked out" because
+    // the branch is live somewhere else.
+    if (config.adoptedWorktreePath) {
+      if (existsSync(config.adoptedWorktreePath)) {
+        console.log(
+          `[AgentInstanceService] Adopting existing checkout at ${config.adoptedWorktreePath}`
+        );
+        return { path: config.adoptedWorktreePath, status: 'reused', warnings };
+      }
+      // The path was recorded but is gone. Fall through to normal creation
+      // rather than failing: a missing directory is recoverable, and refusing
+      // would leave the user unable to adopt a branch whose worktree they
+      // deleted by hand.
+      warnings.push(
+        `Adopted worktree path ${config.adoptedWorktreePath} does not exist; creating a new worktree instead.`
+      );
+    }
+
     // ── FATAL half: getting a worktree at all ────────────────────────────
     try {
       const legacyDir = join(config.repoPath, 'local_deploy', config.branchName);
@@ -3853,6 +3873,64 @@ ${DEVOPS_KIT_DIR}/
     instance.reapedAt = new Date().toISOString();
     instance.closeReason = instance.closeReason ?? `reaped (${action})`;
     this.saveInstances();
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /**
+   * Apply a validated config patch to a live session (M5).
+   *
+   * Deliberately allow-listed rather than a spread of the caller's object: the
+   * patch arrives from an MCP tool, and letting it write arbitrary config keys
+   * would let an agent set `createdBy: 'ui'` on itself and become un-closable,
+   * or point `repoPath` somewhere else entirely.
+   *
+   * `expiresAt` is on the INSTANCE, not the config, so it is handled here too
+   * rather than making the caller do two round trips.
+   */
+  async updateSessionConfig(
+    sessionId: string,
+    patch: Record<string, unknown>
+  ): Promise<IpcResult<void>> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+
+    const ALLOWED_CONFIG_KEYS = new Set([
+      'taskDescription',
+      'baseBranch',
+      'autoCommit',
+      'rebaseFrequency',
+      'systemPrompt',
+      'ttlMinutes',
+    ]);
+
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) continue;
+      if (key === 'expiresAt') {
+        instance.expiresAt = String(value);
+        continue;
+      }
+      if (!ALLOWED_CONFIG_KEYS.has(key)) continue;
+      (instance.config as unknown as Record<string, unknown>)[key] = value;
+    }
+
+    // Keep expiresAt consistent when the TTL itself is changed, or a session
+    // could be given a longer ttlMinutes while its old deadline still stands.
+    if (patch.ttlMinutes !== undefined && Number.isFinite(Number(patch.ttlMinutes))) {
+      instance.expiresAt = new Date(
+        Date.parse(instance.createdAt) + Number(patch.ttlMinutes) * 60_000
+      ).toISOString();
+    }
+
+    this.saveInstances();
+    this.emitStatusChange(instance);
     this.emitStoredSessions();
     return { success: true, data: undefined };
   }

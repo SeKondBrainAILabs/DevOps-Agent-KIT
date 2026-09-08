@@ -632,6 +632,16 @@ export interface AgentInstanceConfig {
   /** Observer only: the session whose worktree is borrowed, if any. */
   observerOfSessionId?: string;
   /**
+   * Adoption only (M5): an EXISTING checkout to take over, at a path KIT did
+   * not create and would not guess — the user's own repo root, or a worktree
+   * they made themselves.
+   *
+   * Without this, adoption falls through to `git worktree add`, which fails
+   * because the branch is already checked out elsewhere. Only paths that
+   * already exist are honoured; a stale one falls back to normal creation.
+   */
+  adoptedWorktreePath?: string;
+  /**
    * Requested lifetime in minutes, from `kit_start_session(ttl_minutes)`.
    * Materialised onto the instance as `expiresAt` at creation. The reaper
    * treats it as a HARD ceiling; the idle TTL applies independently and is

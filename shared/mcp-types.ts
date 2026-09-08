@@ -120,6 +120,10 @@ export const MCP_SESSION_TOOLS = {
   CLOSE_SESSIONS: 'kit_close_sessions',
   LIST_SESSIONS: 'kit_list_sessions',
   GET_SESSION_STATUS: 'kit_get_session_status',
+  RESTART_SESSION: 'kit_restart_session',
+  ADOPT_SESSION: 'kit_adopt_session',
+  UPDATE_SESSION: 'kit_update_session',
+  EXTEND_SESSION: 'kit_extend_session',
 } as const;
 
 /** Tools that mutate state and are therefore logged to the activity feed. */
@@ -136,6 +140,10 @@ export const MCP_STATE_CHANGING_TOOLS: ReadonlySet<string> = new Set<string>([
   MCP_SESSION_TOOLS.START_SESSION,
   MCP_SESSION_TOOLS.CLOSE_SESSION,
   MCP_SESSION_TOOLS.CLOSE_SESSIONS,
+  MCP_SESSION_TOOLS.RESTART_SESSION,
+  MCP_SESSION_TOOLS.ADOPT_SESSION,
+  MCP_SESSION_TOOLS.UPDATE_SESSION,
+  MCP_SESSION_TOOLS.EXTEND_SESSION,
 ]);
 
 /**
@@ -150,6 +158,10 @@ export const MCP_TOOL_LOG_TYPE: Readonly<Record<string, 'git' | 'info'>> = {
   [MCP_SESSION_TOOLS.START_SESSION]: 'info',
   [MCP_SESSION_TOOLS.CLOSE_SESSION]: 'info',
   [MCP_SESSION_TOOLS.CLOSE_SESSIONS]: 'info',
+  [MCP_SESSION_TOOLS.RESTART_SESSION]: 'info',
+  [MCP_SESSION_TOOLS.ADOPT_SESSION]: 'info',
+  [MCP_SESSION_TOOLS.UPDATE_SESSION]: 'info',
+  [MCP_SESSION_TOOLS.EXTEND_SESSION]: 'info',
   [MCP_TOOLS.WORKSPACE_ADD]: 'info',
   [MCP_TOOLS.WORKSPACE_SCAN]: 'info',
   [MCP_TOOLS.PROJECT_GROUP_ADD]: 'info',
@@ -181,6 +193,12 @@ export const MCP_OBSERVER_FORBIDDEN_TOOLS: ReadonlySet<string> = new Set<string>
   MCP_TOOLS.UNLOCK_FILE,
   MCP_TOOLS.SET_REPO_WORKTREE_MODE,
   MCP_SESSION_TOOLS.START_SESSION,
+  // Same reasoning as START_SESSION: adoption is how a read-only session would
+  // otherwise obtain a writable one, by adopting a branch it can then commit to.
+  MCP_SESSION_TOOLS.ADOPT_SESSION,
+  // An observer restarting a session would recreate its owner's worktree
+  // underneath it.
+  MCP_SESSION_TOOLS.RESTART_SESSION,
 ]);
 
 /**
@@ -196,6 +214,11 @@ export const MCP_OBSERVER_FORBIDDEN_TOOLS: ReadonlySet<string> = new Set<string>
 export const MCP_ACTOR_PARAM: Readonly<Record<string, string>> = {
   [MCP_SESSION_TOOLS.CLOSE_SESSION]: 'caller_session_id',
   [MCP_SESSION_TOOLS.CLOSE_SESSIONS]: 'caller_session_id',
+  // Same shape as the close tools: `target_session_id` names what is being
+  // acted on, `caller_session_id` names who is doing it.
+  [MCP_SESSION_TOOLS.RESTART_SESSION]: 'caller_session_id',
+  [MCP_SESSION_TOOLS.UPDATE_SESSION]: 'caller_session_id',
+  [MCP_SESSION_TOOLS.EXTEND_SESSION]: 'caller_session_id',
 };
 
 /** Resolve the calling session id from a tool's arguments. */
