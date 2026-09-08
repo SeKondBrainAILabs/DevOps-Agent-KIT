@@ -31,7 +31,34 @@ current=$(
 if [ "${1:-}" = "--update" ]; then
   printf '%s\n' "$current" > "$BASELINE"
   echo "Baseline updated: $(printf '%s\n' "$current" | grep -c . ) errors recorded."
+  echo "NOTE: --update blesses whatever is currently broken. It cannot tell your"
+  echo "bug from inherited debt. The always-fatal classes below still fail."
   exit 0
+fi
+
+# ── Always-fatal classes ─────────────────────────────────────────────────────
+# A baseline recorded from a branch that already contains your bug freezes that
+# bug in as "pre-existing". That happened: TS2448/TS2454 on `worktreeOutcome`
+# were reported six times, baselined, and shipped — createInstance threw
+# "Cannot access 'worktreeOutcome' before initialization" on EVERY call, so
+# session creation was completely broken while the gate stayed green.
+#
+# These classes are never acceptable regardless of the baseline. They are
+# definitionally bugs, not style debt:
+#   TS2448 block-scoped variable used before its declaration
+#   TS2454 variable used before being assigned
+#   TS2304 cannot find name
+#   TS2552 cannot find name (with a suggestion)
+#   TS2554 wrong number of arguments
+#   TS2564 property has no initializer
+ALWAYS_FATAL='TS2448|TS2454|TS2304|TS2552|TS2554|TS2564'
+fatal=$(printf '%s\n' "$current" | grep -E "error ($ALWAYS_FATAL):" || true)
+if [ -n "$fatal" ]; then
+  echo "FATAL type errors (never allowed, baseline does not apply):" >&2
+  printf '%s\n' "$fatal" >&2
+  echo "" >&2
+  echo "These are runtime bugs, not style debt. Fix them." >&2
+  exit 1
 fi
 
 if [ ! -f "$BASELINE" ]; then

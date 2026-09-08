@@ -659,16 +659,14 @@ ${DEVOPS_KIT_DIR}/
         sessionId,
       };
 
-      // Record how the worktree was obtained. 'failed' now survives on the
-      // instance instead of being invisible, so the renderer can flag a
-      // session that is silently running in the source repo.
-      instance.worktreeStatus = worktreeOutcome.status;
-      if (worktreeOutcome.warnings.length > 0) {
-        instance.worktreeWarnings = worktreeOutcome.warnings;
-      }
-
       // The slot was already claimed under the lock; this rewrites that
       // placeholder with the fully-populated instance (instructions, prompt).
+      //
+      // worktreeStatus/worktreeWarnings are NOT set here. They used to be, and
+      // it was a temporal dead zone: `worktreeOutcome` is declared ~35 lines
+      // BELOW, so every createInstance call threw "Cannot access
+      // 'worktreeOutcome' before initialization" and session creation was
+      // completely broken. They are recorded after the worktree exists.
       this.instances.set(id, instance);
       this.saveInstances();
 
@@ -720,6 +718,15 @@ ${DEVOPS_KIT_DIR}/
       // would make deleteInstanceWithCleanup's path-equality check truthy and
       // send `git worktree remove --force` at the OWNER's working directory.
       instance.worktreePath = isObserver ? undefined : worktreePath;
+
+      // Record how the worktree was obtained. 'failed' now survives on the
+      // instance instead of being invisible, so the renderer can flag a
+      // session that is silently running in the source repo. Must come after
+      // createWorktreeIfNeeded — see the note at the reservation above.
+      instance.worktreeStatus = worktreeOutcome.status;
+      if (worktreeOutcome.warnings.length > 0) {
+        instance.worktreeWarnings = worktreeOutcome.warnings;
+      }
 
       // ALWAYS regenerate instructions with the actual working directory.
       // An observer works in the directory it borrows; a normal session in its

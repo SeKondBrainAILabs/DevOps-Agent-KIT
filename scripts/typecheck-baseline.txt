@@ -29,7 +29,6 @@
 [tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
 [tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
 [tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
-[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type '{ repoPath: string; branchName: string; baseBranch?: string | undefined; worktreePath?: string | undefined; agentType?: string | undefined; task?: string | undefined; } | undefined' is not assignable to parameter of type '{ repoPath: string; branchName: string; baseBranch?: string | undefined; worktreePath?: string | undefined; agentType?: AgentType | undefined; task?: string | undefined; } | undefined'.
 [tsconfig.electron.json] electron/ipc/index.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"closed"' have no overlap.
 [tsconfig.electron.json] electron/ipc/index.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"completed"' have no overlap.
 [tsconfig.electron.json] electron/ipc/index.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"failed"' have no overlap.
@@ -288,12 +287,6 @@
 [tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
 [tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
 [tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
-[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2448: Block-scoped variable 'worktreeOutcome' used before its declaration.
-[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2448: Block-scoped variable 'worktreeOutcome' used before its declaration.
-[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2448: Block-scoped variable 'worktreeOutcome' used before its declaration.
-[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2454: Variable 'worktreeOutcome' is used before being assigned.
-[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2454: Variable 'worktreeOutcome' is used before being assigned.
-[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2454: Variable 'worktreeOutcome' is used before being assigned.
 [tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
 [tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
 [tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2739: Type '{ repoPath: string; repoName: string; branchName: string; sessionId: string; taskDescription: string; }' is missing the following properties from type 'InstructionVars': systemPrompt, contextPreservation, rebaseFrequency
@@ -397,7 +390,6 @@
 [tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
 [tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
 [tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
-[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type '{ repoPath: string; branchName: string; baseBranch?: string | undefined; worktreePath?: string | undefined; agentType?: string | undefined; task?: string | undefined; } | undefined' is not assignable to parameter of type '{ repoPath: string; branchName: string; baseBranch?: string | undefined; worktreePath?: string | undefined; agentType?: AgentType | undefined; task?: string | undefined; } | undefined'.
 [tsconfig.renderer.json] electron/ipc/index.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"closed"' have no overlap.
 [tsconfig.renderer.json] electron/ipc/index.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"completed"' have no overlap.
 [tsconfig.renderer.json] electron/ipc/index.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"failed"' have no overlap.
@@ -656,12 +648,6 @@
 [tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
 [tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
 [tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
-[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2448: Block-scoped variable 'worktreeOutcome' used before its declaration.
-[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2448: Block-scoped variable 'worktreeOutcome' used before its declaration.
-[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2448: Block-scoped variable 'worktreeOutcome' used before its declaration.
-[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2454: Variable 'worktreeOutcome' is used before being assigned.
-[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2454: Variable 'worktreeOutcome' is used before being assigned.
-[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2454: Variable 'worktreeOutcome' is used before being assigned.
 [tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
 [tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
 [tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2739: Type '{ repoPath: string; repoName: string; branchName: string; sessionId: string; taskDescription: string; }' is missing the following properties from type 'InstructionVars': systemPrompt, contextPreservation, rebaseFrequency
@@ -768,16 +754,11 @@
 [tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2353: Object literal may only specify known properties, and 'preDiscoveredFeatures' does not exist in type '{ includeCodeSamples?: boolean | undefined; maxFilesPerFeature?: number | undefined; skipExisting?: boolean | undefined; features?: string[] | undefined; }'.
 [tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2488: Type 'ActivityLogEntry[] | undefined' must have a '[Symbol.iterator]()' method that returns an iterator.
 [tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2551: Property 'getStatus' does not exist on type '{ status: (sessionId: string) => Promise<IpcResult<GitStatus>>; commit: (sessionId: string, message: string) => Promise<IpcResult<GitCommit>>; ... 24 more ...; getWorktreeSafetyInfo: (worktreePath: string) => Promise<...>; }'. Did you mean 'status'?
-[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2552: Cannot find name 'setGenerationResult'. Did you mean 'generationResult'?
 [tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2774: This condition will always return true since this function is always defined. Did you mean to call it instead?
 [tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS7053: Element implicitly has an 'any' type because expression of type 'SessionStatus' can't be used to index type '{ active: string; idle: string; error: string; completed: string; }'.
 [tsconfig.renderer.json] renderer/components/features/WorkspaceBrowserView.tsx: error TS2367: This comparison appears to be unintentional because the types '"done"' and '"analyzing"' have no overlap.
 [tsconfig.renderer.json] renderer/components/features/WorkspaceBrowserView.tsx: error TS2739: Type '{ role: "system"; content: string; }' is missing the following properties from type 'ChatMessage': id, timestamp
 [tsconfig.renderer.json] renderer/components/features/WorkspaceBrowserView.tsx: error TS2739: Type '{ role: "user"; content: string; }' is missing the following properties from type 'ChatMessage': id, timestamp
-[tsconfig.renderer.json] renderer/components/layouts/Sidebar.tsx: error TS2304: Cannot find name 'retainedSessions'.
-[tsconfig.renderer.json] renderer/components/layouts/Sidebar.tsx: error TS2304: Cannot find name 'retainedSessions'.
-[tsconfig.renderer.json] renderer/components/layouts/Sidebar.tsx: error TS2304: Cannot find name 'retainedSessions'.
-[tsconfig.renderer.json] renderer/components/layouts/Sidebar.tsx: error TS7006: Parameter 'session' implicitly has an 'any' type.
 [tsconfig.renderer.json] renderer/components/layouts/StatusBar.tsx: error TS2345: Argument of type '{ workerAlive: boolean; workerReady: boolean; workerPid: number | null; restartCount: number; activeMonitors: number; uptimeMs: number; workerUptimeSec: number; lastPingLatencyMs: number; restartHistory: { ...; }[]; spawnedAt: string | null; }' is not assignable to parameter of type 'SetStateAction<WorkerStatus | null>'.
 [tsconfig.renderer.json] renderer/components/layouts/StatusBar.tsx: error TS2345: Argument of type '{ workerAlive: boolean; workerReady: boolean; workerPid: number | null; restartCount: number; activeMonitors: number; uptimeMs: number; workerUptimeSec: number; lastPingLatencyMs: number; restartHistory: { ...; }[]; spawnedAt: string | null; }' is not assignable to parameter of type 'SetStateAction<WorkerStatus | null>'.
 [tsconfig.renderer.json] renderer/hooks/useAgentSubscription.ts: error TS2322: Type '"file-editing"' is not assignable to type 'AgentCapability'.

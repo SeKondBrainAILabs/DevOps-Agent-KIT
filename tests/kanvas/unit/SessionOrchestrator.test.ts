@@ -716,6 +716,45 @@ describe('SessionOrchestrator.closeSession', () => {
       expect(d.deleteInstanceWithCleanup).not.toHaveBeenCalled();
     });
 
+    it('leaves the session FULLY INTACT when it refuses', async () => {
+      // Found by running the real app, not by this suite: the gate used to run
+      // AFTER teardown and markSessionClosed, so a refused destructive close
+      // still stopped the watcher, unbound MCP and marked the session closed.
+      //
+      // That makes the error message a lie. It says "commit them with
+      // kit_commit, or retry with force_dirty" — but the session has just been
+      // unbound from MCP, so kit_commit answers "Unknown session" and the retry
+      // targets a closed session. The agent is told to do two things it can no
+      // longer do, and its worktree is stranded.
+      //
+      // A refusal must be a no-op.
+      const d = closeDeps({ safety: { hasUncommittedChanges: true } });
+      const r = await new SessionOrchestrator(d.deps).closeSession('sess_child', {
+        callerSessionId: 'sess_me',
+        deleteWorktree: true,
+      });
+
+      expect(r.success).toBe(false);
+      expect(d.markSessionClosed).not.toHaveBeenCalled();
+      expect(d.stopAll).not.toHaveBeenCalled();
+      expect(d.unregisterSession).not.toHaveBeenCalled();
+    });
+
+    it('leaves the session intact when it refuses on unpushed commits', async () => {
+      const d = closeDeps({
+        safety: { hasUncommittedChanges: false, unpushedCommitCount: 4, hasRemoteBranch: true },
+      });
+      const r = await new SessionOrchestrator(d.deps).closeSession('sess_child', {
+        callerSessionId: 'sess_me',
+        deleteLocalBranch: true,
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error?.code).toBe('UNPUSHED_REFUSED');
+      expect(d.markSessionClosed).not.toHaveBeenCalled();
+      expect(d.stopAll).not.toHaveBeenCalled();
+    });
+
     it('proceeds with force_dirty', async () => {
       const d = closeDeps({ safety: { hasUncommittedChanges: true } });
       const r = await new SessionOrchestrator(d.deps).closeSession('sess_child', {

@@ -2076,6 +2076,10 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
   const setIsGenerating = useContractStore((state) => state.setIsGenerating);
   const generationProgress = useContractStore((state) => state.generationProgress);
   const generationResult = useContractStore((state) => state.generationResult);
+  // Pre-existing bug, surfaced by scripts/typecheck-gate.sh: handleDiscoverFeatures
+  // calls setGenerationResult, which was never selected from the store — so
+  // "Discover features" threw a ReferenceError before it did anything.
+  const setGenerationResult = useContractStore((state) => state.setGenerationResult);
   const activityLogs = useContractStore((state) => state.activityLogs);
   const [showActivityLog, setShowActivityLog] = useState(true);
   const [expandedFeature, setExpandedFeature] = useState<string | null>(null);

@@ -157,6 +157,30 @@ describe('adopted sessions — manageable, never demolishable', () => {
 });
 
 describe('unidentified callers', () => {
+  it('is told to identify itself, NOT to use allow_foreign', () => {
+    // Found by running the real app. kit_close_sessions(parent_session_id=self)
+    // — the call the tool description recommends — refused every matched child
+    // and advised allow_foreign. Following that advice would mean asserting
+    // "I am closing someone else's sessions" in order to close your own.
+    const r = evaluateClosePermission({
+      target: { sessionId: 'sess_mine', createdBy: 'mcp' },
+      callerSessionId: undefined,
+    });
+    expect(r.allowed).toBe(false);
+    expect(r.error?.instruction).toMatch(/caller_session_id/);
+    expect(r.error?.message).not.toMatch(/different agent/);
+  });
+
+  it('still points an IDENTIFIED caller at allow_foreign', () => {
+    const r = evaluateClosePermission({
+      target: { sessionId: 'sess_theirs', createdBy: 'mcp' },
+      callerSessionId: 'sess_me',
+      callerDescendantIds: [],
+    });
+    expect(r.error?.instruction).toMatch(/allow_foreign/);
+    expect(r.error?.message).toMatch(/different agent/);
+  });
+
   it('cannot close a foreign session just by omitting their own id', () => {
     const r = evaluateClosePermission({
       target: { sessionId: 'sess_target', createdBy: 'mcp' },

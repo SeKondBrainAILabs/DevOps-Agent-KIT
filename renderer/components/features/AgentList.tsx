@@ -98,10 +98,25 @@ export function AgentList(): React.ReactElement {
   const selectedSessionId = useAgentStore((state) => state.selectedSessionId);
   const setSelectedSession = useAgentStore((state) => state.setSelectedSession);
 
+  // Closed but still holding a worktree. A SAFE close deliberately KEEPS the
+  // worktree and branch, so these are real directories with real work in them.
+  // They are pulled OUT of the tree — leaving them in shows a closed session
+  // sitting among live ones, which at agent fan-out fills the sidebar with
+  // sessions that look alive and are not — and surfaced in their own group.
+  const retainedSessions = useMemo(
+    () =>
+      Array.from(reportedSessions.values()).filter(
+        (session) => session.status === 'closed' && Boolean(session.worktreePath)
+      ),
+    [reportedSessions]
+  );
+
   // Build tree: Repo → AgentType → Sessions
   const repoGroups = useMemo(() => {
     const repos = new Map<string, RepoGroup>();
-    const sessions = Array.from(reportedSessions.values());
+    const sessions = Array.from(reportedSessions.values()).filter(
+      (session) => session.status !== 'closed'
+    );
 
     for (const session of sessions) {
       const agentType = (session.agentType || 'custom') as AgentType;
@@ -155,7 +170,7 @@ export function AgentList(): React.ReactElement {
 
   const totalSessions = repoGroups.reduce((sum, r) => sum + r.totalSessions, 0);
 
-  if (reportedSessions.size === 0 || repoGroups.length === 0) {
+  if ((reportedSessions.size === 0 || repoGroups.length === 0) && retainedSessions.length === 0) {
     return (
       <div className="text-center py-10">
         <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-surface-tertiary flex items-center justify-center">
@@ -195,6 +210,40 @@ export function AgentList(): React.ReactElement {
           />
         ))}
       </div>
+
+      {retainedSessions.length > 0 && (
+        <details className="mt-2 rounded-md border border-[rgba(0,0,0,0.10)]">
+          <summary className="px-3 py-2 text-xs text-text-secondary cursor-pointer select-none">
+            {retainedSessions.length} closed &middot; worktree retained
+          </summary>
+          <div className="px-3 pb-2 space-y-1">
+            <p className="text-[11px] text-text-secondary/80 leading-snug">
+              These sessions were closed safely, so their worktree and branch are
+              still on disk. Delete them from the session view when the work is
+              merged or abandoned.
+            </p>
+            {retainedSessions.map((session) => (
+              <button
+                key={session.sessionId}
+                onClick={() =>
+                  setSelectedSession(
+                    selectedSessionId === session.sessionId ? null : session.sessionId
+                  )
+                }
+                className="w-full flex items-center justify-between gap-2 text-xs py-0.5 text-left hover:bg-surface-tertiary rounded px-1"
+                title={session.worktreePath}
+              >
+                <span className="truncate text-text-secondary">
+                  {session.branchName || session.sessionId}
+                </span>
+                <span className="shrink-0 text-[10px] text-text-secondary/70">
+                  {session.agentType ?? 'agent'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }

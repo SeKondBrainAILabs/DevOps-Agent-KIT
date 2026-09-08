@@ -32,13 +32,10 @@ export function Sidebar(): React.ReactElement {
   // vanishes from the sidebar leaves real work on disk with no way to find it
   // — which at agent fan-out is a directory per closed session. Those are
   // surfaced under a collapsible group instead.
-  const everySession = Array.from(reportedSessions.values());
-  const allSessions = everySession.filter((session) => session.status !== 'closed');
-
-  // Closed but still holding a worktree: the user has cleanup to finish.
-  const retainedSessions = everySession.filter(
-    (session) => session.status === 'closed' && Boolean(session.worktreePath)
+  const allSessions = Array.from(reportedSessions.values()).filter(
+    (session) => session.status !== 'closed'
   );
+
   const sessions = selectedAgentId
     ? allSessions.filter((session) => session.agentId === selectedAgentId)
     : allSessions;
@@ -365,39 +362,6 @@ function SessionList({ sessions, selectedSessionId, onSelectSession, onDeleteSes
         </span>
       </div>
 
-      {retainedSessions.length > 0 && (
-        <details className="rounded-md border border-[rgba(0,0,0,0.10)]">
-          <summary className="px-3 py-2 text-xs text-text-secondary cursor-pointer select-none">
-            {retainedSessions.length} closed &middot; worktree retained
-          </summary>
-          <div className="px-3 pb-2 space-y-1">
-            <p className="text-[11px] text-text-secondary/80 leading-snug">
-              These sessions were closed safely, so their worktree and branch are
-              still on disk. Delete them from the session view when the work is
-              merged or abandoned.
-            </p>
-            {retainedSessions.map((session) => (
-              <div
-                key={session.sessionId}
-                className="flex items-center justify-between gap-2 text-xs py-0.5"
-                title={session.worktreePath}
-              >
-                <span className="truncate text-text-secondary">
-                  {session.branchName || session.sessionId}
-                </span>
-                {session.createdBy === 'mcp' && (
-                  <span
-                    className="shrink-0 text-[10px] px-1.5 py-px rounded-full border border-accent/40 text-accent"
-                    title="Created by an agent over MCP"
-                  >
-                    agent
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
 
       {repoNames.map((repoName) => {
         const { repoPath, sessions: repoSessions } = sessionsByRepo[repoName];

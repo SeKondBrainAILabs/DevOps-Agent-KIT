@@ -493,6 +493,59 @@ export class SessionOrchestrator {
     const previousStatus = instance?.status as string | undefined;
     const alreadyClosed = previousStatus === 'closed';
 
+    if (destructive) {
+      // ── Destructive path: gate BEFORE any side effect ────────────────────
+      //
+      // This runs ahead of teardown and markSessionClosed, and that ordering is
+      // the point. It used to run after them, so a refused destructive close had
+      // already stopped the watcher, unbound MCP and marked the session closed —
+      // while telling the caller to "commit them with kit_commit, or retry with
+      // force_dirty". Both instructions were then impossible: kit_commit answers
+      // "Unknown session" against an unbound session, and the retry targets a
+      // closed one. The worktree survived but the session that owned it did not.
+      //
+      // A refusal must be a no-op. Found by running the real app; the unit test
+      // for it only checked that the DELETE had not happened.
+      const safety = await this.deps.agentInstance.getDeleteSafetyInfo(
+        instance?.sessionId ?? sessionId
+      );
+      const info: any = safety?.data ?? {};
+
+      if (info.hasUncommittedChanges && opts.deleteWorktree && !opts.forceDirty) {
+        return {
+          success: false,
+          error: {
+            code: 'DIRTY_REFUSED',
+            message:
+              'The worktree has uncommitted changes. Commit them with kit_commit, or ' +
+              'retry with force_dirty: true to discard them.',
+            details: { ...info, retry_with: { force_dirty: true } },
+          } as any,
+        };
+      }
+
+      // A repo with no remote reports its ENTIRE history as unpushed:
+      // getDeleteSafetyInfo falls back to `git rev-list --count HEAD` when
+      // neither origin/<branch> nor origin/<base> resolves. Gating on that would
+      // make every destructive close on a local-only repo impossible.
+      const hasRemote = info.hasRemoteBranch !== false || info.unpushedCommitCount === 0;
+      const unpushed = Number(info.unpushedCommitCount ?? 0);
+      const gateUnpushed = opts.deleteLocalBranch || opts.deleteRemoteBranch;
+
+      if (hasRemote && gateUnpushed && unpushed > 0 && !opts.forceUnpushed) {
+        return {
+          success: false,
+          error: {
+            code: 'UNPUSHED_REFUSED',
+            message:
+              `The branch has ${unpushed} commit(s) not present on the remote. ` +
+              'Push them first, or retry with force_unpushed: true to discard them.',
+            details: { ...info, retry_with: { force_unpushed: true } },
+          } as any,
+        };
+      }
+    }
+
     // Teardown is idempotent, so a second close still reconciles anything that
     // survived the first — a stray watcher, a binder alias.
     const teardown = await this.teardownSession(instance?.sessionId ?? sessionId);
@@ -529,46 +582,6 @@ export class SessionOrchestrator {
           actions,
           preserved,
         },
-      };
-    }
-
-    // ── Destructive path: gate on real work before removing anything ──────
-    const safety = await this.deps.agentInstance.getDeleteSafetyInfo(
-      instance?.sessionId ?? sessionId
-    );
-    const info: any = safety?.data ?? {};
-
-    if (info.hasUncommittedChanges && opts.deleteWorktree && !opts.forceDirty) {
-      return {
-        success: false,
-        error: {
-          code: 'DIRTY_REFUSED',
-          message:
-            'The worktree has uncommitted changes. Commit them with kit_commit, or ' +
-            'retry with force_dirty: true to discard them.',
-          details: { ...info, retry_with: { force_dirty: true } },
-        } as any,
-      };
-    }
-
-    // A repo with no remote reports its ENTIRE history as unpushed:
-    // getDeleteSafetyInfo falls back to `git rev-list --count HEAD` when
-    // neither origin/<branch> nor origin/<base> resolves. Gating on that would
-    // make every destructive close on a local-only repo impossible.
-    const hasRemote = info.hasRemoteBranch !== false || info.unpushedCommitCount === 0;
-    const unpushed = Number(info.unpushedCommitCount ?? 0);
-    const gateUnpushed = opts.deleteLocalBranch || opts.deleteRemoteBranch;
-
-    if (hasRemote && gateUnpushed && unpushed > 0 && !opts.forceUnpushed) {
-      return {
-        success: false,
-        error: {
-          code: 'UNPUSHED_REFUSED',
-          message:
-            `The branch has ${unpushed} commit(s) not present on the remote. ` +
-            'Push them first, or retry with force_unpushed: true to discard them.',
-          details: { ...info, retry_with: { force_unpushed: true } },
-        } as any,
       };
     }
 

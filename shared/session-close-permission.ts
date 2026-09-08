@@ -101,6 +101,22 @@ export function evaluateClosePermission(
 
   // origin === 'mcp', and not ours.
   if (!allowForeign) {
+    // An UNIDENTIFIED caller is the common case here, and it is not the same
+    // situation as one agent reaching for another's session. Found in the real
+    // app: kit_close_sessions(parent_session_id=<self>) — the exact call the
+    // tool description recommends — matched its children and then refused
+    // every one of them, advising allow_foreign. That advice would have had
+    // the caller assert it was closing someone else's sessions in order to
+    // close its own. Name the missing parameter instead.
+    if (!callerSessionId) {
+      return deny(
+        `Session ${target.sessionId} was created by an agent, and you did not ` +
+          'say which session you are.',
+        'Pass caller_session_id with your own session id. You may always close ' +
+          'yourself and anything you spawned. Only use allow_foreign if you ' +
+          "genuinely mean to close a session you did not create."
+      );
+    }
     return deny(
       `Session ${target.sessionId} was created by a different agent.`,
       'Pass allow_foreign: true if you genuinely intend to close another ' +

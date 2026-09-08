@@ -1879,7 +1879,7 @@ export function registerTools(
     'Close many KIT sessions at once — typically everything you spawned. Same SAFE default and same per-session refusals as kit_close_session; failures are reported per session and never abort the batch. Requires a scope: session_ids, parent_session_id or repo_path.',
     {
       session_ids: z.array(z.string()).optional().describe('Explicit list of sessions to close.'),
-      parent_session_id: z.string().optional().describe('Close the children of this session. Pass your own id to clean up everything you spawned. Restart-predecessor ids are matched too.'),
+      parent_session_id: z.string().optional().describe('Close the children of this session. Pass your own id here AND as caller_session_id to clean up everything you spawned — the selector finds them, caller_session_id is what authorises closing them. Restart-predecessor ids are matched too.'),
       include_descendants: z.boolean().optional().describe('With parent_session_id, also close grandchildren. Default true.'),
       repo_path: z.string().optional().describe('Only sessions in this repository.'),
       created_by: z.enum(['mcp', 'ui', 'adopted', 'any']).optional().describe('Only sessions created this way. Defaults to "mcp" so a bulk close can never sweep up sessions a human created.'),
