@@ -631,6 +631,13 @@ export interface AgentInstanceConfig {
   observedPath?: string;
   /** Observer only: the session whose worktree is borrowed, if any. */
   observerOfSessionId?: string;
+  /**
+   * Requested lifetime in minutes, from `kit_start_session(ttl_minutes)`.
+   * Materialised onto the instance as `expiresAt` at creation. The reaper
+   * treats it as a HARD ceiling; the idle TTL applies independently and is
+   * usually what fires first.
+   */
+  ttlMinutes?: number;
 }
 
 /**
@@ -694,6 +701,55 @@ export interface AgentInstance {
     ageMinutes: number;     // age at detection time
     gitDir: string;         // absolute path to the rebase-* dir, for repair
   };
+  /**
+   * When `markSessionClosed` ran. Set for both a safe close (worktree and
+   * branch retained) and the destructive path.
+   *
+   * These two fields were assigned by `markSessionClosed` before they were
+   * declared here, which type-checked as an error the build never surfaced —
+   * electron-vite compiles with esbuild and does not check types. See
+   * `scripts/typecheck-gate.sh`.
+   */
+  closedAt?: string;
+  /** Free text: 'task complete', 'reaped: idle 4h', 'app_quit', ... */
+  closeReason?: string;
+  /**
+   * Hard deadline for the reaper (R1), ISO-8601. Set at creation from
+   * `config.ttlMinutes`. Absent means the idle TTL alone applies.
+   */
+  expiresAt?: string;
+  /**
+   * User has pinned this session: the reaper skips it entirely, whatever its
+   * age or idleness. Set from the session row menu (R2).
+   */
+  pinned?: boolean;
+  /**
+   * Set when the reaper acted on this session, so the expiry dialog can show
+   * what happened and the pass is not repeated. Absent means never reaped.
+   */
+  reapedAt?: string;
+}
+
+/**
+ * One line in the agent-session expiry dialog (R2): what the reaper did to a
+ * session whose TTL ran out, and what is still recoverable.
+ */
+export interface ExpiredAgentSessionInfo {
+  sessionId: string;
+  branchName?: string;
+  repoPath?: string;
+  worktreePath?: string;
+  taskDescription?: string;
+  /** Why it expired: idle TTL, hard ceiling, or an explicit expiresAt. */
+  reasonCode: string;
+  /** What was actually done. Only 'delete-clean' removed anything. */
+  action: 'delete-observer' | 'delete-clean' | 'snapshot-and-close' | 'teardown-only';
+  detail: string;
+  idleMinutes: number;
+  /** Set when uncommitted work was pinned to a ref before closing. */
+  snapshotRef?: string;
+  worktreeDeleted: boolean;
+  localBranchDeleted: boolean;
 }
 
 // =============================================================================

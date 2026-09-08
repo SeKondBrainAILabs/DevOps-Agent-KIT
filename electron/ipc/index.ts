@@ -500,6 +500,30 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return await services.agentInstance.deleteInstanceWithCleanup(sessionId, options, hints);
   });
 
+  // R2 — pin a session so the reaper skips it, whatever its age.
+  ipcMain.handle(IPC.INSTANCE_SET_PINNED, async (_e: unknown, sessionId: string, pinned: boolean) => {
+    return services.agentInstance.setSessionPinned(sessionId, pinned);
+  });
+
+  // R2 — run a reaper pass on demand. Dry-run by default so the UI can show
+  // what WOULD happen without doing it; the caller opts into acting.
+  ipcMain.handle(IPC.INSTANCE_REAP_NOW, async (_e: unknown, opts?: { dryRun?: boolean }) => {
+    try {
+      const result = await services.sessionOrchestrator.reapExpiredAgentSessions({
+        dryRun: opts?.dryRun ?? true,
+      });
+      return { success: true, data: result };
+    } catch (err) {
+      return {
+        success: false,
+        error: {
+          code: 'REAP_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  });
+
   ipcMain.handle(IPC.INSTANCE_RESTART, async (_, sessionId: string, sessionData?: {
     repoPath: string;
     branchName: string;

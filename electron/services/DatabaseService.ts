@@ -203,6 +203,15 @@ export class DatabaseService extends BaseService {
 
       CREATE INDEX IF NOT EXISTS idx_mcp_calls_session ON mcp_calls(session_id);
       CREATE INDEX IF NOT EXISTS idx_mcp_calls_timestamp ON mcp_calls(timestamp);
+
+      -- Composite indexes for the reaper's liveness query (R1), which is
+      -- MAX(timestamp) WHERE session_id IN (...). The single-column indexes
+      -- above locate the rows but still require scanning them for the max;
+      -- these answer it from the index directly. The reaper runs every few
+      -- minutes over every agent session, so this is the difference between
+      -- an index lookup and a scan of a session's entire call history.
+      CREATE INDEX IF NOT EXISTS idx_mcp_calls_session_ts ON mcp_calls(session_id, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_activity_session_ts ON activity_logs(session_id, timestamp);
     `);
 
     console.log('[DatabaseService] Tables created/verified');
@@ -1286,6 +1295,52 @@ export class DatabaseService extends BaseService {
    * All three deletes run in one transaction so a failure cannot leave a
    * session half-purged.
    */
+  /**
+   * Most recent sign of life across a set of session ids, ISO-8601.
+   *
+   * Returns null ONLY when the session genuinely has no recorded activity.
+   * A query failure throws — see the catch block for why the two must not be
+   * conflated.
+   *
+   * The caller passes EVERY alias of a session (current id plus predecessors).
+   * A session that has survived a restart carries its history under the old
+   * ids, so keying liveness on the current id alone would report "never did
+   * anything" for a session that has been busy all day — and the reaper would
+   * delete a live agent's worktree.
+   *
+   * Reads both `mcp_calls` (tool traffic) and `activity_logs` (commits, locks,
+   * everything the watcher records) and takes the later. Deliberately NOT
+   * heartbeats: `HeartbeatService.startMonitoring` has no callers, so heartbeat
+   * liveness is not actually running today and would read as universally dead.
+   */
+  getLastActivityAt(sessionIds: string[]): string | null {
+    if (!this.db || sessionIds.length === 0) return null;
+    const ids = sessionIds.filter((id) => typeof id === 'string' && id.length > 0);
+    if (ids.length === 0) return null;
+
+    const placeholders = ids.map(() => '?').join(',');
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT MAX(ts) AS last FROM (
+             SELECT MAX(timestamp) AS ts FROM mcp_calls WHERE session_id IN (${placeholders})
+             UNION ALL
+             SELECT MAX(timestamp) AS ts FROM activity_logs WHERE session_id IN (${placeholders})
+           )`
+        )
+        .get(...ids, ...ids) as { last?: string | null } | undefined;
+      return row?.last ?? null;
+    } catch (err) {
+      // THROW rather than return null. Liveness is a safety input, and null
+      // means "this session has never done anything" — which makes the reaper
+      // measure idleness from createdAt and delete an old session's worktree.
+      // A failed query must not be indistinguishable from a silent session, so
+      // it propagates and the caller records the session as failed instead.
+      console.warn('[DatabaseService] getLastActivityAt failed:', err);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
   purgeSessionTelemetry(sessionIds: string[]): {
     activity: number;
     terminal: number;

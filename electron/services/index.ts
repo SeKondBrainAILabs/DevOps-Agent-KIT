@@ -439,6 +439,16 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     watcher,
     rebaseWatcher,
     binder: mcpServer.sessionBinder,
+    // R1. Narrow function refs rather than the services themselves, so the
+    // reaper cannot reach anything else on them — it is the one code path that
+    // deletes worktrees unattended.
+    reap: {
+      getLastActivityAt: async (sessionIds) => databaseService.getLastActivityAt(sessionIds),
+      getReapSafetyInfo: (worktreePath, baseBranch) =>
+        git.getReapSafetyInfo(worktreePath, baseBranch),
+      createSnapshot: (worktreePath, sessionId) =>
+        git.createSnapshot(worktreePath, sessionId),
+    },
   });
 
   // Give the MCP tool layer the same lifecycle funnel the IPC layer uses.

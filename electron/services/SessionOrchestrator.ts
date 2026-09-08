@@ -49,6 +49,15 @@ import {
   evaluateClosePermission,
   type SessionOrigin,
 } from '../../shared/session-close-permission';
+import {
+  evaluateReapCandidate,
+  planReapAction,
+  DEFAULT_REAP_POLICY,
+  type ReapCandidate,
+  type ReapPolicy,
+  type ReapAction,
+  type MergeSafety,
+} from '../../shared/session-reap';
 
 /** The slice of AgentInstanceService the orchestrator needs. */
 export interface OrchestratorAgentInstanceService {
@@ -68,6 +77,11 @@ export interface OrchestratorAgentInstanceService {
     },
     hints?: unknown
   ): Promise<IpcResult<void>>;
+  /**
+   * Stamp `reapedAt` so a later pass does not reconsider a session it already
+   * acted on — the reaper's own idempotence marker, independent of status.
+   */
+  markSessionReaped?(sessionId: string, action: string): IpcResult<void>;
 }
 
 export interface CloseSessionOptions {
@@ -149,11 +163,71 @@ export interface OrchestratorSessionBinder {
   unregisterSession(kitSessionId: string): void;
 }
 
+/**
+ * What the reaper needs on top of the normal lifecycle deps (R1).
+ *
+ * Optional so every existing construction of the orchestrator keeps compiling;
+ * `reapExpiredAgentSessions` refuses to run rather than half-run when it is
+ * absent, because a reaper that silently no-ops is worse than one that errors.
+ */
+export interface OrchestratorReapDeps {
+  /**
+   * Most recent liveness timestamp across ALL the given session ids, or null.
+   * The caller passes every alias, so a session that survived a restart is
+   * judged on its predecessors' history too.
+   */
+  getLastActivityAt(sessionIds: string[]): Promise<string | null>;
+  /**
+   * Local, network-free safety probe. MUST distinguish "zero commits ahead"
+   * from "the comparison could not be made" — see GitService.getReapSafetyInfo.
+   */
+  getReapSafetyInfo(
+    worktreePath: string,
+    baseBranch: string | undefined
+  ): Promise<IpcResult<{
+    conclusive: boolean;
+    hasUncommittedChanges: boolean;
+    unmergedCommitCount: number;
+    inconclusiveReason?: string;
+  }>>;
+  createSnapshot(
+    worktreePath: string,
+    sessionId: string
+  ): Promise<IpcResult<{ sha: string; refName: string } | null>>;
+}
+
 export interface SessionOrchestratorDeps {
   agentInstance: OrchestratorAgentInstanceService;
   watcher: OrchestratorWatcherService;
   rebaseWatcher: OrchestratorRebaseWatcherService;
   binder: OrchestratorSessionBinder;
+  reap?: OrchestratorReapDeps;
+}
+
+export interface ReapPassOptions {
+  now?: Date;
+  policy?: ReapPolicy;
+  /** Evaluate and report, change nothing. */
+  dryRun?: boolean;
+}
+
+export interface ReapPassResult {
+  dryRun: boolean;
+  /** True when another pass was already running and this one declined. */
+  skippedBecauseRunning?: boolean;
+  scanned: number;
+  reaped: Array<{
+    sessionId: string;
+    action: ReapAction;
+    reasonCode: string;
+    detail: string;
+    idleMinutes: number;
+    snapshotRef?: string;
+    worktreeDeleted: boolean;
+    localBranchDeleted: boolean;
+  }>;
+  skipped: Array<{ sessionId: string; reasonCode: string }>;
+  failed: Array<{ sessionId: string; message: string }>;
 }
 
 export interface TeardownOptions {
@@ -702,6 +776,223 @@ export class SessionOrchestrator {
    * on the result degrade to "just this one" instead of silently matching
    * nothing.
    */
+  /**
+   * One reaper pass over agent-created sessions (R1).
+   *
+   * ## What this is not
+   *
+   * It is not an extension of `checkForStaleSessions`, and it deliberately
+   * does not touch what that scan handles. In particular a SAFE-closed session
+   * — worktree and branch retained on purpose — is never reaped here. Sweeping
+   * those would delete exactly what the safe default promised to keep, hours
+   * later and with no human in the loop. Retained worktrees are cleaned up by
+   * the 14-day stale scan, or by the user from the expiry dialog.
+   *
+   * ## Safety posture
+   *
+   * Every decision defaults to keeping data:
+   *   - only `createdBy: 'mcp'`, never a human's or an adopted session
+   *   - liveness is resolved across restart aliases, so a session that
+   *     survived a restart is not reaped for having no history under its new id
+   *   - an inconclusive merge check refuses to delete (see MergeSafety)
+   *   - a session whose worktree creation failed is never git-touched at all,
+   *     because its "worktree" is the user's real checkout
+   *   - the remote is never touched, on any path
+   */
+  async reapExpiredAgentSessions(
+    opts: ReapPassOptions = {}
+  ): Promise<ReapPassResult> {
+    const { now = new Date(), policy = DEFAULT_REAP_POLICY, dryRun = false } = opts;
+
+    const result: ReapPassResult = {
+      dryRun,
+      scanned: 0,
+      reaped: [],
+      skipped: [],
+      failed: [],
+    };
+
+    // Re-entrancy guard. A pass can take longer than the interval between
+    // passes (20 candidates x a git probe each), and two passes racing would
+    // both resolve the same session as deletable and both call
+    // deleteInstanceWithCleanup on it.
+    if (this.reapInFlight) {
+      return { ...result, skippedBecauseRunning: true };
+    }
+    this.reapInFlight = true;
+
+    try {
+      const reap = this.deps.reap;
+      if (!reap) {
+        // Loud rather than a silent no-op: a reaper that quietly does nothing
+        // looks identical to a reaper with nothing to do.
+        console.warn(
+          '[SessionOrchestrator] reapExpiredAgentSessions called without reap deps wired; skipping pass'
+        );
+        return result;
+      }
+
+      const instances = this.listSessions();
+      result.scanned = instances.length;
+
+      for (const instance of instances) {
+        const sessionId = instance.sessionId;
+        if (!sessionId) continue;
+
+        try {
+          // Cheap, purely local rejections first, so we only pay for a liveness
+          // query on sessions that could actually be reaped.
+          const withoutLiveness = this.toReapCandidate(instance, undefined);
+          const preVerdict = evaluateReapCandidate(withoutLiveness, now, policy);
+          if (
+            !preVerdict.expired &&
+            preVerdict.reasonCode !== 'STILL_LIVE' &&
+            preVerdict.reasonCode !== 'IDLE_TTL_EXCEEDED'
+          ) {
+            result.skipped.push({ sessionId, reasonCode: preVerdict.reasonCode });
+            continue;
+          }
+
+          const aliases = this.expandSessionAliases(sessionId);
+          const lastActivityAt = (await reap.getLastActivityAt(aliases)) ?? undefined;
+
+          const candidate = this.toReapCandidate(instance, lastActivityAt);
+          const verdict = evaluateReapCandidate(candidate, now, policy);
+          if (!verdict.expired) {
+            result.skipped.push({ sessionId, reasonCode: verdict.reasonCode });
+            continue;
+          }
+
+          // Resolve the disposition. Observers and failed-worktree sessions
+          // never reach git at all.
+          let safety: MergeSafety = {
+            conclusive: false,
+            hasUncommittedChanges: false,
+            unmergedCommitCount: 0,
+          };
+          let inconclusiveReason: string | undefined;
+
+          const needsGit =
+            candidate.isolation !== 'observer' && candidate.worktreeStatus !== 'failed';
+
+          if (needsGit) {
+            const worktreePath = instance.worktreePath;
+            if (!worktreePath) {
+              inconclusiveReason = 'session records no worktree path';
+            } else {
+              const probe = await reap.getReapSafetyInfo(
+                worktreePath,
+                instance.config?.baseBranch
+              );
+              if (probe?.success && probe.data) {
+                safety = {
+                  conclusive: probe.data.conclusive,
+                  hasUncommittedChanges: probe.data.hasUncommittedChanges,
+                  unmergedCommitCount: probe.data.unmergedCommitCount,
+                };
+                inconclusiveReason = probe.data.inconclusiveReason;
+              } else {
+                // A failed probe is inconclusive, never "clean".
+                inconclusiveReason =
+                  probe?.error?.message ?? 'safety probe failed';
+              }
+            }
+          }
+
+          const plan = planReapAction(candidate, safety);
+
+          if (dryRun) {
+            result.reaped.push({
+              sessionId,
+              action: plan.action,
+              reasonCode: verdict.reasonCode,
+              detail: inconclusiveReason ?? plan.reason,
+              idleMinutes: Math.round(verdict.idleMinutes),
+              worktreeDeleted: false,
+              localBranchDeleted: false,
+            });
+            continue;
+          }
+
+          // Snapshot BEFORE anything is torn down, and only when we are
+          // keeping the worktree — the delete path has already been proven
+          // clean, so there is nothing to capture.
+          let snapshotRef: string | undefined;
+          if (plan.action === 'snapshot-and-close' && instance.worktreePath) {
+            const snap = await reap.createSnapshot(instance.worktreePath, sessionId);
+            if (snap?.success && snap.data) snapshotRef = snap.data.refName;
+          }
+
+          await this.teardownSession(sessionId);
+
+          if (plan.action === 'delete-clean' || plan.action === 'delete-observer') {
+            const del = await this.deps.agentInstance.deleteInstanceWithCleanup(sessionId, {
+              deleteWorktree: plan.deleteWorktree,
+              deleteLocalBranch: plan.deleteLocalBranch,
+              deleteRemoteBranch: plan.deleteRemoteBranch,
+            });
+            if (del && del.success === false) {
+              result.failed.push({
+                sessionId,
+                message: del.error?.message ?? 'delete failed',
+              });
+              continue;
+            }
+          } else {
+            this.deps.agentInstance.markSessionClosed(sessionId, {
+              reason: `reaped: ${verdict.reasonCode.toLowerCase()} (${plan.reason})`,
+              closedBy: 'reaper',
+            });
+            this.deps.agentInstance.markSessionReaped?.(sessionId, plan.action);
+          }
+
+          result.reaped.push({
+            sessionId,
+            action: plan.action,
+            reasonCode: verdict.reasonCode,
+            detail: inconclusiveReason ?? plan.reason,
+            idleMinutes: Math.round(verdict.idleMinutes),
+            snapshotRef,
+            worktreeDeleted: plan.deleteWorktree,
+            localBranchDeleted: plan.deleteLocalBranch,
+          });
+        } catch (err) {
+          // One bad session must not abort the pass.
+          result.failed.push({
+            sessionId,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      return result;
+    } finally {
+      // Always released, including on an exception, or a single failure would
+      // wedge the reaper for the lifetime of the app.
+      this.reapInFlight = false;
+    }
+  }
+
+  private reapInFlight = false;
+
+  private toReapCandidate(
+    instance: AgentInstance,
+    lastActivityAt: string | undefined
+  ): ReapCandidate {
+    return {
+      sessionId: instance.sessionId ?? '',
+      createdBy: instance.config?.createdBy,
+      status: String(instance.status),
+      createdAt: instance.createdAt,
+      lastActivityAt,
+      isolation: instance.config?.isolation,
+      worktreeStatus: instance.worktreeStatus,
+      pinned: instance.pinned,
+      expiresAt: instance.expiresAt,
+      reapedAt: instance.reapedAt,
+    };
+  }
+
   expandSessionAliases(sessionId: string): string[] {
     const match = this.listSessions().find(
       (inst) =>

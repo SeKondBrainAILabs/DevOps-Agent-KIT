@@ -3832,6 +3832,49 @@ ${DEVOPS_KIT_DIR}/
     return { success: true, data: undefined };
   }
 
+  /**
+   * Stamp `reapedAt` so a later reaper pass does not reconsider a session it
+   * already acted on (R1).
+   *
+   * Separate from `status` on purpose: the snapshot-and-close disposition sets
+   * status 'closed', but so does an ordinary safe close, and the two must stay
+   * distinguishable — the expiry dialog (R2) shows only the reaped ones.
+   */
+  markSessionReaped(sessionId: string, action: string): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+    instance.reapedAt = new Date().toISOString();
+    instance.closeReason = instance.closeReason ?? `reaped (${action})`;
+    this.saveInstances();
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /** Pin/unpin a session against the reaper (R2). */
+  setSessionPinned(sessionId: string, pinned: boolean): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+    instance.pinned = pinned;
+    this.saveInstances();
+    this.emitStatusChange(instance);
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
   updateInstanceStatus(instanceId: string, status: AgentInstance['status'], error?: string): void {
     const instance = this.instances.get(instanceId);
     if (instance) {

@@ -708,6 +708,14 @@ const api = {
     }, commitChanges?: boolean): Promise<IpcResult<AgentInstance>> =>
       ipcRenderer.invoke(IPC.INSTANCE_RESTART, sessionId, sessionData, commitChanges),
 
+    /** Pin a session so the agent-session reaper skips it (R2). */
+    setPinned: (sessionId: string, pinned: boolean): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_SET_PINNED, sessionId, pinned),
+
+    /** Run a reaper pass on demand. Dry-run unless told otherwise (R2). */
+    reapNow: (opts?: { dryRun?: boolean }): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_REAP_NOW, opts),
+
     /** Real "last change" time: max of last activity / last commit / newest changed file mtime. */
     getLastChange: (sessionId: string): Promise<IpcResult<string | null>> =>
       ipcRenderer.invoke(IPC.INSTANCE_GET_LAST_CHANGE, sessionId),
@@ -853,6 +861,17 @@ const api = {
       const handler = (_event: IpcRendererEvent, sessions: import('../shared/types').StaleSessionInfo[]) => callback(sessions);
       ipcRenderer.on(IPC.STALE_SESSIONS_FOUND, handler);
       return () => ipcRenderer.removeListener(IPC.STALE_SESSIONS_FOUND, handler);
+    },
+
+    onAgentSessionsExpired: (
+      callback: (sessions: import('../shared/types').ExpiredAgentSessionInfo[]) => void
+    ): (() => void) => {
+      const handler = (
+        _event: IpcRendererEvent,
+        sessions: import('../shared/types').ExpiredAgentSessionInfo[]
+      ) => callback(sessions);
+      ipcRenderer.on(IPC.AGENT_SESSIONS_EXPIRED, handler);
+      return () => ipcRenderer.removeListener(IPC.AGENT_SESSIONS_EXPIRED, handler);
     },
 
     onStaleSessionsAutoRemoved: (

@@ -23,6 +23,7 @@ import { RepoDetailModal } from './components/features/RepoDetailModal';
 import { RebaseMergeErrorDialog } from './components/features/RebaseMergeErrorDialog';
 import { OnboardingModal } from './components/features/OnboardingModal';
 import { StaleSessionsDialog } from './components/features/StaleSessionsDialog';
+import { AgentSessionsExpiredDialog } from './components/features/AgentSessionsExpiredDialog';
 import { useAgentStore, selectAgentList, selectSessionById } from './store/agentStore';
 import { useUIStore } from './store/uiStore';
 import { useConflictStore } from './store/conflictStore';
@@ -75,6 +76,7 @@ export default function App(): React.ReactElement {
 
   // Startup stale-session scan results
   const [staleSessions, setStaleSessions] = React.useState<import('../shared/types').StaleSessionInfo[]>([]);
+  const [expiredAgentSessions, setExpiredAgentSessions] = React.useState<import('../shared/types').ExpiredAgentSessionInfo[]>([]);
   const [autoRemovedCount, setAutoRemovedCount] = React.useState(0);
   // Orphaned session recovery — hoisted from MainLayout so the stale-session
   // dialog can suppress the orphaned banner while it's open and can dismiss
@@ -115,7 +117,17 @@ export default function App(): React.ReactElement {
       if (recoveryDismissedRef.current) return;
       setOrphanedSessions(sessions);
     });
-    return () => { unsubFound?.(); unsubAuto?.(); unsubOrph?.(); };
+    // Agent-session reaper results (R1). Accumulates rather than replaces: the
+    // reaper runs every 5 minutes, and a second pass while the dialog is open
+    // must not drop the rows the user has not dealt with yet.
+    const unsubExpired = window.api?.recovery?.onAgentSessionsExpired?.((sessions) => {
+      if (!sessions || sessions.length === 0) return;
+      setExpiredAgentSessions((prev) => {
+        const seen = new Set(prev.map((s) => s.sessionId));
+        return [...prev, ...sessions.filter((s) => !seen.has(s.sessionId))];
+      });
+    });
+    return () => { unsubFound?.(); unsubAuto?.(); unsubOrph?.(); unsubExpired?.(); };
   }, [removeReportedSession]);
 
   const handleRecoverAll = React.useCallback(async () => {
@@ -347,6 +359,20 @@ export default function App(): React.ReactElement {
 
       {/* Rebase/Merge Error Dialog - shown when conflict is detected */}
       <RebaseMergeErrorDialog />
+
+      {/* Agent-session reaper report. Rendered before the stale dialog so the
+          two never stack; this one is a report of completed actions, while the
+          stale dialog is a prompt, and a prompt behind a report reads as a
+          modal that will not close. */}
+      {expiredAgentSessions.length > 0 && (
+        <AgentSessionsExpiredDialog
+          sessions={expiredAgentSessions}
+          onClose={() => setExpiredAgentSessions([])}
+          onRemoved={(ids) => {
+            ids.forEach((id) => removeReportedSession(id));
+          }}
+        />
+      )}
 
       {/* Startup stale-session review (risky ones with unmerged commits) */}
       {staleSessions.length > 0 && (
