@@ -2001,6 +2001,10 @@ export function registerTools(
         created_at: inst.createdAt,
         closed_at: inst.closedAt ?? null,
         close_reason: inst.closeReason ?? null,
+        // The reaper's deadline. Without it an agent cannot tell whether it is
+        // about to be cleaned up, so it cannot know to call kit_extend_session.
+        expires_at: inst.expiresAt ?? null,
+        pinned: Boolean(inst.pinned),
         // Together these expose the leak class this epic closed: a binder entry
         // with no watcher, or a watcher with no binder entry.
         mcp_registered: Boolean(binder.getSession?.(inst.sessionId)),
@@ -2055,6 +2059,10 @@ export function registerTools(
         created_at: inst.createdAt,
         closed_at: inst.closedAt ?? null,
         close_reason: inst.closeReason ?? null,
+        // The reaper's deadline. Without it an agent cannot tell whether it is
+        // about to be cleaned up, so it cannot know to call kit_extend_session.
+        expires_at: inst.expiresAt ?? null,
+        pinned: Boolean(inst.pinned),
         lineage: {
           parent: inst.config?.parentSessionId ?? null,
           predecessors: inst.predecessorSessionIds ?? [],
