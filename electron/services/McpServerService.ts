@@ -16,6 +16,7 @@ import { randomUUID } from 'crypto';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import type { InstanceStatus } from '../../shared/types';
 import { homedir } from 'os';
 import type { Server } from 'http';
 import { BaseService } from './BaseService';
@@ -124,6 +125,19 @@ export interface McpServiceDeps {
     // R1 + C5 additions — count / mode queries per repo path.
     getActiveSessionCountForRepo?: (repoPath: string) => { success: boolean; data?: number };
     getActiveSessionsForRepo?: (repoPath: string) => any[];
+    /**
+     * Flip an instance's status. Takes an INSTANCE id (`inst_*`), not a
+     * session id — the two id spaces never collide, so passing the wrong one
+     * silently matches nothing. Was called by tools.ts without being declared
+     * here at all, which is the same shape of type lie that let recordCommit's
+     * arguments sit swapped.
+     */
+    updateInstanceStatus?: (instanceId: string, status: InstanceStatus, error?: string) => void;
+    /** KIT-PR-P5 — record an outstanding review request. */
+    setReviewRequest?: (
+      sessionId: string,
+      review: { summary: string; prUrl?: string; prNumber?: number; prStatus?: string }
+    ) => { success: boolean; error?: { code: string; message: string } };
   };
   // C5 Single-Session Mode per-repo settings + O5 telemetry toggle live here.
   configService?: {

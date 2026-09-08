@@ -3945,6 +3945,65 @@ ${DEVOPS_KIT_DIR}/
     return { success: true, data: undefined };
   }
 
+  /**
+   * Record that an agent has asked for review (KIT-PR-P5).
+   *
+   * `kit_request_review` previously wrote `reviewRequested: true` into an
+   * activity row that nothing read. This gives the signal somewhere to live
+   * that the renderer can actually render.
+   *
+   * Repeated calls REPLACE rather than accumulate — an agent that requests
+   * review three times has one outstanding request, not three.
+   */
+  setReviewRequest(
+    sessionId: string,
+    review: {
+      summary: string;
+      prUrl?: string;
+      prNumber?: number;
+      prStatus?: string;
+    }
+  ): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+
+    instance.reviewRequest = {
+      summary: review.summary,
+      requestedAt: new Date().toISOString(),
+      prUrl: review.prUrl,
+      prNumber: review.prNumber,
+      prStatus: review.prStatus,
+    };
+    this.saveInstances();
+    this.emitStatusChange(instance);
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /** Clear an outstanding review request once it is merged or dismissed. */
+  clearReviewRequest(sessionId: string): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+    delete instance.reviewRequest;
+    this.saveInstances();
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
   /** Pin/unpin a session against the reaper (R2). */
   setSessionPinned(sessionId: string, pinned: boolean): IpcResult<void> {
     const instance = Array.from(this.instances.values()).find(
@@ -4173,6 +4232,7 @@ ${DEVOPS_KIT_DIR}/
         createdBy: instance.config.createdBy ?? 'ui',
         parentSessionId: instance.config.parentSessionId,
         worktreeStatus: instance.worktreeStatus,
+        reviewRequest: instance.reviewRequest,
       };
 
       // Create agent info

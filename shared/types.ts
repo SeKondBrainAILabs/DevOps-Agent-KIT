@@ -579,7 +579,33 @@ export type ExtractData<T> = T extends IpcResult<infer U> ? U : never;
 // For creating new agent instances from Kanvas dashboard
 // =============================================================================
 
-export type InstanceStatus = 'pending' | 'initializing' | 'waiting' | 'active' | 'error';
+/**
+ * An agent instance's lifecycle status.
+ *
+ * The terminal states and 'idle' were being assigned at runtime while absent
+ * from this union — `markSessionClosed` wrote `'closed' as AgentInstance['status']`
+ * and the MCP first-call handler passed `'idle'` through an undeclared shim
+ * method. Both worked, because a cast and a missing declaration both silence
+ * the compiler, and neither is a statement that the value is valid.
+ *
+ * Declared honestly here so status filters and the reaper's terminal-status set
+ * can be checked rather than guessed.
+ */
+export type InstanceStatus =
+  | 'pending'
+  | 'initializing'
+  | 'waiting'
+  /** Connected and working. */
+  | 'active'
+  /** Connected but not currently doing anything. Set on an agent's first MCP call. */
+  | 'idle'
+  | 'error'
+  /** Terminal: closed by a human, an agent, or the reaper. */
+  | 'closed'
+  /** Terminal: the work finished. */
+  | 'completed'
+  /** Terminal: the session failed. */
+  | 'failed';
 
 export type RebaseFrequency = 'never' | 'daily' | 'weekly' | 'on-demand';
 
@@ -738,6 +764,20 @@ export interface AgentInstance {
    * what happened and the pass is not repeated. Absent means never reaped.
    */
   reapedAt?: string;
+  /**
+   * Set by `kit_request_review` (KIT-PR-P5). Before this existed the tool
+   * wrote `reviewRequested: true` into an activity row that nothing in the
+   * codebase read, so an agent finishing its work announced itself into a
+   * void.
+   */
+  reviewRequest?: {
+    summary: string;
+    requestedAt: string;
+    prUrl?: string;
+    prNumber?: number;
+    /** Why there is no PR link, when there isn't one. */
+    prStatus?: string;
+  };
 }
 
 /**

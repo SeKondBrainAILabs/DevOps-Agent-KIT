@@ -1313,6 +1313,15 @@ export function registerTools(
         });
       }
 
+      // KIT-PR-P5 — put the request somewhere the renderer can see it. The
+      // activity row above is history; this is outstanding state.
+      deps.agentInstanceService?.setReviewRequest?.(session_id, {
+        summary,
+        prUrl: (pr?.url as string) ?? undefined,
+        prNumber: (pr?.number as number) ?? undefined,
+        prStatus: (pr?.status as string) ?? undefined,
+      });
+
       return {
         content: [{
           type: 'text',

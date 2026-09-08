@@ -121,6 +121,17 @@ export interface SessionReport {
   parentSessionId?: string;
   /** 'observer' sessions borrow a path and may not write. */
   isolation?: 'worktree' | 'observer';
+  /**
+   * Populated when an agent has called `kit_request_review` (KIT-PR-P5). Drives
+   * the review card; absent means no review is outstanding.
+   */
+  reviewRequest?: {
+    summary: string;
+    requestedAt: string;
+    prUrl?: string;
+    prNumber?: number;
+    prStatus?: string;
+  };
   /** The directory an observer borrows. Never a worktree it owns. */
   observedPath?: string;
   /** How the worktree was obtained; 'failed' means it is running in the source repo. */
