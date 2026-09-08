@@ -4,6 +4,7 @@
  */
 
 import { BaseService } from './BaseService';
+import { createGhRunner, classifyGhFailure, describeGhFailure } from '../../shared/github-cli';
 import type { IpcResult, MergePreview, MergeResult } from '../../shared/types';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -179,7 +180,7 @@ export class MergeService extends BaseService {
     worktreePath: string,
     sourceBranch: string,
     targetBranch: string
-  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN'; details?: unknown }> {
+  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING'; details?: unknown }> {
     // (b) — cheap, no subprocess: scan commit messages between source and
     // target. Do this first so a WIP tip fails fast before we spend the
     // gh-CLI round-trip.
@@ -220,29 +221,69 @@ export class MergeService extends BaseService {
 
     // (a) — gh CLI. Missing gh isn't a hard fail, but we still refuse the
     // merge with a clear message so the user installs it or overrides.
-    const runGh = async (args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
-      try {
-        const mod: any = await import('execa');
-        const execa = typeof mod.execa === 'function' ? mod.execa
-          : typeof mod.default === 'function' ? mod.default
-          : mod.default?.execa;
-        const r = await execa('gh', args, { cwd: worktreePath, timeout: 30_000, reject: false });
-        return { ok: r.exitCode === 0, stdout: r.stdout || '', stderr: r.stderr || '', code: r.exitCode ?? -1 };
-      } catch (err: any) {
-        return { ok: false, stdout: '', stderr: err?.message || String(err), code: -1 };
-      }
-    };
+    // Shared runner (KIT-PR-P1). Same 30s timeout and reject:false as the
+    // inline version this replaces.
+    const gh = createGhRunner();
+    const runGh = (args: string[]) => gh(args, worktreePath);
 
     // Prefer PR-level checks (matches how the team gates in GitHub).
-    const prChecks = await runGh(['pr', 'checks', sourceBranch, '--required', '--json', 'name,state,bucket']);
-    if (prChecks.code === -1 && /command not found|ENOENT/i.test(prChecks.stderr)) {
+    // KIT-PR-P6 — is there actually a pull request to gate on?
+    //
+    // This gate has always asked GitHub about a PR (`gh pr checks` below) while
+    // nothing in KIT ever created one. With no PR it silently fell through to a
+    // branch-level workflow check, which is a weaker thing wearing the same
+    // name: it verifies that some workflow ran green, never that a human looked
+    // at the change.
+    //
+    // Refuse instead, and point at the tool that opens one. A MERGED or CLOSED
+    // PR counts as no PR — the change under review has to be reviewable now.
+    const prState = await runGh(['pr', 'view', sourceBranch, '--json', 'state,url']);
+    const prFailure = classifyGhFailure(prState);
+    if (prFailure === 'not_installed' || prFailure === 'not_authenticated') {
       return {
         ok: false,
         reason: 'GH_UNAVAILABLE',
         message:
-          `Refused merge into '${targetBranch}': gh CLI not installed. Install \`gh\` ` +
-          `and authenticate (\`gh auth login\`) so KIT can verify CI is green, or override ` +
-          `with "Merge without CI check" if you've verified manually.`,
+          `Refused merge into '${targetBranch}': ${describeGhFailure(prFailure)} ` +
+          `KIT needs it to verify the change has been reviewed. Override with ` +
+          `"Merge without CI check" if you've verified manually.`,
+      };
+    }
+    if (prFailure !== 'not_github') {
+      let openPr = false;
+      if (prState.ok && prState.stdout.trim()) {
+        try {
+          openPr = String(JSON.parse(prState.stdout)?.state).toUpperCase() === 'OPEN';
+        } catch {
+          openPr = false;
+        }
+      }
+      if (!openPr) {
+        return {
+          ok: false,
+          reason: 'PR_MISSING',
+          message:
+            `Refused merge into '${targetBranch}': no open pull request for '${sourceBranch}'.\n\n` +
+            `Call kit_request_review to open one so the change can be reviewed, then merge. ` +
+            `Or override with "Merge without CI check" if this is deliberate.`,
+        };
+      }
+    }
+
+    const prChecks = await runGh(['pr', 'checks', sourceBranch, '--required', '--json', 'name,state,bucket']);
+    // Classified in one place (KIT-PR-P1) rather than by regex here. The old
+    // check only recognised a missing binary; a logged-out gh and a non-GitHub
+    // remote both fell through to the branch-level fallback and then to
+    // CI_UNKNOWN, which told the user nothing about the actual cause.
+    const ghFailure = classifyGhFailure(prChecks);
+    if (ghFailure === 'not_installed' || ghFailure === 'not_authenticated') {
+      return {
+        ok: false,
+        reason: 'GH_UNAVAILABLE',
+        message:
+          `Refused merge into '${targetBranch}': ${describeGhFailure(ghFailure)} ` +
+          `KIT needs it to verify CI is green. Override with "Merge without CI check" ` +
+          `if you've verified manually.`,
       };
     }
     if (prChecks.ok && prChecks.stdout.trim()) {

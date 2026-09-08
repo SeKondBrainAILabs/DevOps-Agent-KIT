@@ -472,6 +472,59 @@ export class GitService extends BaseService {
   }
 
   /**
+   * `git remote get-url origin`, or null when there is no origin (KIT-PR-P3).
+   *
+   * Null is a normal answer — a local-only repo is a valid way to work — so
+   * this never throws for a missing remote.
+   */
+  async getRemoteUrl(repoPath: string, remote = 'origin'): Promise<string | null> {
+    try {
+      const out = await this.git(['remote', 'get-url', remote], repoPath);
+      const url = out.trim();
+      return url.length > 0 ? url : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Commits on `branchName` that are not on `baseBranch` (KIT-PR-P3).
+   *
+   * This is the source of truth for what a pull request contains. KIT's own
+   * `commits` table is NOT used for that: it is only written by kit_commit,
+   * kit_commit_all and the watcher's idle checkpoint, so an agent that runs
+   * `git commit` in bash leaves no row and the PR body would silently omit it.
+   *
+   * Uses %x1f as the field separator because commit subjects legitimately
+   * contain every printable character including tabs and pipes.
+   */
+  async getCommitsAhead(
+    repoPath: string,
+    baseBranch: string,
+    branchName: string
+  ): Promise<Array<{ hash: string; subject: string }>> {
+    try {
+      const out = await this.git(
+        ['log', `${baseBranch}..${branchName}`, '--pretty=format:%H%x1f%s'],
+        repoPath
+      );
+      return out
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => {
+          const [hash, ...rest] = line.split('\x1f');
+          return { hash: hash ?? '', subject: rest.join(' ') };
+        })
+        .filter((c) => c.hash.length > 0);
+    } catch {
+      // An unresolvable base ref is the same class of problem the reaper hit:
+      // report nothing rather than a confident wrong answer.
+      return [];
+    }
+  }
+
+  /**
    * Local, network-free safety probe for the reaper (R1).
    *
    * ## Why this exists alongside `getWorktreeSafetyInfo`

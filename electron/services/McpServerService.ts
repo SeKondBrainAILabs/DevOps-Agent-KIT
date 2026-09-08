@@ -103,6 +103,22 @@ export interface McpServiceDeps {
     updateSession: (sessionId: string, patch: any) => Promise<any>;
     extendSession: (sessionId: string, opts: { minutes: number }) => Promise<any>;
   };
+  /** KIT-PR-P4 — pull request creation for kit_request_review. */
+  githubService?: {
+    ensurePullRequest: (session: {
+      sessionId: string;
+      branchName: string;
+      baseBranch: string;
+      taskDescription: string;
+      worktreePath: string;
+    }) => Promise<{
+      status: string;
+      url?: string;
+      number?: number;
+      reason?: string;
+      message?: string;
+    }>;
+  };
   agentInstanceService?: {
     listInstances: () => { success: boolean; data?: any[] };
     // R1 + C5 additions — count / mode queries per repo path.
@@ -314,6 +330,10 @@ export class McpServerService extends BaseService {
 
   setMcpUrlProvider(fn: () => string | null): void {
     this.deps.mcpUrl = fn;
+  }
+
+  setGitHubService(svc: McpServiceDeps['githubService']): void {
+    this.deps.githubService = svc;
   }
 
   setSessionOrchestrator(svc: McpServiceDeps['sessionOrchestrator']): void {

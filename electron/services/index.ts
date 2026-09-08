@@ -34,6 +34,8 @@ import { WorkerBridgeService } from './WorkerBridgeService';
 import { McpServerService } from './McpServerService';
 import { SeedDataExecutionService } from './SeedDataExecutionService';
 import { SessionOrchestrator } from './SessionOrchestrator';
+import { ensurePullRequest } from './GitHubService';
+import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from './DatabaseService';
 import {
   initializeAnalysisServices,
@@ -453,6 +455,22 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
 
   // Give the MCP tool layer the same lifecycle funnel the IPC layer uses.
   mcpServer.setMcpUrlProvider(() => mcpServer.getUrl());
+  // KIT-PR-P4 — pull request creation. The gh runner, push and git reads are
+  // bound here so the tool layer holds one narrow function, not the services.
+  mcpServer.setGitHubService({
+    ensurePullRequest: (session) =>
+      ensurePullRequest(
+        {
+          gh: createGhRunner(),
+          push: (sessionId) => git.push(sessionId),
+          getRemoteUrl: (worktreePath) => git.getRemoteUrl(worktreePath),
+          getCommits: (worktreePath, baseBranch, branchName) =>
+            git.getCommitsAhead(worktreePath, baseBranch, branchName),
+        },
+        session
+      ),
+  });
+
   mcpServer.setSessionOrchestrator({
     startSession: (config) => sessionOrchestrator.startSession(config),
     listSessions: () => sessionOrchestrator.listSessions(),

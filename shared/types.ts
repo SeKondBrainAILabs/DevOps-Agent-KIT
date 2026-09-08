@@ -1155,7 +1155,7 @@ export interface MergeResult {
   /** Files that could not be recovered from stash due to unresolvable conflicts */
   stashConflictFiles?: string[];
   /** S9N-6394: reason the merge gate blocked the operation, when it did. */
-  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN';
+  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING';
   /** S9N-6394: raw payload from the gate (failing checks, WIP shas, etc.). */
   gateDetails?: unknown;
 }

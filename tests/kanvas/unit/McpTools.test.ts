@@ -547,10 +547,30 @@ describe('MCP Tools', () => {
         summary: 'Implemented user auth with JWT tokens',
       });
 
+      // KIT-PR-P4 changed this contract: the tool now also opens a pull
+      // request, so it reports `ok` plus a `pr` block rather than `logged`.
       const data = parseResult(result);
-      expect(data.logged).toBe(true);
+      expect(data.ok).toBe(true);
+      expect(data.review_logged).toBe(true);
       expect(data.summary).toBe('Implemented user auth with JWT tokens');
-      expect(data.sessionId).toBe('sess_test_123');
+      expect(data.session_id).toBe('sess_test_123');
+    });
+
+    it('still succeeds when there is no GitHub integration wired', async () => {
+      // The rule the whole story rests on: the review signal is the primary
+      // effect and works offline. An agent on a local-only repo must not be
+      // told it failed for doing exactly the right thing.
+      const result = await callTool('kit_request_review', {
+        session_id: 'sess_test_123',
+        summary: 'Work done on a repo with no remote',
+      });
+
+      const data = parseResult(result);
+      expect(data.ok).toBe(true);
+      expect(data.review_logged).toBe(true);
+      // ...and it says WHY there is no link, rather than returning null silently.
+      expect(data.pr).not.toBeNull();
+      expect(typeof data.pr.status).toBe('string');
     });
 
     it('should log activity with review details', async () => {

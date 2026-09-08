@@ -1231,7 +1231,11 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_request_review',
-    'Signal that work is ready for review. Logs activity and emits event to KIT dashboard.',
+    'Signal that work is ready for review, and open a pull request for it. ' +
+    'Creates the PR if there is not one, updates it if there is — calling this ' +
+    'repeatedly never opens a second PR. The PR body lists what is actually on ' +
+    'the branch. Safe to call on a repo with no GitHub remote: the review is ' +
+    'still recorded, you just get no PR link back.',
     {
       session_id: z.string().describe('The KIT session ID'),
       summary: z.string().describe('Summary of work completed and what to review'),
@@ -1254,10 +1258,71 @@ export function registerTools(
         });
       }
 
+      // KIT-PR-P4 — open or update the pull request.
+      //
+      // This must NEVER fail the call. The review signal is the primary effect
+      // and works offline; the PR is enrichment. An agent on a local-only repo
+      // must not see an error for doing exactly the right thing, so every
+      // non-GitHub outcome comes back as ok:true with a status explaining why
+      // there is no link.
+      let pr: Record<string, unknown> | null = null;
+      try {
+        const instances = deps.agentInstanceService?.listInstances?.();
+        const inst = instances?.success && instances.data
+          ? instances.data.find(
+              (i: any) =>
+                i.sessionId === session_id ||
+                (Array.isArray(i.predecessorSessionIds) &&
+                  i.predecessorSessionIds.includes(session_id))
+            )
+          : undefined;
+
+        if (!deps.githubService) {
+          pr = { status: 'unavailable', message: 'GitHub integration is not configured.' };
+        } else if (!inst) {
+          pr = { status: 'unavailable', message: 'No KIT instance found for this session.' };
+        } else {
+          const result = await deps.githubService.ensurePullRequest({
+            sessionId: inst.sessionId ?? session_id,
+            branchName: inst.config?.branchName ?? '',
+            baseBranch: inst.config?.baseBranch ?? 'development',
+            taskDescription: inst.config?.taskDescription ?? summary,
+            worktreePath: inst.worktreePath || inst.config?.repoPath || cwd,
+          });
+          pr = {
+            status: result.status,
+            url: result.url ?? null,
+            number: result.number ?? null,
+            reason: result.reason ?? null,
+            message: result.message ?? null,
+          };
+        }
+      } catch (err) {
+        // Even an unexpected throw must not lose the review.
+        pr = {
+          status: 'failed',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+
+      if (deps.activityService && pr?.url) {
+        deps.activityService.log(session_id, 'info', `Pull request ready: ${pr.url}`, {
+          reviewRequested: true,
+          prUrl: pr.url,
+          source: 'mcp',
+        });
+      }
+
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ logged: true, summary, sessionId: session_id }),
+          text: JSON.stringify({
+            ok: true,
+            review_logged: true,
+            session_id,
+            summary,
+            pr,
+          }),
         }],
       };
     })
