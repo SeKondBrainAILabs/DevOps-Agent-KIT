@@ -745,6 +745,9 @@ ${DEVOPS_KIT_DIR}/
         mcpUrl: this.mcpServerUrl || undefined,
         rpcUrl: this.rpcServerUrl || undefined,
         customMcpEnabled: config.customMcpEnabled,
+        // Drives the read-only block in the prompt. An observer that does not
+        // know it is read-only plans edits it cannot make.
+        isolation: config.isolation,
       };
       instance.instructions = getAgentInstructions(config.agentType, finalInstructionVars);
       instance.prompt = generateAgentPrompt(config.agentType, finalInstructionVars);
