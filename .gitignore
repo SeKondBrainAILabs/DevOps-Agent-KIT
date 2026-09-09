@@ -1,5 +1,9 @@
 # Node modules and dependencies
-node_modules/
+# No trailing slash: a trailing-slash rule matches directories only, and git
+# treats a symlink as a file. `node_modules/` therefore did not cover a
+# SYMLINK named node_modules, which is how one pointing at a developer's
+# external volume was committed (6b09d8c) and shipped to everyone who cloned.
+node_modules
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
