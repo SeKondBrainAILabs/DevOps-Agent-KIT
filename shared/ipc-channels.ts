@@ -173,6 +173,8 @@ export const IPC = {
   INSTANCE_FIND_ACTIVE_SIBLING: 'instance:find-active-sibling',
   INSTANCE_DELETE_WITH_CLEANUP: 'instance:delete-with-cleanup', // Delete with worktree/branch cleanup
   INSTANCE_RESTART: 'instance:restart',
+  INSTANCE_SET_PINNED: 'instance:set-pinned', // Pin/unpin against the reaper (R2)
+  INSTANCE_REAP_NOW: 'instance:reap-now',     // Run a reaper pass on demand (R2)
   INSTANCE_GET_LAST_CHANGE: 'instance:get-last-change', // Real last-change time (activity/commit/file mtime)
   INSTANCE_CLEAR_ALL: 'instance:clear-all',
   INSTANCE_UPDATE_BASE_BRANCH: 'instance:update-base-branch',
@@ -203,6 +205,10 @@ export const IPC = {
   STALE_SESSIONS_FOUND: 'recovery:stale-found',
   // Stale-session startup scan: summary of sessions auto-removed (safe ones)
   STALE_SESSIONS_AUTOREMOVED: 'recovery:stale-autoremoved',
+  // Agent-session reaper (R1): sessions whose TTL expired and what was done
+  // about each. Distinct from STALE_SESSIONS_FOUND, which is the 14-day
+  // startup scan over ALL sessions including humans'.
+  AGENT_SESSIONS_EXPIRED: 'recovery:agent-sessions-expired',
 
   // ==========================================================================
   // REPO CLEANUP CHANNELS
@@ -479,6 +485,9 @@ export const IPC = {
   MCP_INSTALL_CLAUDE_DESKTOP: 'mcp:install-claude-desktop',
   MCP_UNINSTALL_CLAUDE_DESKTOP: 'mcp:uninstall-claude-desktop',
   MCP_CHECK_CLAUDE_DESKTOP_CONFIG: 'mcp:check-claude-desktop-config',
+  MCP_GET_AGENT_SESSION_POLICY: 'mcp:get-agent-session-policy',
+  MCP_SET_AGENT_SESSION_POLICY: 'mcp:set-agent-session-policy',
+  MCP_GET_AGENT_SESSION_COUNT: 'mcp:get-agent-session-count',
   // Events (main → renderer)
   MCP_SERVER_STARTED: 'mcp:server-started',
   MCP_TOOL_CALLED: 'mcp:tool-called',
@@ -671,6 +680,9 @@ export const REQUEST_CHANNELS = [
   // MCP server channels
   IPC.MCP_SERVER_STATUS,
   IPC.MCP_GET_CALL_LOG,
+  IPC.MCP_GET_AGENT_SESSION_POLICY,
+  IPC.MCP_SET_AGENT_SESSION_POLICY,
+  IPC.MCP_GET_AGENT_SESSION_COUNT,
   // Seed data channels
   IPC.SEED_GENERATE_FEATURE,
   IPC.SEED_GENERATE_ALL,

@@ -59,6 +59,21 @@ async function pumpAiStream(
  * Register all IPC handlers
  * Removes existing handlers first to support HMR during development
  */
+/**
+ * The repo root a session's locks are keyed by.
+ *
+ * Locks are stored per SOURCE REPO, never per worktree — the watcher's
+ * auto-locks always used the repo root, and anything keyed by worktree writes
+ * to a second file nothing reads.
+ */
+function lockRootForSession(services: Services, sessionId: string): string | undefined {
+  const listed = services.agentInstance.listInstances();
+  const inst = listed.success && listed.data
+    ? listed.data.find((i) => i.sessionId === sessionId)
+    : undefined;
+  return inst?.config?.repoPath;
+}
+
 export function registerIpcHandlers(services: Services, mainWindow: BrowserWindow): void {
   console.log('[IPC] Registering IPC handlers...');
   // Remove existing handlers first (for HMR support)
@@ -152,12 +167,23 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // LOCK HANDLERS
   // ==========================================================================
   // Legacy lock API (session-based)
-  ipcMain.handle(IPC.LOCK_DECLARE, async (_, sessionId: string, files: string[], operation: string) => {
-    return services.lock.declareFiles(sessionId, files, operation as 'edit' | 'read' | 'delete');
+  // repoPath is now required: declarations live in the same repo-keyed store the
+  // watcher's auto-locks use, so a declaration without one would land nowhere
+  // anything reads. Resolved from the session when the caller omits it.
+  ipcMain.handle(IPC.LOCK_DECLARE, async (_, sessionId: string, files: string[], operation: string, repoPath?: string) => {
+    const root = repoPath ?? lockRootForSession(services, sessionId);
+    if (!root) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No repo for session ${sessionId}` } };
+    }
+    return services.lock.declareFiles(root, sessionId, files, operation as 'edit' | 'read' | 'delete');
   });
 
-  ipcMain.handle(IPC.LOCK_RELEASE, async (_, sessionId: string) => {
-    return services.lock.releaseFiles(sessionId);
+  ipcMain.handle(IPC.LOCK_RELEASE, async (_, sessionId: string, repoPath?: string) => {
+    const root = repoPath ?? lockRootForSession(services, sessionId);
+    if (!root) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No repo for session ${sessionId}` } };
+    }
+    return services.lock.releaseFiles(root, sessionId);
   });
 
   // New auto-lock API (repo/file-based)
@@ -169,7 +195,7 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     if (repoPath) {
       return services.lock.getRepoLocks(repoPath);
     }
-    return services.lock.listDeclarations();
+    return { success: true, data: [] };
   });
 
   ipcMain.handle(IPC.LOCK_FORCE_RELEASE, async (_, repoPath: string, filePath: string) => {
@@ -399,17 +425,12 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // Create and manage agent instances from Kanvas dashboard
   // ==========================================================================
   ipcMain.handle(IPC.INSTANCE_CREATE, async (_, config) => {
-    const result = await services.agentInstance.createInstance(config);
-
-    // Auto-start file watcher for the new session (use worktree if available)
-    if (result.success && result.data?.sessionId) {
-      const watchPath = result.data.worktreePath || config.repoPath;
-      services.watcher.startWithPath(result.data.sessionId, watchPath).catch((err) => {
-        console.warn('[IPC] Failed to start watcher for new session:', err);
-      });
-    }
-
-    return result;
+    // Delegates to SessionOrchestrator, which owns the compose step
+    // (createInstance + start the file watcher). createInstance alone does not
+    // start a watcher, so every caller has to remember to — this used to be
+    // inline here, and the MCP tool layer now shares the same path instead of
+    // duplicating it.
+    return services.sessionOrchestrator.startSession(config);
   });
 
   ipcMain.handle(IPC.INSTANCE_VALIDATE_REPO, async (_, path: string) => {
@@ -441,14 +462,19 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   });
 
   ipcMain.handle(IPC.INSTANCE_DELETE, async (_, instanceId: string) => {
-    // Stop watcher before deleting
-    await services.watcher.stop(instanceId).catch(() => {});
+    // NOTE: this handler receives an INSTANCE id, but watchers are keyed by
+    // SESSION id and the two id spaces never collide (`inst_…` vs `sess_…`).
+    // The previous `watcher.stop(instanceId)` therefore always matched
+    // nothing, and every session deleted this way leaked its watcher.
+    const sessionId = services.sessionOrchestrator.resolveSessionId(instanceId);
+    if (sessionId) {
+      await services.sessionOrchestrator.teardownSession(sessionId);
+    }
     return await services.agentInstance.deleteInstance(instanceId);
   });
 
   ipcMain.handle(IPC.INSTANCE_DELETE_SESSION, async (_, sessionId: string, repoPath?: string) => {
-    // Stop watcher before deleting
-    await services.watcher.stop(sessionId).catch(() => {});
+    await services.sessionOrchestrator.teardownSession(sessionId);
     return await services.agentInstance.deleteSessionById(sessionId, repoPath);
   });
 
@@ -470,9 +496,32 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     },
     hints?: { repoPath?: string; branchName?: string; worktreePath?: string }
   ) => {
-    // Stop watcher before deleting
-    await services.watcher.stop(sessionId).catch(() => {});
+    await services.sessionOrchestrator.teardownSession(sessionId);
     return await services.agentInstance.deleteInstanceWithCleanup(sessionId, options, hints);
+  });
+
+  // R2 — pin a session so the reaper skips it, whatever its age.
+  ipcMain.handle(IPC.INSTANCE_SET_PINNED, async (_e: unknown, sessionId: string, pinned: boolean) => {
+    return services.agentInstance.setSessionPinned(sessionId, pinned);
+  });
+
+  // R2 — run a reaper pass on demand. Dry-run by default so the UI can show
+  // what WOULD happen without doing it; the caller opts into acting.
+  ipcMain.handle(IPC.INSTANCE_REAP_NOW, async (_e: unknown, opts?: { dryRun?: boolean }) => {
+    try {
+      const result = await services.sessionOrchestrator.reapExpiredAgentSessions({
+        dryRun: opts?.dryRun ?? true,
+      });
+      return { success: true, data: result };
+    } catch (err) {
+      return {
+        success: false,
+        error: {
+          code: 'REAP_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
   });
 
   ipcMain.handle(IPC.INSTANCE_RESTART, async (_, sessionId: string, sessionData?: {
@@ -483,22 +532,16 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     agentType?: string;
     task?: string;
   }, commitChanges?: boolean) => {
-    // Stop old watcher
-    await services.watcher.stop(sessionId).catch(() => {});
-
-    const result = await services.agentInstance.restartInstance(sessionId, sessionData, commitChanges);
-
-    // Start watcher for new session (use worktree path if available)
-    if (result.success && result.data?.sessionId) {
-      const watchPath = result.data.worktreePath || result.data.config?.repoPath;
-      if (watchPath) {
-        services.watcher.startWithPath(result.data.sessionId, watchPath).catch((err) => {
-          console.warn('[IPC] Failed to start watcher for restarted session:', err);
-        });
-      }
-    }
-
-    return result;
+    // M5 closed the second compose site. Teardown (without unbinding MCP),
+    // restartInstance, and the watcher start now all live in
+    // SessionOrchestrator.restartSession, so a non-IPC caller — the
+    // kit_restart_session tool — gets a restarted session with a running
+    // watcher rather than one that silently never auto-commits.
+    return services.sessionOrchestrator.restartSession(
+      sessionId,
+      sessionData as Parameters<typeof services.sessionOrchestrator.restartSession>[1],
+      commitChanges
+    );
   });
 
   ipcMain.handle(IPC.INSTANCE_GET_LAST_CHANGE, async (_, sessionId: string) => {
@@ -1554,6 +1597,36 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return result.success
       ? { success: true }
       : { success: false, error: { code: 'MCP_UNINSTALL_FAILED', message: result.error } };
+  });
+
+  // Agent-session policy: kill switch + concurrency caps. Writes live here and
+  // deliberately NOT on the MCP tool surface — an agent must not be able to
+  // raise its own cap or re-enable a switch the user just turned off.
+  ipcMain.handle(IPC.MCP_GET_AGENT_SESSION_POLICY, () => {
+    return { success: true, data: databaseService.getSessionLimits() };
+  });
+
+  ipcMain.handle(IPC.MCP_SET_AGENT_SESSION_POLICY, (_, patch: {
+    enabled?: boolean;
+    maxConcurrentGlobal?: number;
+    maxConcurrentPerRepo?: number;
+  }) => {
+    return { success: true, data: databaseService.setSessionLimits(patch ?? {}) };
+  });
+
+  ipcMain.handle(IPC.MCP_GET_AGENT_SESSION_COUNT, () => {
+    const listed = services.agentInstance.listInstances();
+    const instances = listed.success && listed.data ? listed.data : [];
+    const active = instances.filter(
+      (i: any) => i.config?.createdBy === 'mcp' && isActiveInstance(i)
+    );
+    return {
+      success: true,
+      data: {
+        active: active.length,
+        limits: databaseService.getSessionLimits(),
+      },
+    };
   });
 
   ipcMain.handle(IPC.MCP_CHECK_CLAUDE_DESKTOP_CONFIG, async () => {

@@ -13,6 +13,8 @@ module.exports = {
   testPathIgnorePatterns: [
     '/node_modules/',
     '/dist/',
+    '/.claude/worktrees/',
+    '/.worktrees/',
     '/tests/kanvas/fixtures/',
     // These two integration suites are authored for Vitest (they `import from
     // 'vitest'`), not Jest. Running them under Jest fails at module resolution.
@@ -25,6 +27,12 @@ module.exports = {
     '<rootDir>/local_deploy/',
     '<rootDir>/dist/',
     '<rootDir>/test-e2e-workspace/',
+    // Agent worktrees created inside the repo. Without this, jest discovers a
+    // complete second copy of the tree — the whole suite runs twice, every
+    // module collides in the haste map, and the pass/fail counts are junk.
+    // `local_deploy/` above is the same guard for the pre-v2.6.53 layout.
+    '<rootDir>/.claude/worktrees/',
+    '<rootDir>/.worktrees/',
   ],
   preset: 'ts-jest/presets/default-esm',
   transform: {

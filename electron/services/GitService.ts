@@ -472,6 +472,164 @@ export class GitService extends BaseService {
   }
 
   /**
+   * `git remote get-url origin`, or null when there is no origin (KIT-PR-P3).
+   *
+   * Null is a normal answer — a local-only repo is a valid way to work — so
+   * this never throws for a missing remote.
+   */
+  async getRemoteUrl(repoPath: string, remote = 'origin'): Promise<string | null> {
+    try {
+      const out = await this.git(['remote', 'get-url', remote], repoPath);
+      const url = out.trim();
+      return url.length > 0 ? url : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Commits on `branchName` that are not on `baseBranch` (KIT-PR-P3).
+   *
+   * This is the source of truth for what a pull request contains. KIT's own
+   * `commits` table is NOT used for that: it is only written by kit_commit,
+   * kit_commit_all and the watcher's idle checkpoint, so an agent that runs
+   * `git commit` in bash leaves no row and the PR body would silently omit it.
+   *
+   * Uses %x1f as the field separator because commit subjects legitimately
+   * contain every printable character including tabs and pipes.
+   */
+  async getCommitsAhead(
+    repoPath: string,
+    baseBranch: string,
+    branchName: string
+  ): Promise<Array<{ hash: string; subject: string }>> {
+    try {
+      const out = await this.git(
+        ['log', `${baseBranch}..${branchName}`, '--pretty=format:%H%x1f%s'],
+        repoPath
+      );
+      return out
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => {
+          const [hash, ...rest] = line.split('\x1f');
+          return { hash: hash ?? '', subject: rest.join(' ') };
+        })
+        .filter((c) => c.hash.length > 0);
+    } catch {
+      // An unresolvable base ref is the same class of problem the reaper hit:
+      // report nothing rather than a confident wrong answer.
+      return [];
+    }
+  }
+
+  /**
+   * Local, network-free safety probe for the reaper (R1).
+   *
+   * ## Why this exists alongside `getWorktreeSafetyInfo`
+   *
+   * `getWorktreeSafetyInfo` compares HEAD against the hardcoded `main` and
+   * `development`, and wraps both comparisons in a swallow-all `safe()`. When
+   * neither ref exists — a repo whose primary branch is `trunk`, `master`, or
+   * anything else — BOTH comparisons fail silently and it reports
+   * `unmergedCommitCount: 0` with `mergedIntoBranches: ['main','development']`.
+   * A branch full of unmerged work is presented as clean and fully merged.
+   * Verified against a real repo, not assumed.
+   *
+   * That is survivable for the dialog it feeds, where a human reads the result.
+   * It is not survivable for the reaper, which would take it as authorisation
+   * to delete the worktree AND the local branch.
+   *
+   * So this compares against the session's OWN recorded base branch and, when
+   * that comparison cannot be made, says so via `conclusive: false` instead of
+   * reporting a confident zero.
+   */
+  async getReapSafetyInfo(
+    worktreePath: string,
+    baseBranch: string | undefined
+  ): Promise<IpcResult<{
+    conclusive: boolean;
+    hasUncommittedChanges: boolean;
+    unmergedCommitCount: number;
+    comparedAgainst?: string;
+    inconclusiveReason?: string;
+  }>> {
+    return this.wrap(async () => {
+      let status: string;
+      try {
+        status = await this.git(['status', '--porcelain'], worktreePath);
+      } catch (err) {
+        // We could not even read the worktree. Report inconclusive AND assume
+        // there is work, so every caller refuses to delete.
+        return {
+          conclusive: false,
+          hasUncommittedChanges: true,
+          unmergedCommitCount: 0,
+          inconclusiveReason: `git status failed: ${(err as Error)?.message ?? 'unknown'}`,
+        };
+      }
+
+      const hasUncommittedChanges = status
+        .split('\n')
+        .some((line) => line.trim().length > 0);
+
+      if (!baseBranch) {
+        return {
+          conclusive: false,
+          hasUncommittedChanges,
+          unmergedCommitCount: 0,
+          inconclusiveReason: 'session records no base branch to compare against',
+        };
+      }
+
+      // Does the base ref actually resolve? This is the check whose absence
+      // makes getWorktreeSafetyInfo unsafe.
+      try {
+        await this.git(['rev-parse', '--verify', `${baseBranch}^{commit}`], worktreePath);
+      } catch {
+        return {
+          conclusive: false,
+          hasUncommittedChanges,
+          unmergedCommitCount: 0,
+          inconclusiveReason: `base branch '${baseBranch}' does not resolve in this worktree`,
+        };
+      }
+
+      try {
+        const out = await this.git(
+          ['rev-list', '--count', `${baseBranch}..HEAD`],
+          worktreePath
+        );
+        const count = Number.parseInt(out.trim(), 10);
+        if (!Number.isFinite(count)) {
+          return {
+            conclusive: false,
+            hasUncommittedChanges,
+            unmergedCommitCount: 0,
+            comparedAgainst: baseBranch,
+            inconclusiveReason: `rev-list returned unparseable output: ${out.trim()}`,
+          };
+        }
+        return {
+          conclusive: true,
+          hasUncommittedChanges,
+          unmergedCommitCount: count,
+          comparedAgainst: baseBranch,
+        };
+      } catch (err) {
+        return {
+          conclusive: false,
+          hasUncommittedChanges,
+          unmergedCommitCount: 0,
+          comparedAgainst: baseBranch,
+          inconclusiveReason: `rev-list failed: ${(err as Error)?.message ?? 'unknown'}`,
+        };
+      }
+    }, 'GIT_REAP_SAFETY_INFO_FAILED');
+  }
+
+  /**
    * Find existing version-tag prefixes in a repo (for the wizard to suggest one).
    * A "version tag" is any tag ending in vMAJOR.MINOR.PATCH; the returned prefix
    * is everything up to and including the leading "v" (e.g. "SDDMini-KH/v").
