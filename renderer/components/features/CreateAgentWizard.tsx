@@ -38,6 +38,9 @@ interface AgentSettings {
   autoCommit: boolean;
   systemPrompt: string;
   contextPreservation: string;
+  // GitHub Action on merge (tag-push)
+  mergeActionEnabled: boolean;
+  mergeActionTagPrefix: string;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `Follow existing code style and patterns
@@ -63,33 +66,13 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Whether this repo already has sessions — drives "using previous settings" UX
+  const [hasPreviousSession, setHasPreviousSession] = useState(false);
+
   // Form state
   const [repoPath, setRepoPath] = useState<string | null>(initialRepoPath ?? null);
   const [repoValidation, setRepoValidation] = useState<RepoValidation | null>(null);
 
-  // When opened with a prefill, kick off validation immediately so subsequent
-  // steps have what they need.
-  React.useEffect(() => {
-    if (!initialRepoPath) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const result = await window.api?.instance?.validateRepo?.(initialRepoPath);
-        if (cancelled) return;
-        if (result?.success && result.data) {
-          setRepoValidation(result.data);
-          if (result.data.currentBranch) {
-            setSettings((s) => ({ ...s, baseBranch: result.data!.currentBranch || 'main' }));
-          }
-        }
-      } catch {
-        // ignore — wizard still usable, user can re-pick
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [initialRepoPath]);
   const [agentType, setAgentType] = useState<AgentType | null>(null);
   const [settings, setSettings] = useState<AgentSettings>({
     taskDescription: initialTask ?? '',
@@ -99,10 +82,58 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
     autoCommit: true,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     contextPreservation: DEFAULT_CONTEXT_PRESERVATION,
+    mergeActionEnabled: false,
+    mergeActionTagPrefix: '',
   });
+
+  // Detected version-tag prefixes in the selected repo (for the GH Action picker).
+  const [tagPrefixes, setTagPrefixes] = useState<Array<{ prefix: string; count: number; latest: string }>>([]);
 
   // Result
   const [createdInstance, setCreatedInstance] = useState<AgentInstance | null>(null);
+
+  // Refine-with-AI state
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string | null>(null);
+  const [refinedPersona, setRefinedPersona] = useState<string | null>(null);
+
+  const handleRefineTask = async () => {
+    setRefineError(null);
+    const raw = settings.taskDescription.trim();
+    if (!raw) {
+      setRefineError('Type a task first');
+      return;
+    }
+    if (!window.api?.ai?.refineSessionTask) {
+      setRefineError('Refine is not available in this build');
+      return;
+    }
+    setRefining(true);
+    try {
+      const repoName = repoPath ? repoPath.split('/').filter(Boolean).pop() : undefined;
+      const result = await window.api.ai.refineSessionTask({
+        rawTask: raw,
+        agentType: agentType || 'claude',
+        repoName,
+      });
+      if (result.success && result.data) {
+        setSettings(s => ({ ...s, taskDescription: result.data!.refinedTask }));
+        setRefinedPersona(result.data.persona);
+      } else {
+        setRefineError(result.error?.message || 'Refine failed');
+      }
+    } catch (err) {
+      setRefineError(err instanceof Error ? err.message : 'Refine failed');
+    } finally {
+      setRefining(false);
+    }
+  };
+
+  const personaLabel = (p: string): string =>
+    p === 'product_manager' ? 'Senior Product Manager'
+      : p === 'senior_ai_engineer' ? 'Senior AI Engineer'
+      : p === 'senior_engineer' ? 'Senior Engineer'
+      : p;
 
   // First-run setup
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
@@ -117,27 +148,163 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
   const [selectedSecondaryRepos, setSelectedSecondaryRepos] = useState<Array<{ repoPath: string; repoName: string; isSubmodule: boolean }>>([]);
   const [commitScope, setCommitScope] = useState<'all' | 'per-repo'>('all');
 
+  /**
+   * Load defaults from the most recent session for this repo.
+   * Returns true if a previous session was found and defaults applied.
+   */
+  const loadPreviousSessionDefaults = React.useCallback(async (path: string): Promise<boolean> => {
+    try {
+      const result = await window.api?.instance?.list?.();
+      if (!result?.success || !result.data) return false;
+
+      // Find the most recently-created session for this repo
+      const repoSessions = result.data
+        .filter(inst => inst.config?.repoPath === path)
+        .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+
+      if (repoSessions.length === 0) return false;
+
+      const last = repoSessions[0];
+      const cfg = last.config;
+
+      setHasPreviousSession(true);
+      if (cfg.agentType) setAgentType(cfg.agentType as AgentType);
+      if (cfg.multiRepo) {
+        setMultiRepoEnabled(true);
+        setCommitScope(cfg.multiRepo.commitScope || 'all');
+        // Restore secondary repos list
+        if (cfg.multiRepo.secondaryRepos?.length) {
+          setSelectedSecondaryRepos(cfg.multiRepo.secondaryRepos.map(r => ({
+            repoPath: r.repoPath,
+            repoName: r.repoName,
+            isSubmodule: r.isSubmodule,
+          })));
+        }
+      }
+      setSettings(s => ({
+        ...s,
+        rebaseFrequency: cfg.rebaseFrequency || s.rebaseFrequency,
+        autoCommit: cfg.autoCommit !== undefined ? cfg.autoCommit : s.autoCommit,
+        systemPrompt: cfg.systemPrompt || s.systemPrompt,
+        contextPreservation: cfg.contextPreservation || s.contextPreservation,
+        // Keep baseBranch from repo validation (current branch) unless we have a specific one
+        baseBranch: s.baseBranch !== 'main' ? s.baseBranch : (cfg.baseBranch || s.baseBranch),
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // When opened with a prefill, kick off validation + load previous defaults.
+  // Then advance past the 'setup' placeholder to the right step.
+  React.useEffect(() => {
+    if (!initialRepoPath) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [validationResult, hasPrev] = await Promise.all([
+          window.api?.instance?.validateRepo?.(initialRepoPath),
+          loadPreviousSessionDefaults(initialRepoPath),
+        ]);
+        if (cancelled) return;
+        if (validationResult?.success && validationResult.data) {
+          setRepoValidation(validationResult.data);
+          // Default the base branch to the repo's current branch — but never to a
+          // detached-HEAD/"HEAD" sentinel. Fall back to a primary that actually exists.
+          setSettings((s) => ({ ...s, baseBranch: pickDefaultBaseBranch(validationResult.data!) }));
+          // Detect existing version-tag prefixes (for the GitHub-Action-on-merge picker).
+          // If the repo has a versioned-tag convention, default the toggle ON —
+          // KIT was treating tag-push as opt-in and most users assumed the absence
+          // of the tag UI at merge meant tags broke. A repo that already tags
+          // releases obviously wants its workflow fired on merge.
+          window.api?.git?.detectTagPrefixes?.(initialRepoPath).then((r) => {
+            if (!cancelled && r?.success && r.data) {
+              setTagPrefixes(r.data);
+              if (r.data[0]) {
+                setSettings((s) => ({
+                  ...s,
+                  mergeActionTagPrefix: s.mergeActionTagPrefix || r.data![0].prefix,
+                  mergeActionEnabled: s.mergeActionEnabled || true,
+                }));
+              }
+            }
+          }).catch(() => {});
+        }
+
+        // Advance past the 'setup' placeholder to the correct first step
+        if (hasPrev) {
+          // Previous session found — skip first-run setup, go to agent type
+          setNeedsSetup(false);
+          setCurrentStep('agent');
+        } else {
+          // No previous session — check if first-run setup is needed
+          try {
+            const setupResult = await window.api?.contractRegistry?.needsFirstRunSetup(initialRepoPath);
+            if (!cancelled) {
+              if (setupResult?.success && setupResult.data) {
+                setNeedsSetup(true);
+                setCurrentStep('setup');
+              } else {
+                setNeedsSetup(false);
+                setCurrentStep('agent');
+              }
+            }
+          } catch {
+            if (!cancelled) {
+              setNeedsSetup(false);
+              setCurrentStep('agent');
+            }
+          }
+        }
+      } catch {
+        // ignore — wizard still usable, user can re-pick
+        if (!cancelled) setCurrentStep('repo');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRepoPath, loadPreviousSessionDefaults]);
+
   const handleRepoSelect = async (path: string, validation: RepoValidation) => {
     setRepoPath(path);
     setRepoValidation(validation);
     setError(null);
-    if (validation.currentBranch) {
-      setSettings(s => ({ ...s, baseBranch: validation.currentBranch || 'main' }));
-    }
-
-    // Detect submodules for multi-repo support
-    try {
-      const subResult = await window.api?.git?.detectSubmodules(path);
-      if (subResult?.success && subResult.data?.length > 0) {
-        setDetectedSubmodules(subResult.data);
-      } else {
-        setDetectedSubmodules([]);
+    setSettings(s => ({ ...s, baseBranch: pickDefaultBaseBranch(validation) }));
+    window.api?.git?.detectTagPrefixes?.(path).then((r) => {
+      if (r?.success && r.data) {
+        setTagPrefixes(r.data);
+        if (r.data[0]) setSettings((s) => ({ ...s, mergeActionTagPrefix: s.mergeActionTagPrefix || r.data![0].prefix }));
       }
-    } catch {
-      setDetectedSubmodules([]);
+    }).catch(() => {});
+
+    // Load previous session defaults for this repo + detect submodules in parallel
+    const [hasPrev] = await Promise.all([
+      loadPreviousSessionDefaults(path),
+      (async () => {
+        try {
+          const subResult = await window.api?.git?.detectSubmodules(path);
+          if (subResult?.success && subResult.data?.length > 0) {
+            setDetectedSubmodules(subResult.data);
+          } else {
+            setDetectedSubmodules([]);
+          }
+        } catch {
+          setDetectedSubmodules([]);
+        }
+      })(),
+    ]);
+
+    // If a previous session exists for this repo, skip the one-time setup step —
+    // it was already done. Jump straight to agent type selection.
+    if (hasPrev) {
+      setNeedsSetup(false);
+      setTimeout(() => setCurrentStep('agent'), 300);
+      return;
     }
 
-    // Check if first-run setup is needed
+    // Check if first-run setup is needed (new repo, never set up before)
     try {
       const result = await window.api?.contractRegistry?.needsFirstRunSetup(path);
       if (result?.success && result.data) {
@@ -271,6 +438,9 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
         contextPreservation: settings.contextPreservation,
         multiRepo,
         customMcpEnabled: agentType === 'custom' ? customMcpEnabled : undefined,
+        mergeAction: settings.mergeActionEnabled && settings.mergeActionTagPrefix.trim()
+          ? { enabled: true, type: 'tag-push' as const, tagPrefix: settings.mergeActionTagPrefix.trim(), versionBump: 'patch' as const }
+          : undefined,
       };
 
       const result = await window.api?.instance?.create(config);
@@ -477,6 +647,10 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
                 {agentType?.charAt(0).toUpperCase()}{agentType?.slice(1)} agent for {repoValidation?.repoName}
               </CompletedStep>
 
+              {hasPreviousSession && (
+                <PreviousSettingsBanner />
+              )}
+
               <ConversationBubble>
                 <p className="text-lg font-medium">Working across multiple repositories?</p>
                 <p className="text-sm text-text-secondary mt-1">
@@ -604,6 +778,10 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
                 {agentType?.charAt(0).toUpperCase()}{agentType?.slice(1)} agent for {repoValidation?.repoName}
               </CompletedStep>
 
+              {hasPreviousSession && (
+                <PreviousSettingsBanner />
+              )}
+
               <ConversationBubble>
                 <p className="text-lg font-medium">How should the agent manage branches?</p>
                 <p className="text-sm text-text-secondary mt-1">
@@ -619,10 +797,35 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
                 >
                   <textarea
                     value={settings.taskDescription}
-                    onChange={(e) => setSettings(s => ({ ...s, taskDescription: e.target.value }))}
-                    className="textarea h-20"
+                    onChange={(e) => {
+                      setSettings(s => ({ ...s, taskDescription: e.target.value }));
+                      if (refinedPersona) setRefinedPersona(null);
+                    }}
+                    className="textarea h-32"
                     placeholder="e.g. Resolve uncommitted changes: commit staged files, stash modified work, clean up repo state"
                   />
+                  <div className="flex items-center justify-between mt-2 gap-3">
+                    <div className="flex items-center gap-2 text-xs">
+                      {refinedPersona && (
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded-full bg-[rgba(0,0,0,0.05)] text-text-secondary"
+                          title="Persona used to refine the task"
+                        >
+                          {personaLabel(refinedPersona)}
+                        </span>
+                      )}
+                      {refineError && <span className="text-red-500">{refineError}</span>}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRefineTask}
+                      disabled={refining || !settings.taskDescription.trim()}
+                      className="text-xs px-3 py-1.5 rounded-full bg-black text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[rgba(0,0,0,0.85)] transition-colors"
+                      title="Rewrite the task as a senior PM / engineer / AI engineer (auto-picked)"
+                    >
+                      {refining ? 'Refining…' : '✨ Refine with AI'}
+                    </button>
+                  </div>
                 </SettingCard>
 
                 {/* Branch Name */}
@@ -638,15 +841,12 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
                       className="input flex-1"
                       placeholder="feature/agent-work"
                     />
-                    <select
+                    <BaseBranchPicker
+                      branches={repoValidation?.branches || ['main']}
+                      currentBranch={repoValidation?.currentBranch || 'main'}
                       value={settings.baseBranch}
-                      onChange={(e) => setSettings(s => ({ ...s, baseBranch: e.target.value }))}
-                      className="select w-40"
-                    >
-                      {(repoValidation?.branches || ['main']).map(branch => (
-                        <option key={branch} value={branch}>from {branch}</option>
-                      ))}
-                    </select>
+                      onChange={(v) => setSettings(s => ({ ...s, baseBranch: v }))}
+                    />
                   </div>
                 </SettingCard>
 
@@ -693,6 +893,57 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
                     </OptionButton>
                   </div>
                 </SettingCard>
+
+                {/* GitHub Action on merge (tag-push) */}
+                <SettingCard
+                  title="GitHub Action on merge"
+                  description="Fire a workflow when this session is merged, by pushing a version tag."
+                >
+                  <div className="flex gap-3">
+                    <OptionButton
+                      selected={!settings.mergeActionEnabled}
+                      onClick={() => setSettings(s => ({ ...s, mergeActionEnabled: false }))}
+                    >
+                      Off
+                    </OptionButton>
+                    <OptionButton
+                      selected={settings.mergeActionEnabled}
+                      onClick={() => setSettings(s => ({ ...s, mergeActionEnabled: true }))}
+                    >
+                      Push a version tag
+                    </OptionButton>
+                  </div>
+                  {settings.mergeActionEnabled && (
+                    <div className="mt-3 space-y-2">
+                      <label className="label">Tag prefix (the part before the version)</label>
+                      {tagPrefixes.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          {tagPrefixes.slice(0, 4).map(p => (
+                            <button
+                              key={p.prefix}
+                              type="button"
+                              onClick={() => setSettings(s => ({ ...s, mergeActionTagPrefix: p.prefix }))}
+                              className={`text-xs px-2 py-1 rounded-full border ${settings.mergeActionTagPrefix === p.prefix ? 'bg-black text-white border-black' : 'border-[rgba(0,0,0,0.10)] text-text-secondary hover:bg-[#FAFAF7]'}`}
+                              title={`${p.count} existing tags — latest ${p.latest}`}
+                            >
+                              {p.prefix}… <span className="opacity-60">(latest {p.latest.replace(p.prefix, '')})</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <input
+                        type="text"
+                        value={settings.mergeActionTagPrefix}
+                        onChange={(e) => setSettings(s => ({ ...s, mergeActionTagPrefix: e.target.value }))}
+                        className="input w-full font-mono"
+                        placeholder="SDDMini-KH/v"
+                      />
+                      <p className="text-[11px] text-text-secondary">
+                        On merge, KIT will create &amp; push the next patch tag (e.g. <code>{(settings.mergeActionTagPrefix || 'SDDMini-KH/v')}3.23.41</code>) — you can edit the version before it fires. Its push triggers the matching workflow.
+                      </p>
+                    </div>
+                  )}
+                </SettingCard>
               </div>
             </div>
           )}
@@ -703,6 +954,10 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
               <CompletedStep>
                 Branch: {settings.branchName} (rebase: {settings.rebaseFrequency})
               </CompletedStep>
+
+              {hasPreviousSession && (
+                <PreviousSettingsBanner />
+              )}
 
               <ConversationBubble>
                 <p className="text-lg font-medium">Set up the agent's instructions</p>
@@ -848,6 +1103,20 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
 }
 
 /**
+ * Banner shown when settings are pre-populated from a previous session
+ */
+function PreviousSettingsBanner(): React.ReactElement {
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-[10px] bg-[rgba(0,0,0,0.04)] border border-[rgba(0,0,0,0.08)] text-sm text-text-secondary">
+      <svg className="w-4 h-4 flex-shrink-0 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+      </svg>
+      <span>Settings from your last session on this repo are pre-filled — adjust anything below or just continue.</span>
+    </div>
+  );
+}
+
+/**
  * Conversation bubble
  */
 function ConversationBubble({ children }: { children: React.ReactNode }): React.ReactElement {
@@ -923,6 +1192,151 @@ function OptionButton({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Smart branch picker — shows a curated short list with an "Other…" escape hatch.
+ */
+const PRIMARY_BRANCHES = ['main', 'master', 'development', 'develop', 'dev'];
+
+/** Branches that should never appear as a merge-target choice */
+/**
+ * Choose a sensible default base branch from a repo validation result.
+ * Never returns a detached-HEAD/"HEAD" sentinel: prefers the current branch when
+ * it's a real branch, otherwise the first primary that exists, otherwise 'main'.
+ */
+function pickDefaultBaseBranch(validation: { currentBranch?: string; branches?: string[] }): string {
+  const current = validation.currentBranch;
+  if (current && !isSessionOrRemoteBranch(current)) return current;
+  const branches = validation.branches ?? [];
+  const primary = PRIMARY_BRANCHES.find(b => branches.includes(b));
+  if (primary) return primary;
+  const firstReal = branches.find(b => !isSessionOrRemoteBranch(b));
+  return firstReal ?? 'main';
+}
+
+function isSessionOrRemoteBranch(b: string): boolean {
+  return (
+    b.startsWith('origin/') ||
+    b.startsWith('remotes/') ||
+    // Detached-HEAD pseudo-entries ("(HEAD detached at <tag>)") and the bare
+    // "HEAD" sentinel are never valid base branches to commit onto.
+    b.startsWith('(') ||
+    b.includes('HEAD detached') ||
+    b === 'HEAD' ||
+    /^codex-session-/.test(b) ||
+    /^cursor-session-/.test(b) ||
+    /^copilot-session-/.test(b) ||
+    /^aider-session-/.test(b) ||
+    /^warp-session-/.test(b) ||
+    /^cline-session-/.test(b)
+  );
+}
+
+function BaseBranchPicker({
+  branches,
+  currentBranch,
+  value,
+  onChange,
+}: {
+  branches: string[];
+  currentBranch: string;
+  value: string;
+  onChange: (v: string) => void;
+}): React.ReactElement {
+  const [showAll, setShowAll] = React.useState(false);
+  const [prevValue, setPrevValue] = React.useState(value);
+
+  // Filter out remote-tracking refs and session branches — these are never valid merge targets
+  const cleanBranches = React.useMemo(
+    () => branches.filter(b => !isSessionOrRemoteBranch(b)),
+    [branches]
+  );
+
+  // Build primary list: PRIMARY_BRANCHES that exist in branches, preserving order
+  const primaryList = React.useMemo(() => {
+    const filtered = PRIMARY_BRANCHES.filter(b => cleanBranches.includes(b));
+    // Prepend currentBranch if not already in the list (and it's not a session branch)
+    if (currentBranch && !filtered.includes(currentBranch) && !isSessionOrRemoteBranch(currentBranch)) {
+      return [currentBranch, ...filtered];
+    }
+    return filtered;
+  }, [cleanBranches, currentBranch]);
+
+  // Self-heal a stale/invalid selected value (e.g. a detached-HEAD string persisted
+  // by an older session config, or "HEAD") so the user always sees a real branch.
+  React.useEffect(() => {
+    if (!value || isSessionOrRemoteBranch(value)) {
+      const fallback = primaryList[0] ?? cleanBranches[0];
+      if (fallback && fallback !== value) onChange(fallback);
+    }
+  }, [value, primaryList, cleanBranches, onChange]);
+
+  // If the branch list is small enough, just show all branches
+  const useSimpleSelect = cleanBranches.length <= primaryList.length + 1;
+
+  if (useSimpleSelect) {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="select w-40"
+      >
+        {cleanBranches.map(branch => (
+          <option key={branch} value={branch}>from {branch}</option>
+        ))}
+      </select>
+    );
+  }
+
+  if (showAll) {
+    // Phase 2: full list with a "← Back" option at the top
+    return (
+      <select
+        value={value}
+        onChange={(e) => {
+          if (e.target.value === '__back__') {
+            setShowAll(false);
+            onChange(prevValue);
+          } else {
+            onChange(e.target.value);
+            setShowAll(false);
+          }
+        }}
+        className="select w-40"
+      >
+        <option value="__back__">← Common branches</option>
+        {cleanBranches.map(branch => (
+          <option key={branch} value={branch}>from {branch}</option>
+        ))}
+      </select>
+    );
+  }
+
+  // Phase 1: compact list — primaryList + selected custom branch + "Other…"
+  const valueInPrimary = primaryList.includes(value);
+  return (
+    <select
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === '__other__') {
+          setPrevValue(value);
+          setShowAll(true);
+        } else {
+          onChange(e.target.value);
+        }
+      }}
+      className="select w-40"
+    >
+      {!valueInPrimary && (
+        <option key={value} value={value}>{value} (custom)</option>
+      )}
+      {primaryList.map(branch => (
+        <option key={branch} value={branch}>from {branch}</option>
+      ))}
+      <option value="__other__">Other branch…</option>
+    </select>
   );
 }
 

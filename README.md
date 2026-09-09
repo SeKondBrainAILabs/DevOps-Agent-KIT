@@ -1,4 +1,4 @@
-# Kanvas for Kit - DevOps Agent
+# KIT for DevOps
 
 **Desktop dashboard for managing AI coding agents across your repositories**
 

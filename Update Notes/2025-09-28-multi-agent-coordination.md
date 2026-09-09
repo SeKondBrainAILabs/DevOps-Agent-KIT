@@ -2,7 +2,7 @@
 **Date:** September 28, 2025  
 **Version:** 2.1.0  
 **Author:** Sachin Dev Duggal  
-**Organization:** SecondBrain AI
+**Organization:** SeKondBrain AI
 
 ---
 

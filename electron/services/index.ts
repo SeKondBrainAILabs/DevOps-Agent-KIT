@@ -210,9 +210,19 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   merge.setRebaseWatcher(rebaseWatcher);
   merge.setAgentInstanceService(agentInstance);
   merge.setLockService(lock);
+  merge.setDebugLog(debugLog);
+  // Audit all worktree removals to the persistent debug log (with caller stack)
+  git.setDebugLog(debugLog);
 
   // Wire mergeConflict into rebaseWatcher so AI resolution is actually used
   rebaseWatcher.setMergeConflictService(mergeConflict);
+
+  // Wire activityService into rebaseWatcher so rebase events appear in session timeline
+  rebaseWatcher.setActivityService(activity);
+
+  // Same for MergeService — merge start/success/failure events show up in the
+  // session activity feed instead of only the debug log.
+  merge.setActivityService(activity);
 
   // Initialize Heartbeat service
   // For monitoring agent connection status
@@ -288,8 +298,26 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   mcpServer.setDatabaseService(databaseService);
   mcpServer.setMcpCallDb(databaseService);
   mcpServer.setDebugLogDep(debugLog);
+  // v2.5 additions — expose workspace / config / project-group services to MCP
+  // so agents can call kit_workspace_* / kit_get_repo_worktree_mode / etc.
+  mcpServer.setConfigServiceForMcp(config);
+  mcpServer.setWorkspaceServiceForMcp(workspace);
+  mcpServer.setProjectGroupServiceForMcp(projectGroup);
   await mcpServer.initialize();
   mcpServer.wireCommitEmitter();
+  // Every kit_commit / kit_commit_all should get the on-demand rebase that
+  // WatcherService's .commit-msg-file path already fires. Without this hook
+  // MCP-driven agent commits silently skip the post-commit remote sync.
+  mcpServer.setPostCommitRebase((sessionId, repoName) => watcher.attemptPostCommitRebase(sessionId, repoName));
+  // v2.6.95 — expose kit_merge / kit_rebase to agents.
+  mcpServer.setMergeService({
+    executeMerge: (repoPath, sourceBranch, targetBranch, options) =>
+      merge.executeMerge(repoPath, sourceBranch, targetBranch, options),
+  });
+  mcpServer.setRebaseWatcherService({
+    performRebaseForPath: (sessionId, repoPath, baseBranch) =>
+      rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch),
+  });
   mcpServer.setDebugLog(debugLog);
   console.log('[Services] MCP server initialized on port', mcpServer.getPort());
 
@@ -312,6 +340,46 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     mcpServer.sessionBinder.registerMultiRepoSession(sessionId, repos);
     console.log(`[Services] Multi-repo session ${sessionId} registered with MCP binder (${repos.length} repos)`);
   };
+
+  // Repair inconsistent config: useWorktree=false while worktreePath actually
+  // points to a distinct sibling. Legacy of restartInstance's cold path — see
+  // AgentInstanceService.migrateUseWorktreeFlag. Cheap, idempotent, safe.
+  agentInstance.migrateUseWorktreeFlag();
+
+  // One-time migration for sessions still living at <repo>/local_deploy/<branch>.
+  // Moves them to <repo_parent>/KIT-DevOps-<repo_name>/<branch> via `git worktree
+  // move`, regenerates each prompt so the user's "Copy Prompt" shows the new
+  // path. Idempotent — sessions already on the new layout are skipped.
+  await agentInstance.migrateLegacyWorktrees();
+
+  // Try to revive any instance whose worktree dir is missing — if the source
+  // repo + branch are still around, `git worktree add --force` brings it back.
+  // MUST run before registerExistingSessionsWithBinder, which internally reaps
+  // anything still missing as 'closed'. Otherwise a repairable session gets
+  // marked closed at startup and never restored.
+  await agentInstance.repairOrphanWorktrees();
+
+  // Catch the "branch-gone orphan" state: the worktree dir survived an
+  // external `.git` wipe but its registry entry is gone AND the source branch
+  // has been deleted (typically post-merge). Without this, Sync (rebase) and
+  // every other git op fails with `fatal: not a git repository` and the
+  // session is stuck in the UI. Marks those instances `completed`.
+  await agentInstance.reapBrokenLinks();
+
+  // Detect interrupted rebases (rebase-merge or rebase-apply dir older than
+  // 6h) and flag the instance so the UI can surface "Abort + back up" before
+  // the agent walks in confused by a parked HEAD. Idempotent; clears the
+  // flag when the rebase state is gone.
+  await agentInstance.detectStaleRebases();
+
+  // Prune crash-safety snapshot refs (refs/kit-autosave/*) older than 7d.
+  // Snapshots are pure recovery aids and accumulate unboundedly without GC.
+  await agentInstance.gcOldSnapshots();
+
+  // Repatriate any `mcp_calls` stranded under previous-restart sessionIds. A
+  // builds-before-v2.6.58 transferSessionData omitted mcp_calls, so the MCP
+  // tab went blank after the first auto-restart. Idempotent.
+  agentInstance.backfillMcpCallsByLineage();
 
   // Re-register existing sessions loaded from electron-store (binder is in-memory only)
   agentInstance.registerExistingSessionsWithBinder();

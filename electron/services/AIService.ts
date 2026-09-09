@@ -14,7 +14,7 @@ import Groq from 'groq-sdk';
 // Available Groq models (kept for backward compatibility)
 export const GROQ_MODELS = {
   'llama-3.3-70b': 'llama-3.3-70b-versatile',
-  'kimi-k2': 'moonshotai/kimi-k2-instruct',
+  'kimi-k2': 'moonshotai/kimi-k2-instruct-0905',
   'gpt-oss-120b': 'openai/gpt-oss-120b',
   'gpt-oss-20b': 'openai/gpt-oss-20b',
   'qwen-qwq-32b': 'qwen-qwq-32b',
@@ -39,7 +39,13 @@ export interface ModeRequestOptions {
 export class AIService extends BaseService {
   private configService: ConfigService;
   private groq: Groq | null = null;
-  private abortController: AbortController | null = null;
+  // One controller per in-flight stream. A single shared field used to be
+  // clobbered when a second stream started — the first stream then checked the
+  // wrong controller's signal (so it could never be aborted) and, on finishing,
+  // nulled out the second stream's controller (so stopStream() became a no-op).
+  // Orphaned, uncancelable streams kept pumping chunks over IPC. Track each
+  // independently and abort them all on stopStream().
+  private activeStreams: Set<AbortController> = new Set();
   private currentModelKey: GroqModelKey = DEFAULT_MODEL;
 
   constructor(config: ConfigService) {
@@ -127,7 +133,8 @@ export class AIService extends BaseService {
   async *streamChat(messages: ChatMessage[], modelOverride?: GroqModelKey): AsyncGenerator<string, void, unknown> {
     const client = this.getClient();
     const modelId = modelOverride ? GROQ_MODELS[modelOverride] : this.getModelId();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.activeStreams.add(controller);
 
     const groqMessages = messages.map((m) => ({
       role: m.role as 'user' | 'assistant' | 'system',
@@ -141,10 +148,10 @@ export class AIService extends BaseService {
         temperature: 0.5,
         max_tokens: 4096, // Increased for code tasks
         stream: true,
-      });
+      }, { signal: controller.signal });
 
       for await (const chunk of stream) {
-        if (this.abortController?.signal.aborted) {
+        if (controller.signal.aborted) {
           break;
         }
         const content = chunk.choices[0]?.delta?.content;
@@ -153,18 +160,24 @@ export class AIService extends BaseService {
         }
       }
     } finally {
-      this.abortController = null;
+      this.activeStreams.delete(controller);
     }
   }
 
   /**
-   * Stop the current stream
+   * Stop all in-flight streams. The renderer multiplexes every stream onto a
+   * single AI_STREAM_CHUNK channel, so "stop" means stop everything.
    */
   stopStream(): void {
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
+    for (const controller of this.activeStreams) {
+      try { controller.abort(); } catch { /* already aborted */ }
     }
+    this.activeStreams.clear();
+  }
+
+  /** True while at least one stream is in flight (diagnostics gauge). */
+  debugStreamActive(): boolean {
+    return this.activeStreams.size > 0;
   }
 
   /**
@@ -172,6 +185,129 @@ export class AIService extends BaseService {
    */
   hasApiKey(): boolean {
     return !!this.configService.getCredentialValue('groqApiKey');
+  }
+
+  /**
+   * Refine a raw, free-form session task description into a high-quality
+   * agent brief. One Groq call produces:
+   *   - persona: which lens the rewrite was done through (product manager /
+   *     senior engineer / senior AI engineer)
+   *   - taskTitle: short 5-7 word label suitable for the session header
+   *   - refinedTask: structured brief (Goal / Context / Constraints /
+   *     Acceptance) with no boilerplate
+   *
+   * Heuristics-first persona pick happens inside the prompt. Falls back to a
+   * sensible default if Groq returns malformed JSON. Doesn't throw on missing
+   * key — returns an IpcResult error so the renderer can show a friendly
+   * "configure Groq" hint.
+   */
+  async refineSessionTask(input: {
+    rawTask: string;
+    agentType: string;
+    repoName?: string;
+  }): Promise<IpcResult<{ persona: string; taskTitle: string; refinedTask: string }>> {
+    return this.wrap(async () => {
+      if (!input.rawTask || !input.rawTask.trim()) {
+        throw new Error('Task is empty');
+      }
+      const client = this.getClient();
+      // openai/gpt-oss-120b — measurably stronger than llama-3.3-70b at the
+      // "expand a vague brief into a specific one" task we're doing here.
+      // Still on Groq, still sub-second.
+      const modelId = GROQ_MODELS['gpt-oss-120b'];
+
+      const systemPrompt = [
+        'You are refining a raw task description so an AI coding agent has a high-quality brief.',
+        '',
+        'Adopt one of these personas based on what the task is really about:',
+        '  - "product_manager": product / design / spec / scoping / UX / requirements',
+        '  - "senior_engineer": implementation / refactor / bug / migration / infra / testing',
+        '  - "senior_ai_engineer": prompts / model / eval / RAG / agent / LLM ops',
+        '',
+        'A senior version of each persona, given a vague brief, does this:',
+        '  1. Re-states the underlying user need in one line (the WHY, not the what).',
+        '  2. Lays out the first 3-5 concrete steps the agent will actually take.',
+        '  3. Defines "done" with verifiable criteria — never tautologies like "task is done when it is done".',
+        '  4. Calls out implicit assumptions, dependencies, and ambiguities so the human can correct them.',
+        '',
+        'Output STRICT JSON with this exact shape and nothing else:',
+        '{ "persona": "...", "taskTitle": "...", "refinedTask": "..." }',
+        '',
+        'Rules:',
+        '  - taskTitle: 5-7 words, imperative ("Review X and verify Y"), no trailing period.',
+        '  - refinedTask: Markdown. Use these section headers, in order:',
+        '      **Why** — the underlying need in one sentence.',
+        '      **Approach** — 3-5 concrete bullets, each starting with an action verb.',
+        '      **Definition of Done** — specific, verifiable, measurable. Reject tautologies.',
+        '      **Open questions / assumptions** — anything the user left implicit. State assumptions you\'re making so they can be corrected.',
+        '  - Preserve every concrete detail the user gave (libraries, paths, branch names, file names, deadlines).',
+        '  - It is OK and EXPECTED to make plausible assumptions to fill gaps — but STATE them in "Open questions / assumptions". A senior PM/engineer always surfaces their assumptions.',
+        '  - Avoid: tautology, paraphrasing the brief in different words, generic platitudes ("ensure quality", "make sure to test", "follow best practices").',
+        '  - No preamble. No "as a senior X" boilerplate. No apologies. Just the four sections.',
+        '',
+        'Worked example:',
+        'USER: "Make the login faster"',
+        'GOOD output (refinedTask):',
+        '**Why**',
+        'The current login flow is slow enough that users notice — likely hurting activation.',
+        '**Approach**',
+        '- Measure baseline TTFB and Time-to-Interactive for /login on prod.',
+        '- Profile to find the dominant cost (auth call, render, network, CSS).',
+        '- Apply the single fix that targets the dominant cost.',
+        '- Re-measure and capture before/after traces.',
+        '**Definition of Done**',
+        '/login Time-to-Interactive on prod is ≥30% faster than baseline, with traces saved as evidence.',
+        '**Open questions / assumptions**',
+        '- Assuming the bottleneck is server-side until profiling shows otherwise.',
+        '- Assuming "faster" means perceived latency, not just TTFB.',
+        '- Will not change visual design unless required by the fix.',
+      ].join('\n');
+
+      const userPrompt = [
+        `Agent runtime: ${input.agentType}`,
+        input.repoName ? `Repo: ${input.repoName}` : null,
+        '',
+        'Raw task:',
+        input.rawTask.trim(),
+      ].filter(Boolean).join('\n');
+
+      const response = await client.chat.completions.create({
+        model: modelId,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        // 0.3 produced safe-but-empty rewrites that just paraphrased the
+        // user. 0.6 buys enough room to expand without going off-task.
+        temperature: 0.6,
+        max_tokens: 2048,
+        response_format: { type: 'json_object' },
+      });
+
+      const raw = response.choices[0]?.message?.content || '';
+      type RefineShape = { persona?: unknown; taskTitle?: unknown; refinedTask?: unknown };
+      let parsed: RefineShape;
+      try {
+        parsed = JSON.parse(raw) as RefineShape;
+      } catch (err) {
+        throw new Error(`Refiner returned non-JSON: ${(err as Error).message}`);
+      }
+
+      // Validate + defensively fall back rather than throwing — a partial result
+      // is more useful than no result.
+      const persona =
+        parsed.persona === 'product_manager' || parsed.persona === 'senior_engineer' || parsed.persona === 'senior_ai_engineer'
+          ? parsed.persona
+          : 'senior_engineer';
+      const taskTitle = typeof parsed.taskTitle === 'string' && parsed.taskTitle.trim()
+        ? parsed.taskTitle.trim().replace(/[.\s]+$/, '')
+        : input.rawTask.trim().split(/[.!?\n]/)[0].slice(0, 60);
+      const refinedTask = typeof parsed.refinedTask === 'string' && parsed.refinedTask.trim()
+        ? parsed.refinedTask.trim()
+        : input.rawTask.trim();
+
+      return { persona, taskTitle, refinedTask };
+    }, 'AI_REFINE_FAILED');
   }
 
   async healthCheck(): Promise<{ online: boolean; configured: boolean; error?: string }> {
@@ -254,7 +390,8 @@ export class AIService extends BaseService {
     const messages = this.buildMessagesFromMode(mode, options);
 
     const client = this.getClient();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.activeStreams.add(controller);
 
     try {
       const stream = await client.chat.completions.create({
@@ -263,10 +400,10 @@ export class AIService extends BaseService {
         temperature: mode.settings.temperature ?? 0.5,
         max_tokens: mode.settings.max_tokens ?? 4096,
         stream: true,
-      });
+      }, { signal: controller.signal });
 
       for await (const chunk of stream) {
-        if (this.abortController?.signal.aborted) {
+        if (controller.signal.aborted) {
           break;
         }
         const content = chunk.choices[0]?.delta?.content;
@@ -275,7 +412,7 @@ export class AIService extends BaseService {
         }
       }
     } finally {
-      this.abortController = null;
+      this.activeStreams.delete(controller);
     }
   }
 

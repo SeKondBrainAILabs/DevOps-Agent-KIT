@@ -22,7 +22,16 @@ export function Sidebar(): React.ReactElement {
   const setSelectedSession = useAgentStore((state) => state.setSelectedSession);
   const removeReportedSession = useAgentStore((state) => state.removeReportedSession);
 
-  const allSessions = Array.from(reportedSessions.values());
+  // Filter out terminal-state sessions from the tree — the user reads the
+  // sidebar as "what's alive to work with", not "everything KIT has ever
+  // seen". Before this filter, sessions with status='closed' (e.g. l63a on
+  // agent_memory_vault, closed 4 months ago) still rendered and inflated
+  // the repo-level count above what the agent-type group actually showed.
+  // Backend reaping doesn't remove them from the SessionReport store — it
+  // just flips `status`. So filtering here is the correct fix.
+  const allSessions = Array.from(reportedSessions.values()).filter(
+    (session) => session.status !== 'closed'
+  );
   const sessions = selectedAgentId
     ? allSessions.filter((session) => session.agentId === selectedAgentId)
     : allSessions;
@@ -419,17 +428,30 @@ function RepoSessionGroup({
 
       {isExpanded && (
         <div className="border-t border-border divide-y divide-border">
-          {sessions.map((session) => (
-            <SessionCard
-              key={session.sessionId}
-              session={session}
-              isSelected={selectedSessionId === session.sessionId}
-              onClick={() => onSelectSession(
-                selectedSessionId === session.sessionId ? null : session.sessionId
-              )}
-              onDelete={() => onDeleteSession(session.sessionId)}
-            />
-          ))}
+          {[...sessions]
+            // Sort sessions by last edit (`updated` desc) so the list is
+            // predictable: most recently edited at the top. The repos
+            // themselves stay alphabetical (sorted upstream) so the tree
+            // doesn't jump around as activity comes in — only sessions
+            // within their group reorder, and only by last-edit time.
+            // Stable fallback: sessionId, then branchName.
+            .sort((a, b) => {
+              const aT = a.updated ? new Date(a.updated).getTime() : 0;
+              const bT = b.updated ? new Date(b.updated).getTime() : 0;
+              if (bT !== aT) return bT - aT;
+              return (a.sessionId || a.branchName || '').localeCompare(b.sessionId || b.branchName || '');
+            })
+            .map((session) => (
+              <SessionCard
+                key={session.sessionId}
+                session={session}
+                isSelected={selectedSessionId === session.sessionId}
+                onClick={() => onSelectSession(
+                  selectedSessionId === session.sessionId ? null : session.sessionId
+                )}
+                onDelete={() => onDeleteSession(session.sessionId)}
+              />
+            ))}
         </div>
       )}
     </div>
@@ -616,7 +638,10 @@ function SessionCard({
         worktreePath={session.worktreePath}
         sessionId={session.sessionId}
         onMergeComplete={() => {
-          setShowMergeModal(false);
+          // Intentionally NOT closing the modal here — the success ("complete")
+          // step needs to stay rendered so the user can interact with the
+          // GitHub Action / tag-push panel. Closing happens via onClose when
+          // they explicitly dismiss.
         }}
         onDeleteSession={() => {
           onDelete();

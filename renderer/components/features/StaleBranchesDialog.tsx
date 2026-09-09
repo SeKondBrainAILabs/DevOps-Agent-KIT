@@ -22,15 +22,20 @@ interface StaleBranchInfo {
 
 interface StaleBranchesDialogProps {
   repoPath: string;
-  baseBranch: string;
+  /** Initial base branch to compare against. Defaults to 'main'. */
+  baseBranch?: string;
+  /** Candidate primary branches for the base-branch selector. */
+  baseBranchCandidates?: string[];
   onClose: () => void;
 }
 
 export function StaleBranchesDialog({
   repoPath,
-  baseBranch,
+  baseBranch: initialBaseBranch = 'main',
+  baseBranchCandidates = ['main', 'development', 'develop', 'master'],
   onClose,
 }: StaleBranchesDialogProps): React.ReactElement {
+  const [baseBranch, setBaseBranch] = useState(initialBaseBranch);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [branches, setBranches] = useState<StaleBranchInfo[]>([]);
@@ -39,11 +44,11 @@ export function StaleBranchesDialog({
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string>('');
 
-  const load = async () => {
+  const load = async (base = baseBranch) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await window.api?.git?.analyzeStaleBranches?.(repoPath, baseBranch, 30);
+      const result = await window.api?.git?.analyzeStaleBranches?.(repoPath, base, 30);
       if (result?.success && result.data) {
         setBranches(result.data);
         // Pre-select all safe-to-prune branches
@@ -58,7 +63,7 @@ export function StaleBranchesDialog({
     }
   };
 
-  useEffect(() => { load(); }, [repoPath, baseBranch]);
+  useEffect(() => { load(baseBranch); }, [repoPath, baseBranch]);
 
   const toggleBranch = (name: string) => {
     setSelected((prev) => {
@@ -112,11 +117,24 @@ export function StaleBranchesDialog({
         <div className="flex items-center justify-between p-4 border-b border-[rgba(0,0,0,0.10)]">
           <div>
             <h2 className="text-lg font-semibold text-gray-100">Branch Cleanup</h2>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Base: <code className="text-text-primary">{baseBranch}</code>
-              {' · '}
-              {safeCount} safe to prune, {staleCount} stale
-            </p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-text-secondary">Base:</span>
+              <select
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+                className="text-xs border border-[rgba(0,0,0,0.10)] rounded-md px-1.5 py-0.5 bg-surface-secondary text-text-primary focus:outline-none focus:ring-1 focus:ring-kanvas-blue/50"
+                disabled={running}
+              >
+                {baseBranchCandidates.map(b => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+              {!loading && (
+                <span className="text-xs text-text-secondary">
+                  {safeCount} safe to prune, {staleCount} stale
+                </span>
+              )}
+            </div>
           </div>
           <button onClick={onClose} className="btn-icon" disabled={running}>
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"

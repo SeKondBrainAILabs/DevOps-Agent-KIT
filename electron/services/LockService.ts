@@ -33,9 +33,24 @@ const SESSION_LOCK_DIR = path.join(os.homedir(), '.devops-agent', 'session-locks
 // Stale session lock TTL: 1 hour (for crashed sessions)
 const STALE_SESSION_LOCK_TTL_MS = 60 * 60 * 1000;
 
+// Debounce window for the locks.json write. Auto-locking is triggered by every
+// chokidar event, and a worktree-wide initial scan can fire thousands of events
+// per second. Without debouncing, we re-stringify and re-write the entire map
+// per event, exhausting the heap (RangeError: Array buffer allocation failed).
+const SAVE_DEBOUNCE_MS = 500;
+
+// Hard ceiling on locks tracked per repo. Beyond this, autoLockFile silently
+// no-ops — the map is already too large to serialize cheaply and the locks are
+// almost certainly stale-event noise rather than real edits.
+const MAX_LOCKS_PER_REPO = 5000;
+
 export class LockService extends BaseService {
   // In-memory cache of locks: repoPath -> filePath -> lock
   private locksByRepo: Map<string, Map<string, AutoFileLock>> = new Map();
+
+  // Pending debounced writes: repoPath -> setTimeout handle
+  private pendingSaves: Map<string, NodeJS.Timeout> = new Map();
+  private hasWarnedOverflow: Set<string> = new Set();
 
   // Legacy session-based locks (for backwards compatibility)
   private sessionLocks: Map<string, FileLock> = new Map();
@@ -158,6 +173,22 @@ export class LockService extends BaseService {
 
       // Skip lock files and system files
       if (this.shouldSkipFile(relativePath)) {
+        return null;
+      }
+
+      // Cap the per-repo lock map. Beyond the ceiling, autoLockFile silently
+      // no-ops — a runaway map almost always means we're tracking initial-scan
+      // noise rather than real agent edits, and we'd rather drop locks than
+      // exhaust the heap. The cleanupExpired path still trims the map as locks
+      // age out, so this is a soft ceiling that rebalances on its own.
+      const existing = this.locksByRepo.get(normalizedRepo);
+      if (existing && existing.size >= MAX_LOCKS_PER_REPO && !existing.has(relativePath)) {
+        if (!this.hasWarnedOverflow.has(normalizedRepo)) {
+          this.hasWarnedOverflow.add(normalizedRepo);
+          console.warn(
+            `[LockService] Repo at ${normalizedRepo} hit MAX_LOCKS_PER_REPO=${MAX_LOCKS_PER_REPO}; dropping new auto-locks until cleanup`
+          );
+        }
         return null;
       }
 
@@ -498,7 +529,37 @@ export class LockService extends BaseService {
     }
   }
 
+  /**
+   * Schedule a write of repo locks to disk. Coalesces bursts of calls into a
+   * single write per repo per SAVE_DEBOUNCE_MS window. Callers may still
+   * `await` for backwards compatibility, but the actual disk write happens
+   * asynchronously on the timer.
+   */
   private async saveLocks(repoPath: string): Promise<void> {
+    const existing = this.pendingSaves.get(repoPath);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.pendingSaves.delete(repoPath);
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises
+      this.saveLocksNow(repoPath);
+    }, SAVE_DEBOUNCE_MS);
+    this.pendingSaves.set(repoPath, timer);
+  }
+
+  /**
+   * Synchronously flush every pending debounced save. Used on shutdown.
+   */
+  private async flushPendingSaves(): Promise<void> {
+    const pending = Array.from(this.pendingSaves.keys());
+    for (const repoPath of pending) {
+      const timer = this.pendingSaves.get(repoPath);
+      if (timer) clearTimeout(timer);
+      this.pendingSaves.delete(repoPath);
+      await this.saveLocksNow(repoPath);
+    }
+  }
+
+  private async saveLocksNow(repoPath: string): Promise<void> {
     const repoLocks = this.locksByRepo.get(repoPath);
     if (!repoLocks) return;
 
@@ -542,11 +603,14 @@ export class LockService extends BaseService {
   }
 
   async dispose(): Promise<void> {
-    // Save all locks on shutdown
+    // Flush any in-flight debounced writes, then write each repo synchronously
+    // one last time so nothing in-memory is lost on shutdown.
+    await this.flushPendingSaves();
     for (const [repoPath] of this.locksByRepo) {
-      await this.saveLocks(repoPath);
+      await this.saveLocksNow(repoPath);
     }
     this.locksByRepo.clear();
     this.sessionLocks.clear();
+    this.hasWarnedOverflow.clear();
   }
 }

@@ -62,7 +62,18 @@ export function UniversalCommitsView(): React.ReactElement {
         if (!repoPath || !window.api?.git?.getCommitHistory) continue;
 
         try {
-          const result = await window.api.git.getCommitHistory(repoPath, baseBranch, 20);
+          // Pass session.branchName so the query is `${baseBranch}..${branchName}`
+          // and only this session's commits come back. Without it, GitService
+          // falls back to `git log HEAD`, which for in-place (no-worktree) sessions
+          // returns the user's full branch history instead of just the session's
+          // commits — see also CommitsTab.tsx and SessionDetailView.tsx which pass
+          // branchName correctly.
+          const result = await window.api.git.getCommitHistory(
+            repoPath,
+            baseBranch,
+            20,
+            session.branchName
+          );
           if (result.success && result.data) {
             const repoName = session.repoPath?.split('/').pop() || 'Unknown';
 

@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useSessionStore } from '../../store/sessionStore';
-import type { BranchInfo } from '../../../shared/types';
+// BranchInfo no longer needed — branch names stored as plain strings
 
 interface CloseSessionDialogProps {
   sessionId: string;
@@ -22,20 +22,37 @@ export function CloseSessionDialog({
   const [merge, setMerge] = useState(true);
   const [mergeTarget, setMergeTarget] = useState(session?.baseBranch || 'main');
   const [deleteRemote, setDeleteRemote] = useState(false);
-  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [branches, setBranches] = useState<string[]>([]);       // primary branches only
+  const [allBranches, setAllBranches] = useState<string[]>([]);  // full list for advanced dialog
+  const [showAdvancedBranches, setShowAdvancedBranches] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load branches
+  // Load branches from the ROOT repo PATH (not git.branches(sessionId), which
+  // resolves the worktree from a registry only populated while the watcher runs
+  // — so it returns nothing for idle/restored sessions). listBranchesForRepo is
+  // path-based and only ever returns local branches.
   useEffect(() => {
-    if (sessionId) {
-      window.api.git.branches(sessionId).then((result) => {
+    const repoPath = session?.repoPath || session?.worktreePath;
+    if (repoPath) {
+      window.api.git.listBranchesForRepo(repoPath).then((result) => {
         if (result.success && result.data) {
-          setBranches(result.data.filter((b) => !b.name.startsWith('session/')));
+          const PRIMARY = ['main', 'master', 'development', 'develop', 'dev'];
+          const isSessionBranch = (name: string) =>
+            name.startsWith('origin/') || name.startsWith('remotes/') ||
+            /^(codex|cursor|copilot|aider|warp|cline|session)-session-/.test(name) ||
+            name.startsWith('session/');
+          const filtered = result.data.filter(b => b.name && !isSessionBranch(b.name)).map(b => b.name);
+          const primaries = filtered.filter(b => PRIMARY.includes(b));
+          const currentTarget = mergeTarget.replace(/^origin\//, '');
+          // Default picker: primary branches only (+ current target if not already in list)
+          const primaryList = primaries.includes(currentTarget) ? primaries : [currentTarget, ...primaries];
+          setBranches(primaryList);
+          setAllBranches(filtered);
         }
       });
     }
-  }, [sessionId]);
+  }, [sessionId, session?.repoPath]);
 
   if (!session) {
     return <div>Session not found</div>;
@@ -128,16 +145,40 @@ export function CloseSessionDialog({
               <label className="label">Merge target branch</label>
               <select
                 value={mergeTarget}
-                onChange={(e) => setMergeTarget(e.target.value)}
+                onChange={(e) => {
+                  if (e.target.value === '__advanced__') {
+                    setShowAdvancedBranches(true);
+                  } else {
+                    setMergeTarget(e.target.value);
+                  }
+                }}
                 className="select"
                 disabled={isClosing}
               >
                 {branches.map((branch) => (
-                  <option key={branch.name} value={branch.name}>
-                    {branch.name}
+                  <option key={branch} value={branch}>
+                    {branch}
                   </option>
                 ))}
+                <option value="__advanced__">Advanced…</option>
               </select>
+              {/* Advanced branch dialog */}
+              {showAdvancedBranches && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={() => setShowAdvancedBranches(false)}>
+                  <div className="bg-white rounded-[18px] border border-[rgba(0,0,0,0.10)] shadow-[0_8px_24px_rgba(0,0,0,0.12)] p-4 w-72 max-h-80 overflow-y-auto" onClick={e => e.stopPropagation()}>
+                    <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">All branches</p>
+                    {allBranches.map(branch => (
+                      <button
+                        key={branch}
+                        className="w-full text-left px-3 py-2 rounded-[10px] hover:bg-surface-secondary text-sm text-text-primary font-mono transition-colors"
+                        onClick={() => { setShowAdvancedBranches(false); setMergeTarget(branch); }}
+                      >
+                        {branch}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

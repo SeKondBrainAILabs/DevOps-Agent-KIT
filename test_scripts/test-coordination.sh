@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # Comprehensive test suite for multi-agent coordination system
 # Date: September 28, 2025
-# Author: SecondBrain AI
+# Author: SeKondBrain AI
 
 set -euo pipefail
 

@@ -13,6 +13,18 @@ jest.mock('../../../renderer/components/features/MergeWorkflowModal', () => ({
     isOpen ? <div data-testid="merge-modal"><button onClick={onClose}>Close</button></div> : null,
 }));
 
+// Mock the DeleteSessionDialog — delete is now a dialog-driven flow (not inline two-click).
+// The dialog exposes its sessionId and an onDeleted trigger so we can assert SessionRow's
+// responsibility: opening the dialog with the right session and wiring up onDeleted.
+jest.mock('../../../renderer/components/features/DeleteSessionDialog', () => ({
+  DeleteSessionDialog: ({ sessionId, onDeleted, onClose }: { sessionId: string; onDeleted: () => void; onClose: () => void }) => (
+    <div data-testid="delete-dialog" data-session-id={sessionId}>
+      <button onClick={onDeleted}>Confirm delete</button>
+      <button onClick={onClose}>Cancel</button>
+    </div>
+  ),
+}));
+
 // Mock agentStore
 const mockRemoveReportedSession = jest.fn();
 const mockViewedCommitCounts = new Map<string, number>();
@@ -89,28 +101,29 @@ describe('SessionRow — Merge & Delete buttons', () => {
     expect(screen.getByTestId('merge-modal')).toBeDefined();
   });
 
-  it('should show confirm state on first delete click', () => {
+  it('should open DeleteSessionDialog on delete click', () => {
     renderWithSession(createSession());
+
+    // Dialog not shown initially
+    expect(screen.queryByTestId('delete-dialog')).toBeNull();
 
     fireEvent.click(screen.getByTitle('Delete session'));
 
-    // Should show confirm state
-    expect(screen.getByTitle('Click again to confirm')).toBeDefined();
-    expect(screen.getByText('Del?')).toBeDefined();
-    // Should NOT have deleted yet
-    expect((window as any).api.instance.deleteSession).not.toHaveBeenCalled();
+    // Clicking delete opens the confirmation dialog with the correct session
+    const dialog = screen.getByTestId('delete-dialog');
+    expect(dialog).toBeDefined();
+    expect(dialog.getAttribute('data-session-id')).toBe('sess-test-1');
+    // Should NOT have removed the session yet — deletion is confirmed inside the dialog
     expect(mockRemoveReportedSession).not.toHaveBeenCalled();
   });
 
-  it('should delete session on second click (confirm)', () => {
+  it('should remove session from store when dialog confirms deletion', () => {
     renderWithSession(createSession());
 
-    // First click — enter confirm
     fireEvent.click(screen.getByTitle('Delete session'));
-    // Second click — confirm
-    fireEvent.click(screen.getByTitle('Click again to confirm'));
+    // The dialog owns the actual deletion; on success it calls onDeleted
+    fireEvent.click(screen.getByText('Confirm delete'));
 
-    expect((window as any).api.instance.deleteSession).toHaveBeenCalledWith('sess-test-1', '/test/repo');
     expect(mockRemoveReportedSession).toHaveBeenCalledWith('sess-test-1');
   });
 
@@ -119,12 +132,15 @@ describe('SessionRow — Merge & Delete buttons', () => {
     expect(screen.getByTitle('Merge to main')).toBeDefined();
   });
 
-  it('should use worktreePath when repoPath is empty', () => {
+  it('should close the dialog without deleting when cancelled', () => {
     renderWithSession(createSession({ repoPath: '', worktreePath: '/test/worktree' }));
 
     fireEvent.click(screen.getByTitle('Delete session'));
-    fireEvent.click(screen.getByTitle('Click again to confirm'));
+    expect(screen.getByTestId('delete-dialog')).toBeDefined();
 
-    expect((window as any).api.instance.deleteSession).toHaveBeenCalledWith('sess-test-1', '/test/worktree');
+    fireEvent.click(screen.getByText('Cancel'));
+
+    expect(screen.queryByTestId('delete-dialog')).toBeNull();
+    expect(mockRemoveReportedSession).not.toHaveBeenCalled();
   });
 });

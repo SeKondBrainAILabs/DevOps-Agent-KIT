@@ -35,3 +35,33 @@ export function isActiveInstance(instance: Pick<AgentInstance, 'status'>): boole
 export function isActiveStatus(status: string): boolean {
   return !INACTIVE_INSTANCE_STATUSES.has(status);
 }
+
+/**
+ * Stricter "is there actually an agent working on this session right now?"
+ * predicate, distinct from `isActiveInstance` (which is lifecycle-broad).
+ *
+ * The Single-Session Mode guard wants the broad predicate — a `waiting`
+ * session has claimed the slot and a second one would conflict. But the
+ * repo-card "N active" badge needs the narrow predicate — `waiting` means
+ * the prompt was generated and the agent never connected, and counting
+ * such ghosts gives the wrong number (e.g. agent_memory_vault showing
+ * "6 active" when only one had an actual agent attached).
+ *
+ * Inactive (no agent):
+ *  - 'completed' / 'closed' / 'failed' — terminal
+ *  - 'waiting' — prompt copied, MCP never registered the connection
+ *  - 'pending' / 'initializing' — pre-boot
+ *
+ * Active (agent attached): anything else — 'idle', 'active', 'running', 'error'.
+ * `error` stays running because the agent is alive but failed something.
+ */
+export const NON_RUNNING_INSTANCE_STATUSES: ReadonlySet<string> = new Set([
+  ...INACTIVE_INSTANCE_STATUSES,
+  'waiting',
+  'pending',
+  'initializing',
+]);
+
+export function isRunningInstance(instance: Pick<AgentInstance, 'status'>): boolean {
+  return !NON_RUNNING_INSTANCE_STATUSES.has(instance.status as string);
+}

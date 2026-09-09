@@ -5,6 +5,37 @@ All notable changes to s9n-devops-agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.21] - 2026-05-30
+
+### Fixed
+- **Conflict Resolution dialog shows `origin/main` as base branch** — `errorDetails.baseBranch` comes from session data with the legacy `origin/` prefix. Now stripped in the footer, advanced details, and when passed to `generatePreviews`.
+- **Stash-pop conflict shows empty "Conflicted Files" + useless "Auto-Fix with AI" button** — When the rebase itself succeeds but re-applying stashed uncommitted changes fails (stash pop conflict), the conflicted files list was empty (because no rebase conflicts existed) and "Auto-Fix with AI" would find nothing to fix. The dialog now detects this case (`errorMessage` contains "stash pop had conflicts") and shows a "Re-apply Stashed Changes" button that retries `git stash pop` directly, with a fallback to manual fix instructions.
+- **`git stash pop` now available via IPC** — Added `GIT_STASH_POP` channel, IPC handler, and `window.api.git.stashPop()` preload binding so the dialog can retry stash pop without requiring a terminal.
+
+## [2.6.20] - 2026-05-29
+
+### Fixed
+- **"Restarting..." pill stuck after restart** — The success path assumed the old session component would unmount when the new session replaced it. But there's a timing gap between `restartInstance` returning and the `SESSION_REMOVED` IPC event re-rendering the list — during that gap `restarting` stayed `true` with nothing to clear it. Now always calls `setRestarting(false)` after the await resolves regardless of whether the component unmounts.
+
+## [2.6.19] - 2026-05-29
+
+### Fixed
+- **Auto-update never shows pill after startup** — The update check only ran once, 3 seconds after launch. If the app was already open when a new version was published, the notification never appeared. Added a periodic check every 30 minutes so long-running sessions catch new releases without requiring a restart.
+- **"AI could not auto-resolve any files" in Merge Workflow** — When the session branch was in a mid-rebase state (detached HEAD after a failed auto-rebase), the Merge Workflow's AI conflict step called `generateResolutionPreviews` which tried to start a fresh rebase on top of the stuck one. Git rejected it immediately, returning zero conflicts, so `resolvable.length === 0` → error. Fixed: both `generateResolutionPreviews` and `rebaseWithResolution` now abort any in-progress rebase before starting.
+- **Merge Workflow shows `origin/main` as target** — The `MergeWorkflowModal` component state was seeded from session props without stripping the legacy `origin/` prefix, so the UI header, dropdown, and error logs all showed `origin/main` instead of `main`. Both `useState` initializer and the `setTargetBranch` re-sync on open now strip the prefix.
+
+## [2.6.18] - 2026-05-29
+
+### Fixed
+- **Conflict dialog: detached HEAD / empty currentBranch** — When the conflict resolution dialog opens after a failed auto-rebase, git is mid-rebase (detached HEAD), causing `git branch --show-current` to return empty. `generateResolutionPreviews` and `rebaseWithResolution` now abort any in-progress rebase before checking the current branch, ensuring git is on a named branch before the next rebase attempt starts.
+- **Cascade of backup tags** — Each retry from the conflict dialog was creating a new backup tag and launching a new rebase on top of an unaborted previous one. The pre-flight abort prevents this runaway accumulation.
+- **MergeWorkflowModal `targetBranch` state retains `origin/` prefix** — Component state was initialized and re-synced from session props without stripping the legacy prefix, so error logs always showed `origin/main` even when the service had already stripped it. Both `useState` initializer and `setTargetBranch` call now strip `origin/`.
+
+## [2.6.17] - 2026-05-29
+
+### Fixed
+- **"Resolution Failed - Failed to fetch origin/Development"** — `MergeConflictService.generateResolutionPreviews` and `rebaseWithResolution` both received the `targetBranch` with an `origin/` prefix (e.g. `origin/Development`) from session data stored before the prefix-stripping fixes. Added `.replace(/^origin\//, '')` at the top of both entry points so git fetch and rebase use the bare branch name. This is the same fix applied in v2.6.12–2.6.14 to GitService, MergeService, and AgentInstanceService — now complete for the conflict resolution path.
+
 ## [2.6.16] - 2026-05-29
 
 ### Added

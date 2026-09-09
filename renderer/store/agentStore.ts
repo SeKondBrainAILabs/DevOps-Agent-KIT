@@ -116,20 +116,43 @@ export const useAgentStore = create<AgentState>((set) => ({
   addReportedSession: (session) =>
     set((state) => {
       const newSessions = new Map(state.reportedSessions);
+      const newAgents = new Map(state.agents);
+
+      // Dedupe by repo + branch. A "Restart" creates a brand-new sessionId that
+      // reuses the same branch; without this we'd show two rows on the same branch
+      // (e.g. "1-31eb" and "2-31eb"). Two live sessions on one branch is invalid
+      // anyway — git can't check out a branch in two worktrees — so drop any prior
+      // session on the same repo+branch and keep the one being added (the newest).
+      if (session.branchName && session.repoPath) {
+        for (const [sid, existing] of state.reportedSessions) {
+          if (sid !== session.sessionId &&
+              existing.branchName === session.branchName &&
+              existing.repoPath === session.repoPath) {
+            newSessions.delete(sid);
+            // Also drop the stale id from its agent's session list.
+            const staleAgent = newAgents.get(existing.agentId);
+            if (staleAgent) {
+              newAgents.set(existing.agentId, {
+                ...staleAgent,
+                sessions: staleAgent.sessions.filter((s) => s !== sid),
+              });
+            }
+          }
+        }
+      }
+
       newSessions.set(session.sessionId, session);
 
       // Update agent's session list
-      const agent = state.agents.get(session.agentId);
+      const agent = newAgents.get(session.agentId);
       if (agent && !agent.sessions.includes(session.sessionId)) {
-        const newAgents = new Map(state.agents);
         newAgents.set(session.agentId, {
           ...agent,
           sessions: [...agent.sessions, session.sessionId],
         });
-        return { reportedSessions: newSessions, agents: newAgents };
       }
 
-      return { reportedSessions: newSessions };
+      return { reportedSessions: newSessions, agents: newAgents };
     }),
 
   removeReportedSession: (sessionId) =>

@@ -22,6 +22,33 @@ type DetailTab = 'prompt' | 'activity' | 'commits' | 'files' | 'contracts' | 'te
 const VIRTUALIZATION_LINE_THRESHOLD = 100;
 
 /**
+ * Short, header-safe label for a session card. A raw multi-sentence task
+ * description shouldn't be the page heading — it wraps and looks broken.
+ * Prefers an explicit short title if one was set (e.g. by the Refine-with-AI
+ * flow), otherwise derives from the task: first sentence (.!? or newline),
+ * trimmed to ~80 chars at a word boundary with an ellipsis. Falls back to
+ * branchName, then a generic label.
+ */
+function sessionHeaderTitle(session: SessionReport): string {
+  const explicit = (session as { taskTitle?: string }).taskTitle;
+  if (explicit && explicit.trim()) return explicit.trim();
+  const task = (session.task || '').trim();
+  if (task) {
+    // First sentence or first 80 chars, whichever ends sooner.
+    const firstBreak = task.search(/[.!?\n]/);
+    let head = firstBreak > 0 && firstBreak <= 80 ? task.slice(0, firstBreak) : task.slice(0, 80);
+    if (head.length < task.length) {
+      // Snap back to the last word boundary so we don't truncate mid-word.
+      const lastSpace = head.lastIndexOf(' ');
+      if (lastSpace > 30) head = head.slice(0, lastSpace);
+      head = head.replace(/[\s,;:]+$/, '') + '…';
+    }
+    return head;
+  }
+  return session.branchName || 'Session Details';
+}
+
+/**
  * VirtualizedDiff - Renders large diffs with react-window for performance
  * Falls back to normal rendering for small diffs (<100 lines)
  */
@@ -108,10 +135,16 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showErrorPopup, setShowErrorPopup] = useState(false);
+  // Prompt shown before sync/rebase when the worktree has uncommitted changes.
+  const [dirtyRebasePrompt, setDirtyRebasePrompt] = useState<{ count: number; repoPath: string; baseBranch: string } | null>(null);
   const [editingBaseBranch, setEditingBaseBranch] = useState(false);
-  const [branches, setBranches] = useState<string[]>([]);
+  const [branches, setBranches] = useState<string[]>([]);       // primary branches only
+  const [allBranches, setAllBranches] = useState<string[]>([]);  // full list for advanced dialog
+  const [showAdvancedBranches, setShowAdvancedBranches] = useState(false);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
+  const [rebaseRepairBusy, setRebaseRepairBusy] = useState(false);
+  const [rebaseRepairResult, setRebaseRepairResult] = useState<{ ok: boolean; message: string } | null>(null);
   const showConflictDialog = useConflictStore((state) => state.showDialog);
 
   useEffect(() => {
@@ -186,9 +219,10 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     }, 120_000);
     try {
       await onRestart?.(session.sessionId, session, commitChanges);
-      // On success the component should unmount as the session changes.
-      // If it doesn't (edge case), clear the timer and reset.
       clearTimeout(safetyTimer);
+      // Always reset — component may not unmount immediately if SESSION_REMOVED
+      // IPC event is delayed, leaving the pill stuck on "Restarting..." forever.
+      setRestarting(false);
     } catch (error) {
       clearTimeout(safetyTimer);
       setRestartError(error instanceof Error ? error.message : 'Failed to restart session');
@@ -198,19 +232,30 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
 
   const handleSync = async () => {
     if (syncing) return;
+    const repoPath = session.worktreePath || session.repoPath;
+    const baseBranch = session.baseBranch || 'main';
+    if (!repoPath) {
+      setSyncResult({ success: false, message: 'No repository path configured' });
+      setShowErrorPopup(true);
+      return;
+    }
+    // Ask before rebasing if there's uncommitted work — a rebase on a dirty tree
+    // either fails or silently stashes; committing first keeps the work safe.
+    try {
+      const safety = await window.api?.git?.getWorktreeSafetyInfo?.(repoPath);
+      if (safety?.success && safety.data?.hasUncommittedChanges) {
+        setDirtyRebasePrompt({ count: safety.data.uncommittedFiles?.length ?? 0, repoPath, baseBranch });
+        return;
+      }
+    } catch { /* if the check fails, fall through and let the rebase proceed */ }
+    await doSync(repoPath, baseBranch);
+  };
+
+  const doSync = async (repoPath: string, baseBranch: string) => {
     setSyncing(true);
     setSyncResult(null);
     setShowErrorPopup(false);
     try {
-      const repoPath = session.worktreePath || session.repoPath;
-      const baseBranch = session.baseBranch || 'main';
-
-      if (!repoPath) {
-        setSyncResult({ success: false, message: 'No repository path configured' });
-        setShowErrorPopup(true);
-        return;
-      }
-
       console.log(`[SessionDetail] Syncing ${repoPath} with ${baseBranch}...`);
 
       // First fetch
@@ -281,12 +326,33 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     }
     setLoadingBranches(true);
     try {
+      // List branches from the ROOT repo PATH — never via git.branches(sessionId).
+      // git.branches resolves the worktree from a registry that is only populated
+      // while the session's watcher is running, so it returns nothing for idle or
+      // restored sessions (the bug that left this dropdown showing only "Advanced…").
+      // listBranchesForRepo runs `git for-each-ref refs/heads` against the path, so
+      // it always works and only ever returns local branches (no remotes, no detached).
       const repoPath = session.repoPath || session.worktreePath;
-      if (repoPath) {
-        const result = await window.api?.instance?.validateRepo?.(repoPath);
-        if (result?.success && result.data?.branches) {
-          setBranches(result.data.branches);
-        }
+      const result = repoPath ? await window.api?.git?.listBranchesForRepo?.(repoPath) : undefined;
+      if (result?.success && result.data) {
+        const PRIMARY = ['main', 'master', 'development', 'develop', 'dev'];
+        const isSessionBranch = (name: string) =>
+          name.startsWith('origin/') || name.startsWith('remotes/') ||
+          name.startsWith('(') || // detached HEAD pseudo-entries like "(HEAD"
+          /^(codex|cursor|copilot|aider|warp|cline|session)-session-/.test(name) ||
+          name.startsWith('session/');
+        const all = result.data
+          .map(b => b.name)
+          .filter(b => b && !isSessionBranch(b))
+          // Deduplicate defensively
+          .filter((b, i, arr) => arr.indexOf(b) === i);
+        const primaries = PRIMARY.filter(b => all.includes(b));
+        // Default picker: primary branches only (+ current target if not already in list)
+        const currentBase = (session.baseBranch || 'main').replace(/^origin\//, '');
+        const primaryList = primaries.includes(currentBase)
+          ? primaries : [currentBase, ...primaries];
+        setBranches(primaryList);
+        setAllBranches(all); // full list available for advanced dialog
       }
     } catch (err) {
       console.error('[SessionDetail] Failed to load branches:', err);
@@ -325,6 +391,45 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   return (
     <div className="h-full flex flex-col bg-surface">
       {/* Error/Warning Popup */}
+      {dirtyRebasePrompt && (
+        <div className="fixed inset-0 bg-black/15 backdrop-blur-[2px] flex items-center justify-center z-50">
+          <div className="bg-white border border-[rgba(0,0,0,0.10)] rounded-[18px] shadow-[0_8px_24px_rgba(0,0,0,0.12)] max-w-md w-full mx-4 p-5">
+            <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)]">Before syncing</p>
+            <h3 className="text-base font-semibold text-text-primary mt-1">You have uncommitted local changes</h3>
+            <p className="text-sm text-text-secondary mt-2">
+              This worktree has {dirtyRebasePrompt.count} uncommitted change{dirtyRebasePrompt.count === 1 ? '' : 's'}.
+              Rebasing onto <code className="text-kanvas-blue">{dirtyRebasePrompt.baseBranch}</code> with a dirty tree can
+              fail or stash your work. Commit them first?
+            </p>
+            <div className="flex flex-col gap-2 mt-4">
+              <button
+                onClick={async () => {
+                  const p = dirtyRebasePrompt; setDirtyRebasePrompt(null);
+                  const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+                  await window.api?.git?.commitWorktree?.(p.repoPath, `WIP: pre-sync commit (${stamp})`);
+                  await doSync(p.repoPath, p.baseBranch);
+                }}
+                className="w-full px-4 py-2 bg-black text-white rounded-full font-medium hover:bg-black/90 transition-colors"
+              >
+                Commit &amp; sync
+              </button>
+              <button
+                onClick={() => { const p = dirtyRebasePrompt; setDirtyRebasePrompt(null); void doSync(p.repoPath, p.baseBranch); }}
+                className="w-full px-4 py-2 bg-white border border-[rgba(0,0,0,0.10)] rounded-full font-medium text-text-primary hover:bg-[#FAFAF7] transition-colors"
+              >
+                Sync without committing
+              </button>
+              <button
+                onClick={() => setDirtyRebasePrompt(null)}
+                className="w-full px-4 py-2 text-text-secondary rounded-full hover:bg-[rgba(0,0,0,0.04)] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showErrorPopup && syncResult && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className={`bg-surface border rounded-lg shadow-xl max-w-md w-full mx-4 p-6 ${
@@ -392,6 +497,60 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
         </div>
       )}
 
+      {/* Stale rebase banner — flagged by AgentInstanceService.detectStaleRebases */}
+      {instance?.staleRebase && (
+        <div className="px-4 py-3 bg-amber-50 border-b border-amber-200 flex items-start gap-3 text-sm text-amber-900">
+          <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-3L13.74 4a2 2 0 00-3.48 0L3.33 16a2 2 0 001.74 3z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium">
+              Stale rebase detected ({instance.staleRebase.kind}, {Math.round(instance.staleRebase.ageMinutes / 60)}h old)
+            </div>
+            <div className="text-xs mt-1 opacity-90">
+              An interrupted rebase is parked in this worktree — HEAD likely points at a historical snapshot, so files may look reverted.
+              Abort &amp; back up to restore the pre-rebase tip. Both HEAD and ORIG_HEAD are saved to <code>backup/*</code> branches before abort.
+            </div>
+            {rebaseRepairResult && (
+              <div className={`text-xs mt-1.5 ${rebaseRepairResult.ok ? 'text-green-700' : 'text-red-700'}`}>
+                {rebaseRepairResult.message}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={async () => {
+              if (!instance?.id || rebaseRepairBusy) return;
+              setRebaseRepairBusy(true);
+              setRebaseRepairResult(null);
+              try {
+                const r = await window.api.instance.repairStaleRebase(instance.id);
+                if (r.success && r.data) {
+                  setRebaseRepairResult({
+                    ok: true,
+                    message: `Aborted. HEAD now at ${r.data.landedAt}. Backups: ${r.data.backupBranches.join(', ') || '(none)'}`,
+                  });
+                  // Refresh instance so banner clears
+                  const list = await window.api.instance.list();
+                  if (list.success && list.data) {
+                    setInstance(list.data.find(i => i.sessionId === session.sessionId) || null);
+                  }
+                } else {
+                  setRebaseRepairResult({ ok: false, message: r.error?.message || 'Repair failed' });
+                }
+              } catch (e) {
+                setRebaseRepairResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+              } finally {
+                setRebaseRepairBusy(false);
+              }
+            }}
+            disabled={rebaseRepairBusy}
+            className="flex-shrink-0 px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-medium hover:bg-amber-700 disabled:opacity-50"
+          >
+            {rebaseRepairBusy ? 'Aborting…' : 'Abort + back up'}
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="p-4 border-b border-[rgba(0,0,0,0.10)]">
         <div className="flex items-center gap-3 mb-3">
@@ -403,9 +562,12 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <div className="flex-1">
-            <h1 className="text-lg font-semibold text-text-primary">
-              {session.task || session.branchName || 'Session Details'}
+          <div className="flex-1 min-w-0">
+            <h1
+              className="text-lg font-semibold text-text-primary truncate"
+              title={session.task || session.branchName || ''}
+            >
+              {sessionHeaderTitle(session)}
             </h1>
             <div className="flex items-center gap-3 mt-1 text-sm text-text-secondary">
               <span className={statusColors[session.status] || 'text-gray-400'}>
@@ -433,17 +595,45 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             {/* Base Branch Selector + Sync Button */}
             <div className="flex items-center gap-1">
               {editingBaseBranch ? (
-                <select
-                  value={session.baseBranch || 'main'}
-                  onChange={(e) => handleBaseBranchChange(e.target.value)}
-                  onBlur={() => setEditingBaseBranch(false)}
-                  autoFocus
-                  className="px-2 py-1.5 rounded-full text-xs font-mono bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
-                >
-                  {branches.map((branch) => (
-                    <option key={branch} value={branch}>{branch}</option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    value={session.baseBranch || 'main'}
+                    onChange={(e) => {
+                      if (e.target.value === '__advanced__') {
+                        setShowAdvancedBranches(true);
+                      } else {
+                        handleBaseBranchChange(e.target.value);
+                      }
+                    }}
+                    onBlur={() => setEditingBaseBranch(false)}
+                    autoFocus
+                    className="px-2 py-1.5 rounded-full text-xs font-mono bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
+                  >
+                    {branches.map((branch) => (
+                      <option key={branch} value={branch}>{branch}</option>
+                    ))}
+                    <option disabled>──────────</option>
+                    <option value="__advanced__">Advanced…</option>
+                  </select>
+                  {/* Advanced branch dialog */}
+                  {showAdvancedBranches && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={() => setShowAdvancedBranches(false)}>
+                      <div className="bg-white rounded-2xl shadow-xl border border-[rgba(0,0,0,0.10)] p-4 w-72 max-h-96 overflow-y-auto" onClick={e => e.stopPropagation()}>
+                        <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">All branches</p>
+                        {allBranches.map(branch => (
+                          <button
+                            key={branch}
+                            onClick={() => { setShowAdvancedBranches(false); handleBaseBranchChange(branch); }}
+                            className="w-full text-left px-3 py-2 text-sm font-mono rounded-lg hover:bg-surface-secondary transition-colors text-text-primary"
+                          >
+                            {branch}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+
               ) : (
                 <button
                   onClick={handleEditBaseBranch}

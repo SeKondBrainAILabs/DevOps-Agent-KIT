@@ -50,6 +50,14 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
 
   const [manualFixAcknowledged, setManualFixAcknowledged] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [stashPopStatus, setStashPopStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
+  const [stashPopError, setStashPopError] = useState<string | null>(null);
+
+  // Derived: strip origin/ prefix from baseBranch for display + API calls
+  const cleanBaseBranch = (errorDetails?.baseBranch || '').replace(/^origin\//, '');
+
+  // Derived: is this a stash-pop conflict (rebase itself succeeded)?
+  const isStashPopConflict = (errorDetails?.errorMessage || '').includes('stash pop had conflicts');
 
   // Log the error to DebugLogService when dialog opens
   useEffect(() => {
@@ -89,15 +97,20 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
         console.warn('[ConflictResolution] Could not create backup branch, continuing anyway');
       }
 
-      // Generate AI resolution previews
+      // Generate AI resolution previews (use stripped branch name)
       const result = await window.api?.conflict?.generatePreviews?.(
         errorDetails.repoPath,
-        errorDetails.baseBranch
+        cleanBaseBranch
       );
 
       if (result?.success && result.data) {
         if (result.data.aborted) {
           setResult(false, result.data.abortReason || 'Conflict resolution aborted');
+          return;
+        }
+        // Rebase ran and succeeded cleanly — this is a success, not a failure
+        if (result.data.rebaseSucceededCleanly) {
+          setResult(true, 'Rebase succeeded — your branch is now up to date with no conflicts.');
           return;
         }
         const previewsWithApproval = (result.data.previews ?? []).map((p) => ({
@@ -106,7 +119,7 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
           approved: p.status !== 'skipped' && p.status !== 'rejected' && !!p.proposedContent,
         }));
         if (previewsWithApproval.length === 0) {
-          setResult(false, 'No conflicts found to resolve (rebase may have already succeeded).');
+          setResult(false, 'No conflict files found. Check git status manually.');
           return;
         }
         setPreviews(previewsWithApproval);
@@ -265,7 +278,7 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
                     <p><span className="text-text-primary font-medium">Session:</span> {errorDetails.sessionId}</p>
                     <p><span className="text-text-primary font-medium">Repo:</span> {errorDetails.repoPath}</p>
                     <p><span className="text-text-primary font-medium">Current branch:</span> {errorDetails.currentBranch}</p>
-                    <p><span className="text-text-primary font-medium">Base branch:</span> {errorDetails.baseBranch}</p>
+                    <p><span className="text-text-primary font-medium">Base branch:</span> {cleanBaseBranch}</p>
                     <p><span className="text-text-primary font-medium">Conflicted files ({errorDetails.conflictedFiles.length}):</span></p>
                     {errorDetails.conflictedFiles.map((file) => (
                       <p key={file} className="pl-4 text-red-500">{file}</p>
@@ -276,27 +289,73 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
             </div>
 
             <div className="border-t border-[rgba(0,0,0,0.10)] pt-4">
-              <p className="text-sm text-text-secondary mb-3">How would you like to resolve these conflicts?</p>
-              <div className="flex gap-3">
-                <button
-                  onClick={handleAutoFix}
-                  className="btn-primary flex-1 flex items-center justify-center gap-2"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  Auto-Fix with AI
-                </button>
-                <button
-                  onClick={handleManualFix}
-                  className="kb-btn flex-1 flex items-center justify-center gap-2"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                  </svg>
-                  Fix Manually
-                </button>
-              </div>
+              {isStashPopConflict ? (
+                // Stash-pop conflict: rebase succeeded, but uncommitted changes couldn't be re-applied.
+                // AI fix won't help here — offer a retry button or manual instructions.
+                <div className="space-y-3">
+                  <p className="text-sm text-text-secondary">
+                    The rebase completed. Your uncommitted changes are preserved in the git stash and need to be re-applied.
+                  </p>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={async () => {
+                        setStashPopStatus('running');
+                        setStashPopError(null);
+                        try {
+                          const result = await window.api?.git?.stashPop?.(errorDetails.repoPath);
+                          if (result?.success) {
+                            setStashPopStatus('success');
+                            setResult(true, 'Stash re-applied successfully. Your changes are back.');
+                          } else {
+                            setStashPopStatus('error');
+                            setStashPopError(result?.error?.message || 'Stash pop had conflicts — resolve manually in your editor.');
+                          }
+                        } catch (err) {
+                          setStashPopStatus('error');
+                          setStashPopError(err instanceof Error ? err.message : 'Stash pop failed');
+                        }
+                      }}
+                      disabled={stashPopStatus === 'running'}
+                      className="btn-primary flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      {stashPopStatus === 'running' ? 'Re-applying...' : '↩ Re-apply Stashed Changes'}
+                    </button>
+                    <button onClick={handleManualFix} className="kb-btn flex-1 flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                      </svg>
+                      Fix Manually
+                    </button>
+                  </div>
+                  {stashPopError && (
+                    <p className="text-xs text-red-500">{stashPopError}</p>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm text-text-secondary mb-3">How would you like to resolve these conflicts?</p>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleAutoFix}
+                      className="btn-primary flex-1 flex items-center justify-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      Auto-Fix with AI
+                    </button>
+                    <button
+                      onClick={handleManualFix}
+                      className="kb-btn flex-1 flex items-center justify-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                      </svg>
+                      Fix Manually
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         );
@@ -491,7 +550,7 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
                       )}
                       <p><span className="text-text-primary font-medium">Session:</span> {errorDetails.sessionId}</p>
                       <p><span className="text-text-primary font-medium">Repo:</span> {errorDetails.repoPath}</p>
-                      <p><span className="text-text-primary font-medium">Branch:</span> {errorDetails.currentBranch} → {errorDetails.baseBranch}</p>
+                      <p><span className="text-text-primary font-medium">Branch:</span> {errorDetails.currentBranch} → {cleanBaseBranch}</p>
                       {errorDetails.conflictedFiles.length > 0 && (
                         <>
                           <p><span className="text-text-primary font-medium">Conflicted files:</span></p>
@@ -552,7 +611,7 @@ export function RebaseMergeErrorDialog(): React.ReactElement | null {
           <div className="px-4 pb-4 pt-0">
             <div className="text-xs text-text-secondary flex items-center gap-4">
               <span>Branch: <code className="bg-surface-secondary px-1 rounded">{errorDetails.currentBranch}</code></span>
-              <span>Base: <code className="bg-surface-secondary px-1 rounded">{errorDetails.baseBranch}</code></span>
+              <span>Base: <code className="bg-surface-secondary px-1 rounded">{cleanBaseBranch}</code></span>
             </div>
           </div>
         )}

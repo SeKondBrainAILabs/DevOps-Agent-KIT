@@ -14,6 +14,12 @@ module.exports = {
     '/node_modules/',
     '/dist/',
     '/tests/kanvas/fixtures/',
+    // These two integration suites are authored for Vitest (they `import from
+    // 'vitest'`), not Jest. Running them under Jest fails at module resolution.
+    // They belong to a separate Vitest run; ignore them here so the Jest signal
+    // stays clean.
+    '/tests/kanvas/integration/ContractGenerationE2E.test.ts$',
+    '/tests/kanvas/integration/FeatureContractsComprehensive.test.ts$',
   ],
   modulePathIgnorePatterns: [
     '<rootDir>/local_deploy/',
@@ -24,6 +30,15 @@ module.exports = {
   transform: {
     '^.+\\.[jt]sx?$': ['ts-jest', {
       useESM: true,
+      // Transpile-only — do NOT type-check during the test run.
+      // Rationale: stale session worktrees under local_deploy/ each ship a full
+      // duplicate copy of shared/types.ts and the `declare global { Window.api }`
+      // augmentation with an OLDER API shape. ts-jest's whole-program type checker
+      // merges those duplicate globals, producing hundreds of bogus
+      // "Property X does not exist on window.api" errors that fail entire suites
+      // even though the production build (Vite/esbuild) compiles cleanly.
+      // Type safety is enforced by `npm run build`; the test runner only needs to
+      // execute code. isolatedModules makes ts-jest transpile each file alone.
       tsconfig: {
         jsx: 'react-jsx',
         esModuleInterop: true,
@@ -34,6 +49,7 @@ module.exports = {
         skipLibCheck: true,
         allowSyntheticDefaultImports: true,
         allowJs: true,
+        isolatedModules: true,
         types: ['jest', '@testing-library/jest-dom', 'node'],
       },
     }],

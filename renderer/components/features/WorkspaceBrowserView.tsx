@@ -26,6 +26,7 @@ import {
 } from '../../../shared/repo-sort';
 import type { RepoStatusBlock } from './RepoStatusCard';
 import { AddWorkspaceDialog } from './AddWorkspaceDialog';
+import { StaleBranchesDialog } from './StaleBranchesDialog';
 import { useUIStore } from '../../store/uiStore';
 
 function formatGiB(bytes: number): string {
@@ -424,6 +425,7 @@ interface RepoInsightRowProps {
   repoAction: string | null;
   repoActionError: string | undefined;
   onStashAction: (repoPath: string, action: 'drop-latest' | 'clear-all') => void;
+  onOpenBranchCleanup: (repoPath: string) => void;
 }
 
 interface ResolveCommand {
@@ -457,13 +459,34 @@ function parseResolveCommands(text: string): ResolveCommand[] {
 function RepoInsightRow({
   repo, index, status, healthSnapshot, isLast,
   openRepoDetail, openCreateAgentWizardForRepo, openCreateAgentWizardWithTask,
-  repoAction, repoActionError, onStashAction,
+  repoAction, repoActionError, onStashAction, onOpenBranchCleanup,
 }: RepoInsightRowProps): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
   const [resolveOpen, setResolveOpen] = useState(false);
   const [resolveState, setResolveState] = useState<'idle' | 'analyzing' | 'done' | 'error'>('idle');
   const [resolveText, setResolveText] = useState('');
   const [runResults, setRunResults] = useState<Record<number, RunResult>>({});
+  const [runningAll, setRunningAll] = useState(false);
+  const [runningIndex, setRunningIndex] = useState<number | null>(null);
+
+  // Run all resolve commands in order. Stops on the first failure since later
+  // commands typically depend on earlier ones (e.g. `git add` then `git commit`).
+  const runAllCommands = useCallback(async (commands: ResolveCommand[]) => {
+    setRunningAll(true);
+    for (let i = 0; i < commands.length; i++) {
+      if (runResults[i]?.ok) continue; // skip already-succeeded commands
+      setRunningIndex(i);
+      const r = await window.api.shell?.execGitSafe?.(repo.path, commands[i].cmd);
+      const ok = r?.ok ?? false;
+      setRunResults(prev => ({
+        ...prev,
+        [i]: { ok, output: r ? `${r.stdout}${r.stderr ? '\n' + r.stderr : ''}`.trim() : 'No response' },
+      }));
+      if (!ok) break; // halt the chain on first failure
+    }
+    setRunningIndex(null);
+    setRunningAll(false);
+  }, [repo.path, runResults]);
 
   const branch = status?.currentBranch || 'unknown';
   const ahead = status?.ahead ?? 0;
@@ -538,7 +561,14 @@ COMMAND: git <command here>`;
         setResolveText(result.data ?? '');
         setResolveState('done');
       } else {
-        setResolveText(result?.error?.message ?? 'AI not available');
+        // result?.error is an IpcError object — extract the message string
+        const errMsg = result?.error?.message ?? 'AI not available';
+        // Surface a helpful hint when the API key isn't configured
+        setResolveText(
+          errMsg.includes('not configured') || errMsg.includes('API key')
+            ? 'Groq API key not configured. Add it in Settings → AI to enable this feature.'
+            : errMsg
+        );
         setResolveState('error');
       }
     } catch (e) {
@@ -661,6 +691,7 @@ COMMAND: git <command here>`;
           <button type="button" onClick={() => window.api.shell?.openVSCode?.(repo.path)} className="kb-btn-sm" data-testid={`repo-row-ide-${index}`}>IDE</button>
           <button type="button" onClick={() => window.api.shell?.openTerminal?.(repo.path)} className="kb-btn-sm" data-testid={`repo-row-terminal-${index}`}>Terminal</button>
           <button type="button" onClick={() => openCreateAgentWizardForRepo(repo.path)} className="kb-btn-sm" data-testid={`repo-row-session-${index}`}>New session</button>
+          <button type="button" onClick={() => onOpenBranchCleanup(repo.path)} className="kb-btn-sm" data-testid={`repo-row-branches-${index}`} title="View and clean up stale branches">Branches</button>
           <button
             type="button"
             onClick={() => onStashAction(repo.path, 'drop-latest')}
@@ -800,9 +831,27 @@ COMMAND: git <command here>`;
                 {/* Commands */}
                 {commands.length > 0 && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                    <p style={{ fontSize: 11, fontFamily: 'var(--f-mono)', textTransform: 'uppercase', letterSpacing: '0.10em', color: 'rgba(0,0,0,0.40)', marginBottom: 2 }}>
-                      Commands to run
-                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                      <p style={{ fontSize: 11, fontFamily: 'var(--f-mono)', textTransform: 'uppercase', letterSpacing: '0.10em', color: 'rgba(0,0,0,0.40)', margin: 0 }}>
+                        Commands to run
+                      </p>
+                      {commands.length > 1 && (
+                        <button
+                          type="button"
+                          disabled={runningAll || commands.every((_, i) => runResults[i]?.ok)}
+                          onClick={() => void runAllCommands(commands)}
+                          style={{
+                            height: 24, padding: '0 12px', fontSize: 11, borderRadius: 999, border: 'none',
+                            background: runningAll ? '#e5e7eb' : '#000',
+                            color: runningAll ? '#6b7280' : '#fff',
+                            cursor: runningAll ? 'default' : 'pointer', fontWeight: 600, flexShrink: 0,
+                          }}
+                          title="Run every command in order; stops if one fails"
+                        >
+                          {runningAll ? `Running ${(runningIndex ?? 0) + 1}/${commands.length}…` : '▶▶ Run all'}
+                        </button>
+                      )}
+                    </div>
                     {commands.map((c, ci) => {
                       const res = runResults[ci];
                       return (
@@ -821,16 +870,16 @@ COMMAND: git <command here>`;
                             </code>
                             <button
                               type="button"
-                              disabled={!!res}
+                              disabled={!!res || resolveState === 'analyzing' || runningAll}
                               style={{
                                 height: 24,
                                 padding: '0 10px',
                                 fontSize: 11,
                                 borderRadius: 999,
                                 border: 'none',
-                                background: res ? (res.ok ? '#dcfce7' : '#fee2e2') : '#000',
-                                color: res ? (res.ok ? '#059669' : '#b91c1c') : '#fff',
-                                cursor: res ? 'default' : 'pointer',
+                                background: res ? (res.ok ? '#dcfce7' : '#fee2e2') : (runningIndex === ci ? '#e5e7eb' : '#000'),
+                                color: res ? (res.ok ? '#059669' : '#b91c1c') : (runningIndex === ci ? '#6b7280' : '#fff'),
+                                cursor: res || runningAll ? 'default' : 'pointer',
                                 fontWeight: 600,
                                 flexShrink: 0,
                               }}
@@ -845,7 +894,7 @@ COMMAND: git <command here>`;
                                 }));
                               }}
                             >
-                              {res ? (res.ok ? '✓ Done' : '✗ Failed') : '▶ Run'}
+                              {res ? (res.ok ? '✓ Done' : '✗ Failed') : (runningIndex === ci ? 'Running…' : '▶ Run')}
                             </button>
                           </div>
                           {res?.output && (
@@ -920,6 +969,8 @@ export function WorkspaceBrowserView(): React.ReactElement {
   const [recentReposFallback, setRecentReposFallback] = useState<DiscoveredRepo[]>([]);
   // Tab state
   const [activeTab, setActiveTab] = useState<'repos' | 'workflow' | 'storage'>('repos');
+  // Stale branches cleanup dialog
+  const [staleBranchesRepoPath, setStaleBranchesRepoPath] = useState<string | null>(null);
   // Worktree safety info keyed by worktree path
   const [worktreeSafetyByPath, setWorktreeSafetyByPath] = useState<Map<string, WorktreeSafetyInfo>>(new Map());
   const [worktreeSafetyLoadingPaths, setWorktreeSafetyLoadingPaths] = useState<Set<string>>(new Set());
@@ -1034,7 +1085,10 @@ export function WorkspaceBrowserView(): React.ReactElement {
         try {
           const [modeRes, countRes, statusRes] = await Promise.all([
             window.api.repoWorkspace.getWorktreeMode(repo.path),
-            window.api.repoWorkspace.getActiveSessionCount(repo.path),
+            // Use the running-count (agent attached) for the repo card badge.
+            // The lifecycle-broad getActiveSessionCount stays for the SSM
+            // guard in NewSessionWizard — see shared/instance-status.ts.
+            window.api.repoWorkspace.getRunningSessionCount(repo.path),
             window.api.git.getRepoStatus(repo.path),
           ]);
           const block: RepoStatusBlock = {
@@ -2011,6 +2065,7 @@ export function WorkspaceBrowserView(): React.ReactElement {
                       repoAction={repoActionInFlightByPath[repo.path] ?? null}
                       repoActionError={repoActionErrorsByPath[repo.path]}
                       onStashAction={handleRepoStashAction}
+                      onOpenBranchCleanup={(path) => setStaleBranchesRepoPath(path)}
                     />
                   ))}
                 </div>
@@ -2344,6 +2399,14 @@ export function WorkspaceBrowserView(): React.ReactElement {
         onClose={() => setShowAdd(false)}
         onAdded={() => { void refreshWorkspaces(); }}
       />
+
+      {/* Stale branches cleanup dialog */}
+      {staleBranchesRepoPath && (
+        <StaleBranchesDialog
+          repoPath={staleBranchesRepoPath}
+          onClose={() => setStaleBranchesRepoPath(null)}
+        />
+      )}
     </div>
   );
 }

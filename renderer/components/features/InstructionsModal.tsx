@@ -3,7 +3,7 @@
  * Displays setup instructions after creating an agent instance
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { AgentInstance } from '../../../shared/types';
 
 interface InstructionsModalProps {
@@ -17,6 +17,53 @@ export function InstructionsModal({ instance, onClose }: InstructionsModalProps)
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('prompt');
+
+  // Live status: the prop-`instance` is a snapshot captured at create time and
+  // never updates. Poll the IPC every 3s so the banner reflects actual state.
+  const [liveStatus, setLiveStatus] = useState<AgentInstance['status']>(instance.status);
+  // Sibling hint: when our status stays 'waiting' AND there's recent MCP
+  // activity on another session in the same repo, surface it as a clickable
+  // hint. The classic case: user pasted a new session's prompt into a Codex
+  // window already attached to a different session, so the agent stays bound
+  // to the OLD session and the new session never gets a connection.
+  const [sibling, setSibling] = useState<{ sessionId: string; branchName: string; lastActivity: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const r = await window.api?.instance?.get(instance.id);
+        if (cancelled) return;
+        if (r?.success && r.data) {
+          setLiveStatus(r.data.status);
+        }
+      } catch { /* non-fatal */ }
+    };
+    refresh();
+    const id = setInterval(refresh, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [instance.id]);
+
+  useEffect(() => {
+    // Only look for siblings while we're still waiting — once we're idle/active,
+    // the agent has clearly connected and the hint becomes noise.
+    if (liveStatus !== 'waiting') {
+      setSibling(null);
+      return;
+    }
+    if (!instance.sessionId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const r = await window.api?.instance?.findActiveSibling?.(instance.sessionId!);
+        if (cancelled) return;
+        setSibling(r?.success ? r.data : null);
+      } catch { /* non-fatal */ }
+    };
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [instance.sessionId, liveStatus]);
 
   const handleCopyPrompt = async () => {
     if (instance.prompt) {
@@ -88,12 +135,24 @@ export function InstructionsModal({ instance, onClose }: InstructionsModalProps)
         {/* Status bar */}
         <div className="px-6 py-3 bg-surface-secondary border-b border-[rgba(0,0,0,0.10)] flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
-              <span className="text-sm text-text-secondary">Waiting for agent to connect...</span>
-            </div>
+            {liveStatus === 'waiting' || liveStatus === 'initializing' ? (
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+                <span className="text-sm text-text-secondary">Waiting for agent to connect…</span>
+              </div>
+            ) : liveStatus === 'failed' ? (
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-red-500" />
+                <span className="text-sm text-text-secondary">Agent failed to start</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500" />
+                <span className="text-sm text-text-secondary">Agent connected — {liveStatus}</span>
+              </div>
+            )}
             <span className="text-xs text-text-secondary/60">
-              Session: {instance.sessionId?.slice(0, 12)}...
+              Session: {instance.sessionId?.slice(0, 12)}…
             </span>
           </div>
 
@@ -121,6 +180,31 @@ export function InstructionsModal({ instance, onClose }: InstructionsModalProps)
             </button>
           </div>
         </div>
+
+        {/* Cross-session gotcha hint: we're still waiting but a sibling session
+            in the same repo has recent MCP activity → most likely the user
+            pasted this prompt into a Codex window already attached to that
+            sibling. The agent stays bound to its first session, so this one
+            never gets a connection. */}
+        {liveStatus === 'waiting' && sibling && (
+          <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 text-sm text-amber-900">
+            <div className="flex items-start gap-3">
+              <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="flex-1 min-w-0">
+                <p>
+                  An agent is currently active on <span className="font-mono">{sibling.branchName}</span> in this repo.
+                </p>
+                <p className="text-xs text-amber-800/80 mt-0.5">
+                  Each session needs its own agent window. If you pasted this prompt into a Codex/Claude window already
+                  attached to another KIT session, the agent stays bound to that one — open a fresh window for this session
+                  and paste the prompt there.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Content */}
         {viewMode === 'prompt' && instance.prompt ? (

@@ -381,7 +381,7 @@ async function setupNpmPackages(projectRoot) {
       name: path.basename(projectRoot),
       version: '1.0.0',
       type: 'module',
-      description: 'SecondBrain Development Project',
+      description: 'SeKondBrain Development Project',
       scripts: {},
       devDependencies: {}
     };

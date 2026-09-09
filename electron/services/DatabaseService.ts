@@ -27,6 +27,17 @@ const getDbPath = (): string => {
 export class DatabaseService extends BaseService {
   private db: Database.Database | null = null;
 
+  // Cached prepared statements — compiled once after initialize(), never per-call.
+  // Re-preparing on every hot-path call (e.g. insertActivityLog on each file event)
+  // adds unnecessary SQLite compilation overhead and blocks the main thread.
+  private stmts: {
+    insertActivityLog?: Database.Statement;
+    insertTerminalLog?: Database.Statement;
+    recordCommit?: Database.Statement;
+    recordSessionEvent?: Database.Statement;
+    linkActivities?: Database.Statement;
+  } = {};
+
   /**
    * Initialize the database connection and create tables
    */
@@ -225,17 +236,19 @@ export class DatabaseService extends BaseService {
   // ==========================================================================
 
   /**
-   * Insert an activity log entry
+   * Insert an activity log entry (uses a cached prepared statement — not re-compiled per call)
    */
   insertActivityLog(entry: ActivityLogEntry): void {
     if (!this.db) return;
 
-    const stmt = this.db.prepare(`
-      INSERT INTO activity_logs (id, session_id, timestamp, type, message, details, commit_hash, file_path)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    if (!this.stmts.insertActivityLog) {
+      this.stmts.insertActivityLog = this.db.prepare(`
+        INSERT INTO activity_logs (id, session_id, timestamp, type, message, details, commit_hash, file_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+    }
 
-    stmt.run(
+    this.stmts.insertActivityLog.run(
       entry.id,
       entry.sessionId,
       entry.timestamp,
@@ -245,6 +258,18 @@ export class DatabaseService extends BaseService {
       entry.commitHash || null,
       entry.filePath || null
     );
+  }
+
+  /**
+   * Most recent activity timestamp for a session (covers MCP calls + all logged
+   * activity, since they're written to activity_logs). Returns null if none.
+   */
+  getLatestActivityTimestamp(sessionId: string): string | null {
+    if (!this.db) return null;
+    const row = this.db
+      .prepare('SELECT MAX(timestamp) AS ts FROM activity_logs WHERE session_id = ?')
+      .get(sessionId) as { ts: string | null } | undefined;
+    return row?.ts ?? null;
   }
 
   /**
@@ -547,12 +572,14 @@ export class DatabaseService extends BaseService {
   ): void {
     if (!this.db) return;
 
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO commits (hash, session_id, message, timestamp, files_changed, additions, deletions, author, repo_name)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    if (!this.stmts.recordCommit) {
+      this.stmts.recordCommit = this.db.prepare(`
+        INSERT OR REPLACE INTO commits (hash, session_id, message, timestamp, files_changed, additions, deletions, author, repo_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+    }
 
-    stmt.run(
+    this.stmts.recordCommit.run(
       hash,
       sessionId,
       message,
@@ -701,12 +728,14 @@ export class DatabaseService extends BaseService {
     if (!this.db) return;
 
     const id = `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const stmt = this.db.prepare(`
-      INSERT INTO session_history (id, session_id, event_type, timestamp, details, commit_hash)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
+    if (!this.stmts.recordSessionEvent) {
+      this.stmts.recordSessionEvent = this.db.prepare(`
+        INSERT INTO session_history (id, session_id, event_type, timestamp, details, commit_hash)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+    }
 
-    stmt.run(
+    this.stmts.recordSessionEvent.run(
       id,
       sessionId,
       eventType,
@@ -1028,8 +1057,8 @@ export class DatabaseService extends BaseService {
    * Transfer all session data from one sessionId to another
    * Used during session restart to preserve commit history and activity logs
    */
-  transferSessionData(oldSessionId: string, newSessionId: string): { transferred: { commits: number; activity: number; terminal: number; history: number } } {
-    const result = { commits: 0, activity: 0, terminal: 0, history: 0 };
+  transferSessionData(oldSessionId: string, newSessionId: string): { transferred: { commits: number; activity: number; terminal: number; history: number; mcp: number } } {
+    const result = { commits: 0, activity: 0, terminal: 0, history: 0, mcp: 0 };
     if (!this.db) return { transferred: result };
 
     try {
@@ -1053,11 +1082,56 @@ export class DatabaseService extends BaseService {
       const historyResult = historyStmt.run(newSessionId, oldSessionId);
       result.history = historyResult.changes;
 
+      // Transfer MCP call log. Was missing from the original transfer set, so
+      // every session restart stranded the previous run's MCP activity under
+      // the old id and the MCP tab (which strictly filters on sessionId) went
+      // blank after the first auto-restart.
+      const mcpStmt = this.db.prepare('UPDATE mcp_calls SET session_id = ? WHERE session_id = ?');
+      const mcpResult = mcpStmt.run(newSessionId, oldSessionId);
+      result.mcp = mcpResult.changes;
+
       console.log(`[DatabaseService] Transferred session data from ${oldSessionId} to ${newSessionId}: ${JSON.stringify(result)}`);
       return { transferred: result };
     } catch (error) {
       console.error(`[DatabaseService] Failed to transfer session data:`, error);
       return { transferred: result };
+    }
+  }
+
+  /**
+   * Return the timestamp (ISO string) of the most recent `mcp_calls` row for
+   * `sessionId`, or `null` if there are none. Used by
+   * `findActiveSiblingInRepo` to decide whether a sibling session has shown
+   * activity recently enough to be worth pointing the user at.
+   */
+  lastMcpCallTime(sessionId: string): string | null {
+    if (!this.db) return null;
+    try {
+      const row = this.db
+        .prepare('SELECT MAX(timestamp) AS ts FROM mcp_calls WHERE session_id = ?')
+        .get(sessionId) as { ts: string | null } | undefined;
+      return row?.ts || null;
+    } catch (err) {
+      console.error('[DatabaseService] lastMcpCallTime failed:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Move every `mcp_calls` row whose `session_id` is `oldSessionId` over to
+   * `newSessionId`. Returns the number of rows updated. Used by the startup
+   * backfill (`backfillMcpCallsByLineage`) to repatriate calls that were
+   * stranded under an earlier sessionId by previous releases that didn't
+   * include mcp_calls in `transferSessionData`.
+   */
+  transferMcpCalls(oldSessionId: string, newSessionId: string): number {
+    if (!this.db) return 0;
+    try {
+      const stmt = this.db.prepare('UPDATE mcp_calls SET session_id = ? WHERE session_id = ?');
+      return stmt.run(newSessionId, oldSessionId).changes;
+    } catch (error) {
+      console.error('[DatabaseService] Failed to transfer mcp_calls:', error);
+      return 0;
     }
   }
 

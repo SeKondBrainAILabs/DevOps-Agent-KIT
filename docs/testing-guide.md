@@ -2,7 +2,7 @@
 
 **Date:** September 28, 2025  
 **Version:** 1.0  
-**Author:** SecondBrain AI
+**Author:** SeKondBrain AI
 
 ---
 

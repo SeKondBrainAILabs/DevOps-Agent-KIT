@@ -6,12 +6,20 @@
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import path from 'path';
+import fs from 'fs';
 import { ContractGenerationService } from '../../../electron/services/ContractGenerationService';
 
 // Test fixtures paths
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 const SAMPLE_REPO_PATH = path.join(FIXTURES_DIR, 'sample-repo');
 const PIGGY_BANK_PATH = path.join(FIXTURES_DIR, 'SA-Piggy-Bank');
+
+// These tests scan real fixture repos that are not committed (they're large and
+// machine-specific). Skip the whole suite cleanly when the fixtures are absent
+// rather than failing with ENOENT / empty-result assertions. To run locally,
+// place sample-repo and SA-Piggy-Bank under tests/kanvas/fixtures/.
+const fixturesPresent = fs.existsSync(SAMPLE_REPO_PATH) && fs.existsSync(PIGGY_BANK_PATH);
+const describeIfFixtures = fixturesPresent ? describe : describe.skip;
 
 // Mock AIService - we only need discoverFeatures which doesn't use AI
 const mockAIService = {
@@ -42,7 +50,7 @@ const mockRegistryService = {
   register: async () => ({ success: true }),
 };
 
-describe('ContractGenerationService - Integration Tests', () => {
+describeIfFixtures('ContractGenerationService - Integration Tests', () => {
   let service: ContractGenerationService;
 
   beforeAll(() => {
@@ -256,7 +264,7 @@ describe('ContractGenerationService - Integration Tests', () => {
 // =========================================================================
 // AI-Based Feature Detection Tests
 // =========================================================================
-describe('ContractGenerationService - AI Feature Detection', () => {
+describeIfFixtures('ContractGenerationService - AI Feature Detection', () => {
   it('should filter out non-feature folders when useAI=true', async () => {
     // Create a service with smart mock that only identifies frontend and services as features
     const smartMock = createSmartMockAIService(['frontend', 'services']);

@@ -12,7 +12,7 @@ import { McpSessionBinder } from '../../../electron/services/mcp/session-binder'
 function zodChain(): any {
   const c: any = {};
   ['string', 'number', 'boolean', 'array', 'object', 'enum', 'record',
-    'optional', 'default', 'describe', 'unknown'].forEach(m => { c[m] = (..._a: any[]) => zodChain(); });
+    'optional', 'default', 'describe', 'unknown', 'int', 'min', 'max'].forEach(m => { c[m] = (..._a: any[]) => zodChain(); });
   c.then = undefined;
   return c;
 }
@@ -62,6 +62,8 @@ describe('MCP Tools', () => {
           { hash: 'abc123', shortHash: 'abc123', message: 'feat: add feature', author: 'test', date: '2026-01-01', filesChanged: 2 },
         ],
       }),
+      // Worktree-divergence guard: report the worktree is on the expected session branch.
+      getCurrentBranchName: (jest.fn() as any).mockResolvedValue('feat/test'),
     };
 
     mockActivityService = { log: jest.fn() };
@@ -109,6 +111,13 @@ describe('MCP Tools', () => {
   function callTool(name: string, args: Record<string, any>) {
     const tool = registeredTools.get(name);
     if (!tool) throw new Error(`Tool ${name} not registered`);
+    // Mutating tools now require `cwd` (the agent's working directory). Default it
+    // to the session's registered worktree so existing tests model a well-behaved
+    // agent that's in the right place; divergence tests pass an explicit cwd.
+    if (args.cwd === undefined && args.session_id) {
+      const wt = binder.getWorktreePathForRepo(args.session_id, args.repo);
+      if (wt) args = { ...args, cwd: wt };
+    }
     return tool.handler(args);
   }
 
@@ -155,11 +164,13 @@ describe('MCP Tools', () => {
         message: 'feat: test commit',
       });
 
+      // Signature: recordCommit(hash, sessionId, message, timestamp, { filesChanged, repoName })
       expect(mockDatabaseService.recordCommit).toHaveBeenCalledWith(
-        'sess_test_123',
         'abc123def456',
+        'sess_test_123',
         'feat: test commit',
-        3
+        expect.any(String),
+        expect.objectContaining({ filesChanged: 3 })
       );
     });
 
@@ -196,6 +207,96 @@ describe('MCP Tools', () => {
         expect.stringContaining('Committed'),
         expect.objectContaining({ source: 'mcp' })
       );
+    });
+  });
+
+  // ==========================================================================
+  // Worktree-divergence guards (Layers 1+2)
+  // ==========================================================================
+  describe('worktree-divergence guards', () => {
+    it('rejects kit_commit when cwd is not the session worktree (WRONG_WORKTREE)', async () => {
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: from the wrong place',
+        cwd: '/tmp/some-other-clone',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBe(true);
+      expect(data.error).toBe('WRONG_WORKTREE');
+      expect(data.expected_worktree).toBe('/tmp/worktree-test');
+      expect(data.your_cwd).toBe('/tmp/some-other-clone');
+      // The commit must NOT have been performed.
+      expect(mockGitService.commit).not.toHaveBeenCalled();
+    });
+
+    it('rejects kit_commit when the worktree is on the wrong branch (WRONG_BRANCH)', async () => {
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValueOnce('some-other-branch');
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: wrong branch',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBe(true);
+      expect(data.error).toBe('WRONG_BRANCH');
+      expect(data.expected_branch).toBe('feat/test');
+      expect(data.your_branch).toBe('some-other-branch');
+      expect(mockGitService.commit).not.toHaveBeenCalled();
+    });
+
+    it('rejects kit_commit when the worktree is in detached HEAD (DETACHED_HEAD)', async () => {
+      // rev-parse --abbrev-ref HEAD prints the literal "HEAD" when detached.
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValueOnce('HEAD');
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: detached',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBe(true);
+      expect(data.error).toBe('DETACHED_HEAD');
+      expect(mockGitService.commit).not.toHaveBeenCalled();
+    });
+
+    it('allows kit_commit when the branch check is inconclusive (fail open)', async () => {
+      // null = the branch could not be determined (git error / lock / path) — we must
+      // NOT report a false detached HEAD. The cwd already matched, so allow the commit.
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValueOnce(null);
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: inconclusive branch check',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBeFalsy();
+      expect(data.commitHash).toBe('abc123def456');
+      expect(mockGitService.commit).toHaveBeenCalled();
+    });
+
+    it('allows kit_commit when cwd matches the worktree and branch is correct', async () => {
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: correct location',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBeFalsy();
+      expect(data.commitHash).toBe('abc123def456');
+      expect(mockGitService.commit).toHaveBeenCalled();
+    });
+
+    it('rejects kit_lock_file on directory mismatch but does not require a branch', async () => {
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValue('any-branch');
+      const wrong = await callTool('kit_lock_file', {
+        session_id: 'sess_test_123',
+        files: ['src/x.ts'],
+        cwd: '/tmp/elsewhere',
+      });
+      expect(wrong.isError).toBe(true);
+      expect(parseResult(wrong).error).toBe('WRONG_WORKTREE');
+
+      // Right directory, "wrong" branch — lock is still allowed (coordination, not commit).
+      const ok = await callTool('kit_lock_file', {
+        session_id: 'sess_test_123',
+        files: ['src/x.ts'],
+      });
+      expect(ok.isError).toBeFalsy();
     });
   });
 
@@ -484,7 +585,9 @@ describe('MCP Tools', () => {
       const data = parseResult(result);
       expect(data.commitHash).toBeDefined();
       expect(data.repo).toBe('shared-lib');
-      expect(mockGitService.commit).toHaveBeenCalledWith('sess_multi_001', 'feat: update shared lib', 'shared-lib');
+      // Secondary-repo commits are prefixed with "[Upgrade From <primary>]" so the
+      // history shows which root change drove the secondary update.
+      expect(mockGitService.commit).toHaveBeenCalledWith('sess_multi_001', '[Upgrade From primary] feat: update shared lib', 'shared-lib');
     });
 
     it('should default to primary repo when no repo param', async () => {

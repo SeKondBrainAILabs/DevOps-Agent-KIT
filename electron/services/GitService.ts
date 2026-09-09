@@ -63,6 +63,25 @@ function parseUpstreamTrack(track: string): { aheadCount: number; behindCount: n
 }
 
 export class GitService extends BaseService {
+  /** Optional debug logger — wired in services/index.ts. */
+  private debugLog: { warn: (source: string, message: string, details?: unknown) => void } | null = null;
+  setDebugLog(debugLog: { warn: (source: string, message: string, details?: unknown) => void }): void {
+    this.debugLog = debugLog;
+  }
+
+  /**
+   * Audit every worktree removal. Worktree deletion is destructive (it can lose
+   * an agent's uncommitted work), so we record WHO triggered it — the caller
+   * stack — to the persistent debug log. This makes accidental removals (from
+   * merge/cleanup/restart/stale-scan paths) traceable after the fact.
+   */
+  private auditWorktreeRemoval(worktreePath: string, repoPath: string, reason: string): void {
+    const stack = (new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' <- ');
+    const payload = { worktreePath, repoPath, reason, caller: stack };
+    console.warn(`[GitService] WORKTREE REMOVE (${reason}): ${worktreePath}\n  caller: ${stack}`);
+    this.debugLog?.warn('GitService', `Worktree removed (${reason})`, payload);
+  }
+
   /**
    * Execute a git command (uses dynamic import for ESM-only execa)
    */
@@ -192,6 +211,7 @@ export class GitService extends BaseService {
         if (paths && existsSync(paths.worktreePath)) {
           try {
             // Only remove actual worktrees (not submodule directories)
+            this.auditWorktreeRemoval(paths.worktreePath, paths.repoPath, 'removeAllWorktrees(sessionId)');
             await this.git(['worktree', 'remove', paths.worktreePath, '--force'], paths.repoPath);
           } catch {
             // May be a submodule path, not a worktree
@@ -232,6 +252,7 @@ export class GitService extends BaseService {
 
       // Remove worktree
       if (existsSync(worktreePath)) {
+        this.auditWorktreeRemoval(worktreePath, repoPath, `removeWorktree(${sessionId})`);
         await this.git(['worktree', 'remove', worktreePath, '--force'], repoPath);
       }
 
@@ -372,7 +393,9 @@ export class GitService extends BaseService {
           const cleanName = name.replace(/^remotes\/origin\//, '').replace(/^origin\//, '');
 
           // Skip HEAD pointer entries (e.g. remotes/origin/HEAD -> origin/main)
-          if (cleanName === 'HEAD') continue;
+          // Also skip detached HEAD pseudo-entries like "(HEAD" which appear when
+          // a worktree is checked out at a tag or detached commit.
+          if (cleanName === 'HEAD' || cleanName.startsWith('(')) continue;
 
           branches.push({
             name: cleanName,
@@ -385,6 +408,134 @@ export class GitService extends BaseService {
 
       return branches;
     }, 'GIT_BRANCHES_FAILED');
+  }
+
+  /**
+   * Current branch of a worktree path, as a TRI-STATE for the divergence guards:
+   *   - a branch name  → HEAD is on that branch
+   *   - 'HEAD'         → genuinely detached HEAD (definitive)
+   *   - null           → could NOT determine (path missing, git lock, error)
+   *
+   * Uses `rev-parse --abbrev-ref HEAD`, which prints the branch name on a branch
+   * and the literal "HEAD" when detached. Crucially this lets callers tell a real
+   * detached HEAD apart from a failed check — we must never report "detached"
+   * (and block/scare the agent) just because the command errored. `symbolic-ref`
+   * conflated the two (exit 1 for both), which caused false "detached" warnings.
+   */
+  /**
+   * Stage and commit ALL changes in a worktree path (used to save uncommitted work
+   * before a merge/rebase when the user opts to commit first). No-op-safe: returns
+   * committed:false when there's nothing to commit.
+   */
+  async commitWorktree(worktreePath: string, message: string): Promise<IpcResult<{ committed: boolean; hash?: string }>> {
+    return this.wrap(async () => {
+      const status = await this.git(['status', '--porcelain'], worktreePath);
+      if (!status.trim()) return { committed: false };
+      await this.git(['add', '-A'], worktreePath);
+      await this.git(['commit', '-m', message], worktreePath);
+      const hash = (await this.git(['rev-parse', 'HEAD'], worktreePath)).trim();
+      return { committed: true, hash };
+    }, 'GIT_COMMIT_WORKTREE_FAILED');
+  }
+
+  /**
+   * Crash-safety snapshot: capture the worktree's tracked + untracked state as
+   * a stash commit and pin it under `refs/kit-autosave/<sessionId>` without
+   * touching HEAD, the index, or `git log`. Replaces the old WIP periodic
+   * auto-commit which polluted history AND let truncated/broken files
+   * (Kemory's ai_chat_service.py being the loud case) get pushed to origin.
+   *
+   * Cost: roughly the same as `git stash create` — sub-100ms for typical
+   * worktrees. The pinned ref is reachable for GC but invisible in
+   * `git log` unless explicitly asked for. Recovery:
+   *   git diff refs/kit-autosave/<sessionId> -- <file>
+   *   git checkout refs/kit-autosave/<sessionId> -- <file>
+   *
+   * Returns null when there's nothing to snapshot (clean tree) or when the
+   * stash invocation produces no SHA. Either is fine and counts as a no-op.
+   */
+  async createSnapshot(
+    worktreePath: string,
+    sessionId: string
+  ): Promise<IpcResult<{ sha: string; refName: string } | null>> {
+    return this.wrap(async () => {
+      // `git stash create` makes a stash commit without storing it in
+      // `refs/stash` — we get the SHA back and pin it ourselves. `-u`
+      // (include untracked) captures new files that haven't been added yet,
+      // which is where most agent edits live before the first kit_commit.
+      const sha = (await this.git(['stash', 'create', '-u', 'kit-autosave'], worktreePath)).trim();
+      if (!sha) return null; // clean tree — nothing to snapshot
+      const refName = `refs/kit-autosave/${sessionId}`;
+      await this.git(['update-ref', refName, sha], worktreePath);
+      return { sha, refName };
+    }, 'GIT_CREATE_SNAPSHOT_FAILED');
+  }
+
+  /**
+   * Find existing version-tag prefixes in a repo (for the wizard to suggest one).
+   * A "version tag" is any tag ending in vMAJOR.MINOR.PATCH; the returned prefix
+   * is everything up to and including the leading "v" (e.g. "SDDMini-KH/v").
+   */
+  async detectVersionTagPrefixes(repoPath: string): Promise<IpcResult<Array<{ prefix: string; count: number; latest: string }>>> {
+    return this.wrap(async () => {
+      const out = await this.git(['tag', '--list'], repoPath).catch(() => '');
+      const byPrefix = new Map<string, { count: number; latestVer: [number, number, number]; latest: string }>();
+      for (const raw of out.split('\n')) {
+        const tag = raw.trim();
+        const m = tag.match(/^(.*v)(\d+)\.(\d+)\.(\d+)$/);
+        if (!m) continue;
+        const prefix = m[1];
+        const ver: [number, number, number] = [Number(m[2]), Number(m[3]), Number(m[4])];
+        const cur = byPrefix.get(prefix);
+        const isNewer = !cur || ver[0] > cur.latestVer[0] || (ver[0] === cur.latestVer[0] && (ver[1] > cur.latestVer[1] || (ver[1] === cur.latestVer[1] && ver[2] > cur.latestVer[2])));
+        byPrefix.set(prefix, { count: (cur?.count ?? 0) + 1, latestVer: isNewer ? ver : (cur?.latestVer ?? ver), latest: isNewer ? tag : (cur?.latest ?? tag) });
+      }
+      return Array.from(byPrefix.entries())
+        .map(([prefix, v]) => ({ prefix, count: v.count, latest: v.latest }))
+        .sort((a, b) => b.count - a.count);
+    }, 'GIT_DETECT_TAG_PREFIXES_FAILED');
+  }
+
+  /**
+   * Compute the next version tag for a prefix by bumping the patch of the highest
+   * existing tag. Fetches tags first (best-effort) so remote releases are counted.
+   */
+  async getNextVersionTag(repoPath: string, prefix: string): Promise<IpcResult<{ latest: string | null; next: string }>> {
+    return this.wrap(async () => {
+      try { await this.git(['fetch', '--tags', '--quiet', 'origin'], repoPath); } catch { /* offline ok */ }
+      const out = await this.git(['tag', '--list', `${prefix}*`], repoPath).catch(() => '');
+      const versions = out.split('\n')
+        .map(t => t.trim())
+        .filter(t => t.startsWith(prefix))
+        .map(t => t.slice(prefix.length).match(/^(\d+)\.(\d+)\.(\d+)$/))
+        .filter((m): m is RegExpMatchArray => !!m)
+        .map(m => [Number(m[1]), Number(m[2]), Number(m[3])] as [number, number, number]);
+      versions.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+      const top = versions[versions.length - 1];
+      const latest = top ? `${prefix}${top[0]}.${top[1]}.${top[2]}` : null;
+      const next = top ? `${prefix}${top[0]}.${top[1]}.${top[2] + 1}` : `${prefix}0.0.1`;
+      return { latest, next };
+    }, 'GIT_NEXT_VERSION_FAILED');
+  }
+
+  /**
+   * Create an annotated tag and push it to origin. Pushing a tag that matches a
+   * workflow's `on: push: tags` pattern is what fires the GitHub Action.
+   */
+  async createAndPushTag(repoPath: string, tag: string, ref?: string): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      await this.git(['tag', '-a', tag, '-m', tag, ...(ref ? [ref] : [])], repoPath);
+      await this.git(['push', 'origin', tag], repoPath);
+    }, 'GIT_CREATE_TAG_FAILED');
+  }
+
+  async getCurrentBranchName(worktreePath: string): Promise<string | null> {
+    try {
+      const out = await this.git(['rev-parse', '--abbrev-ref', 'HEAD'], worktreePath);
+      return out.trim() || null;
+    } catch {
+      return null; // unknown — caller treats this as "can't tell", NOT as detached
+    }
   }
 
   /**
@@ -421,6 +572,11 @@ export class GitService extends BaseService {
    */
   async fetchRemote(repoPath: string, remote = 'origin'): Promise<IpcResult<void>> {
     return this.wrap(async () => {
+      // Guard against ENOENT when the path (e.g. a deleted worktree) no longer exists
+      if (!existsSync(repoPath)) {
+        console.warn(`[GitService] fetchRemote skipped — path no longer exists: ${repoPath}`);
+        return;
+      }
       await this.git(
         ['-c', 'fetch.recurseSubmodules=false', 'fetch', '--prune', remote],
         repoPath
@@ -796,6 +952,7 @@ export class GitService extends BaseService {
     success: boolean;
     message: string;
     hadChanges: boolean;
+    stashPopFailed?: boolean;
     conflictsResolved?: number;
     conflictsFailed?: number;
     resolutions?: import('./MergeConflictService').ResolutionResult[];
@@ -867,9 +1024,13 @@ export class GitService extends BaseService {
             await this.git(['reset', 'HEAD', '--', '.'], repoPath);
             await this.git(['checkout', '--', '.'], repoPath);
           } catch { /* best-effort cleanup — stash entry is preserved for manual recovery */ }
+          // Return success:true — the rebase succeeded; only the stash pop had trouble.
+          // The stashPopFailed flag lets callers surface a targeted warning without
+          // opening the merge-conflict dialog (which would show an empty conflict list).
           return {
-            success: false,
-            message: 'Rebase successful but stash pop had conflicts. Stashed changes were preserved — run "git stash pop" manually to recover them.',
+            success: true,
+            stashPopFailed: true,
+            message: 'Rebase successful. Your uncommitted changes were stashed and need to be recovered — run "git stash pop" in the worktree directory to restore them.',
             hadChanges,
             conflictsResolved: rebaseResult.data.conflictsResolved,
             conflictsFailed: rebaseResult.data.conflictsFailed,
@@ -953,7 +1114,20 @@ export class GitService extends BaseService {
         throw new Error('Refusing to remove primary worktree');
       }
 
+      // SAFETY: this path is for cleaning up ABANDONED worktrees. Never delete a
+      // worktree that is currently registered to a live session — doing so would
+      // pull the directory out from under a running agent and lose its work.
+      for (const [sid, value] of worktreePaths.entries()) {
+        if (path.resolve(value.worktreePath) === resolvedWorktreePath) {
+          const msg = `Refusing to remove worktree still registered to live session ${sid}: ${worktreePath}`;
+          console.warn(`[GitService] ${msg}`);
+          this.debugLog?.warn('GitService', 'Blocked removal of live-session worktree', { sessionId: sid, worktreePath, repoPath });
+          throw new Error(msg);
+        }
+      }
+
       if (existsSync(worktreePath)) {
+        this.auditWorktreeRemoval(worktreePath, repoPath, 'removeWorktreeByPath (cleanup)');
         await this.git(['worktree', 'remove', worktreePath, '--force'], repoPath);
       }
 

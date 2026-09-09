@@ -1,7 +1,7 @@
 {
-  "name": "sekondbrain-kanvas",
-  "version": "2.6.16",
-  "description": "Kanvas for Kit - AI Agent Dashboard",
+  "name": "kit-for-devops",
+  "version": "2.7.0",
+  "description": "KIT for DevOps - AI Agent Dashboard",
   "main": "dist/electron/index.js",
   "type": "module",
   "scripts": {
@@ -68,8 +68,8 @@
     "vite": "^5.4.11"
   },
   "build": {
-    "appId": "com.sekondbrain.kanvas",
-    "productName": "Kanvas for Kit",
+    "appId": "com.sekondbrain.kit-for-devops",
+    "productName": "KIT for DevOps",
     "npmRebuild": false,
     "directories": {
       "output": "release"

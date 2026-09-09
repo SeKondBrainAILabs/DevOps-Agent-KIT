@@ -21,6 +21,15 @@ import * as path from 'path';
 // LinkedIn repo path
 const LINKEDIN_REPO = '/Volumes/Simba User Data/Development/Linkedin-New-Summary';
 
+// This suite validates contract detection against a specific, machine-local
+// external repo (not committed) and asserts its exact contents. It's an opt-in
+// integration check, not a unit test of this app: run it explicitly with
+// RUN_LINKEDIN_INTEGRATION=1 and the repo present. Otherwise skip so the default
+// suite signal stays meaningful.
+const runLinkedInSuite =
+  process.env.RUN_LINKEDIN_INTEGRATION === '1' && fs.existsSync(LINKEDIN_REPO);
+const describeLinkedIn = runLinkedInSuite ? describe : describe.skip;
+
 // Expected features based on Kanvas feature discovery logic
 // Uses IGNORE_FOLDERS, gitignore patterns, and git submodule filtering
 // This list reflects what should be discovered after proper filtering
@@ -74,7 +83,7 @@ const EXPECTED_ENV_VARS = [
   'GOOGLE_CLOUD_PROJECT',
 ];
 
-describe('Contract Generation - LinkedIn Repo', () => {
+describeLinkedIn('Contract Generation - LinkedIn Repo', () => {
   let contractService: ContractGenerationService;
   let mockAIService: AIService;
 

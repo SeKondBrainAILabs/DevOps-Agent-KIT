@@ -247,6 +247,25 @@ const api = {
     fetch: (repoPath: string, remote?: string): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.GIT_FETCH, repoPath, remote),
 
+    /** Stage + commit all changes in a worktree (pre-merge/rebase save). */
+    commitWorktree: (worktreePath: string, message: string): Promise<IpcResult<{ committed: boolean; hash?: string }>> =>
+      ipcRenderer.invoke(IPC.GIT_COMMIT_WORKTREE, worktreePath, message),
+
+    /** Existing version-tag prefixes in a repo (e.g. "SDDMini-KH/v"). */
+    detectTagPrefixes: (repoPath: string): Promise<IpcResult<Array<{ prefix: string; count: number; latest: string }>>> =>
+      ipcRenderer.invoke(IPC.GIT_DETECT_TAG_PREFIXES, repoPath),
+
+    /** Next version tag for a prefix (patch-bumped from the latest). */
+    nextVersionTag: (repoPath: string, prefix: string): Promise<IpcResult<{ latest: string | null; next: string }>> =>
+      ipcRenderer.invoke(IPC.GIT_NEXT_VERSION_TAG, repoPath, prefix),
+
+    /** Create + push a tag (its push fires the matching GitHub Action). */
+    createAndPushTag: (repoPath: string, tag: string, ref?: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.GIT_CREATE_PUSH_TAG, repoPath, tag, ref),
+
+    stashPop: (repoPath: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.GIT_STASH_POP, repoPath),
+
     performRebase: (repoPath: string, baseBranch: string): Promise<IpcResult<{
       success: boolean;
       message: string;
@@ -401,6 +420,9 @@ const api = {
 
     getActiveSessionCount: (repoPath: string): Promise<IpcResult<number>> =>
       ipcRenderer.invoke(IPC.REPO_GET_ACTIVE_SESSION_COUNT, repoPath),
+
+    getRunningSessionCount: (repoPath: string): Promise<IpcResult<number>> =>
+      ipcRenderer.invoke(IPC.REPO_GET_RUNNING_SESSION_COUNT, repoPath),
   },
 
   // ==========================================================================
@@ -530,6 +552,13 @@ const api = {
 
     healthCheck: (): Promise<IpcResult<{ online: boolean; configured: boolean; error?: string }>> =>
       ipcRenderer.invoke(IPC.AI_HEALTH_CHECK),
+
+    refineSessionTask: (input: {
+      rawTask: string;
+      agentType: string;
+      repoName?: string;
+    }): Promise<IpcResult<{ persona: string; taskTitle: string; refinedTask: string }>> =>
+      ipcRenderer.invoke(IPC.AI_REFINE_SESSION_TASK, input),
   },
 
   // ==========================================================================
@@ -653,13 +682,20 @@ const api = {
     get: (instanceId: string): Promise<IpcResult<AgentInstance | null>> =>
       ipcRenderer.invoke(IPC.INSTANCE_GET, instanceId),
 
+    findActiveSibling: (sessionId: string): Promise<IpcResult<{
+      sessionId: string;
+      branchName: string;
+      lastActivity: string;
+    } | null>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_FIND_ACTIVE_SIBLING, sessionId),
+
     delete: (instanceId: string): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.INSTANCE_DELETE, instanceId),
 
     deleteSession: (sessionId: string, repoPath?: string): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.INSTANCE_DELETE_SESSION, sessionId, repoPath),
 
-    deleteSafetyCheck: (sessionId: string): Promise<IpcResult<{
+    deleteSafetyCheck: (sessionId: string, hints?: { repoPath?: string; branchName?: string }): Promise<IpcResult<{
       hasWorktree: boolean;
       worktreePath: string | null;
       hasUncommittedChanges: boolean;
@@ -668,14 +704,18 @@ const api = {
       branchName: string;
       repoPath: string;
     }>> =>
-      ipcRenderer.invoke(IPC.INSTANCE_DELETE_SAFETY_CHECK, sessionId),
+      ipcRenderer.invoke(IPC.INSTANCE_DELETE_SAFETY_CHECK, sessionId, hints),
 
-    deleteWithCleanup: (sessionId: string, options: {
-      deleteWorktree?: boolean;
-      deleteLocalBranch?: boolean;
-      deleteRemoteBranch?: boolean;
-    }): Promise<IpcResult<void>> =>
-      ipcRenderer.invoke(IPC.INSTANCE_DELETE_WITH_CLEANUP, sessionId, options),
+    deleteWithCleanup: (
+      sessionId: string,
+      options: {
+        deleteWorktree?: boolean;
+        deleteLocalBranch?: boolean;
+        deleteRemoteBranch?: boolean;
+      },
+      hints?: { repoPath?: string; branchName?: string; worktreePath?: string }
+    ): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_DELETE_WITH_CLEANUP, sessionId, options, hints),
 
     restart: (sessionId: string, sessionData?: {
       repoPath: string;
@@ -687,11 +727,18 @@ const api = {
     }, commitChanges?: boolean): Promise<IpcResult<AgentInstance>> =>
       ipcRenderer.invoke(IPC.INSTANCE_RESTART, sessionId, sessionData, commitChanges),
 
+    /** Real "last change" time: max of last activity / last commit / newest changed file mtime. */
+    getLastChange: (sessionId: string): Promise<IpcResult<string | null>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_GET_LAST_CHANGE, sessionId),
+
     clearAll: (): Promise<IpcResult<{ count: number }>> =>
       ipcRenderer.invoke(IPC.INSTANCE_CLEAR_ALL),
 
     updateBaseBranch: (sessionId: string, newBaseBranch: string): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.INSTANCE_UPDATE_BASE_BRANCH, sessionId, newBaseBranch),
+
+    repairStaleRebase: (instanceId: string): Promise<IpcResult<{ backupBranches: string[]; landedAt: string }>> =>
+      ipcRenderer.invoke(IPC.INSTANCE_REPAIR_STALE_REBASE, instanceId),
 
     getRecentRepos: (): Promise<IpcResult<RecentRepo[]>> =>
       ipcRenderer.invoke(IPC.RECENT_REPOS_LIST),
@@ -817,6 +864,22 @@ const api = {
       }>) => callback(sessions);
       ipcRenderer.on(IPC.ORPHANED_SESSIONS_FOUND, handler);
       return () => ipcRenderer.removeListener(IPC.ORPHANED_SESSIONS_FOUND, handler);
+    },
+
+    onStaleSessionsFound: (
+      callback: (sessions: import('../shared/types').StaleSessionInfo[]) => void
+    ): (() => void) => {
+      const handler = (_event: IpcRendererEvent, sessions: import('../shared/types').StaleSessionInfo[]) => callback(sessions);
+      ipcRenderer.on(IPC.STALE_SESSIONS_FOUND, handler);
+      return () => ipcRenderer.removeListener(IPC.STALE_SESSIONS_FOUND, handler);
+    },
+
+    onStaleSessionsAutoRemoved: (
+      callback: (sessions: import('../shared/types').StaleSessionInfo[]) => void
+    ): (() => void) => {
+      const handler = (_event: IpcRendererEvent, sessions: import('../shared/types').StaleSessionInfo[]) => callback(sessions);
+      ipcRenderer.on(IPC.STALE_SESSIONS_AUTOREMOVED, handler);
+      return () => ipcRenderer.removeListener(IPC.STALE_SESSIONS_AUTOREMOVED, handler);
     },
   },
 
@@ -1927,6 +1990,7 @@ const api = {
         deleteLocalBranch?: boolean;
         deleteRemoteBranch?: boolean;
         worktreePath?: string;
+        skipCiGate?: boolean;
       }
     ): Promise<IpcResult<{
       success: boolean;
@@ -1936,6 +2000,8 @@ const api = {
       conflictingFiles?: string[];
       stashRecovered?: boolean;
       stashConflictFiles?: string[];
+      gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN';
+      gateDetails?: unknown;
     }>> =>
       ipcRenderer.invoke(IPC.MERGE_EXECUTE, repoPath, sourceBranch, targetBranch, options),
 
@@ -2135,6 +2201,7 @@ const api = {
       metrics: unknown;
       aborted?: boolean;
       abortReason?: string;
+      rebaseSucceededCleanly?: boolean;
     }>> =>
       ipcRenderer.invoke(IPC.CONFLICT_GENERATE_PREVIEWS, repoPath, targetBranch),
 

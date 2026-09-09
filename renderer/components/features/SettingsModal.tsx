@@ -567,7 +567,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 <div className="pt-1 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-gray-500">
-                      Kanvas for Kit v{appVersion || '...'}
+                      KIT for DevOps v{appVersion || '...'}
                     </span>
 
                     {/* Update actions */}

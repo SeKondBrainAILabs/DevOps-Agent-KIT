@@ -3,7 +3,7 @@
 ## Repository Details
 
 - **GitHub Repository**: https://github.com/SecondBrainAICo/CS_DevOpsAgent
-- **Organization**: SecondBrain AI
+- **Organization**: SeKondBrain AI
 
 ## Project Structure
 
@@ -94,12 +94,12 @@ The system uses these environment variables (set during setup):
 5. **Auto-Process**: Worker stages, commits, and pushes automatically
 6. **Daily Rollover**: Handled automatically at midnight
 
-## Integration with SecondBrain Projects
+## Integration with SeKondBrain Projects
 
 This cs-devops-agent system is designed to work seamlessly with:
-- SecondBrain MVPEmails
+- SeKondBrain MVPEmails
 - DistilledConceptExtractor
-- Other SecondBrain Code Studio projects
+- Other SeKondBrain Code Studio projects
 
 ## Support
 

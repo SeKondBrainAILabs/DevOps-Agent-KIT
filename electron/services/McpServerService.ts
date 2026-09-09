@@ -61,6 +61,16 @@ export interface McpServiceDeps {
     push: (sessionId: string, repoName?: string) => Promise<any>;
     getStatus: (sessionId: string) => Promise<any>;
     getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number) => Promise<any>;
+    // Current branch of a worktree path, TRI-STATE: branch name | 'HEAD' (detached)
+    // | null (couldn't determine). Used by the MCP worktree-divergence guards
+    // (injectable so it's mockable in tests). Distinct name from the IpcResult
+    // getCurrentBranch(repoPath) to avoid a method-name collision on GitService.
+    getCurrentBranchName?: (worktreePath: string) => Promise<string | null>;
+    // Day 1.5 + Day 2 additions — repo-path-keyed reads for the workspace
+    // browser / agent operations. Each returns IpcResult<T>.
+    getRepoStatus?: (repoPath: string) => Promise<any>;
+    listBranchesForRepo?: (repoPath: string) => Promise<any>;
+    listWorktrees?: (repoPath: string) => Promise<any>;
   };
   activityService?: {
     log: (sessionId: string, type: string, message: string, details?: Record<string, unknown>) => void;
@@ -73,6 +83,28 @@ export interface McpServiceDeps {
   };
   agentInstanceService?: {
     listInstances: () => { success: boolean; data?: any[] };
+    // R1 + C5 additions — count / mode queries per repo path.
+    getActiveSessionCountForRepo?: (repoPath: string) => { success: boolean; data?: number };
+    getActiveSessionsForRepo?: (repoPath: string) => any[];
+  };
+  // C5 Single-Session Mode per-repo settings + O5 telemetry toggle live here.
+  configService?: {
+    getRepoWorktreeMode: (repoPath: string) => 'in-place' | 'worktree';
+    setRepoWorktreeMode: (repoPath: string, mode: 'in-place' | 'worktree') => void;
+  };
+  // Epic A — Workspace discovery.
+  workspaceService?: {
+    list: () => any;
+    get: (id: string) => any;
+    add: (input: { path: string; name?: string; scanDepth?: number; ignoreGlobs?: string[] }) => any;
+    remove: (id: string) => any;
+    getActive: () => any;
+    scan: (id: string) => Promise<any>;
+  };
+  // Epic F — Project groups.
+  projectGroupService?: {
+    list: () => any;
+    add: (input: { name: string; repoPaths: string[]; color?: string }) => any;
   };
   databaseService?: {
     recordCommit: (sessionId: string, hash: string, message: string, filesChanged: number) => void;
@@ -86,6 +118,28 @@ export interface McpServiceDeps {
     generateFeatureContract: (worktreePath: string, feature: any) => Promise<any>;
   };
   emitCommitCompleted?: (sessionId: string, hash: string, message: string, filesChanged: number) => void;
+  /**
+   * Fire the on-demand rebase logic after an MCP-driven commit succeeds. Not
+   * required — omitting it just means MCP commits skip the post-commit
+   * remote sync (same behavior as pre-v2.6.92). Wired in services/index.ts.
+   */
+  postCommitRebase?: (sessionId: string, repoName?: string) => Promise<void>;
+  /** v2.6.95 — expose merge to agents. Same code path as the UI merge modal,
+   *  same S9N-6394 CI gate. force=true maps to skipCiGate=true and requires
+   *  the agent to have explicit user authorization (per the prompt rule). */
+  mergeService?: {
+    executeMerge: (
+      repoPath: string,
+      sourceBranch: string,
+      targetBranch: string,
+      options?: { worktreePath?: string; skipCiGate?: boolean }
+    ) => Promise<any>;
+  };
+  /** v2.6.95 — expose on-demand rebase to agents. Calls performRebaseForPath
+   *  which uses AI conflict resolution when there are conflicts. */
+  rebaseWatcherService?: {
+    performRebaseForPath: (sessionId: string, repoPath: string, baseBranch: string) => Promise<any>;
+  };
   debugLog?: DebugLogService | null;
 }
 
@@ -122,7 +176,12 @@ export class McpServerService extends BaseService {
   // Track last activity per transport for stale session cleanup
   private lastActivity = new Map<string, number>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+  // 2 hours. Was 30 min, which was too aggressive for long agent runs — the
+  // sweep purged active transports and clients with non-spec error handling
+  // (Codex specifically) couldn't recover without manual restart. The
+  // stateless fallback above is the safety net; this bump prevents triggering
+  // it during normal use.
+  private static readonly SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
   // MCP call log — in-memory cache backed by persistent database
   private mcpCallLog: McpCallLogEntry[] = [];
@@ -131,6 +190,11 @@ export class McpServerService extends BaseService {
   /** Inject DatabaseService reference for persistent MCP call logging */
   setMcpCallDb(db: { recordMcpCall: (entry: any) => void; getMcpCalls: (limit?: number, sessionId?: string) => any[] }): void {
     this._dbService = db;
+  }
+
+  /** Open transport count for diagnostics (HTTP + SSE sessions). */
+  debugSessionCount(): number {
+    return this.transports.size + this.sseTransports.size;
   }
 
   setDebugLog(debugLog: DebugLogService): void {
@@ -195,12 +259,44 @@ export class McpServerService extends BaseService {
     this.deps.contractGenerationService = svc;
   }
 
+  // v2.5 additions — workspace / config / project group so the MCP tool
+  // layer can expose kit_workspace_* / kit_get_repo_worktree_mode / etc.
+  setConfigServiceForMcp(svc: McpServiceDeps['configService']): void {
+    this.deps.configService = svc;
+  }
+
+  setWorkspaceServiceForMcp(svc: McpServiceDeps['workspaceService']): void {
+    this.deps.workspaceService = svc;
+  }
+
+  setProjectGroupServiceForMcp(svc: McpServiceDeps['projectGroupService']): void {
+    this.deps.projectGroupService = svc;
+  }
+
   setDebugLogDep(debugLog: DebugLogService): void {
     this.deps.debugLog = debugLog;
   }
 
   getDeps(): McpServiceDeps {
     return this.deps;
+  }
+
+  /** Wire the post-commit rebase hook. Called from services/index.ts once
+   *  WatcherService is constructed — the hook fires after every successful
+   *  MCP kit_commit so agent-driven commits get the same "on-demand" rebase
+   *  every .commit-msg-file-driven commit already got. */
+  setPostCommitRebase(fn: NonNullable<McpServiceDeps['postCommitRebase']>): void {
+    this.deps.postCommitRebase = fn;
+  }
+
+  /** v2.6.95 — expose MergeService to the kit_merge tool. */
+  setMergeService(svc: NonNullable<McpServiceDeps['mergeService']>): void {
+    this.deps.mergeService = svc;
+  }
+
+  /** v2.6.95 — expose RebaseWatcherService to the kit_rebase tool. */
+  setRebaseWatcherService(svc: NonNullable<McpServiceDeps['rebaseWatcherService']>): void {
+    this.deps.rebaseWatcherService = svc;
   }
 
   wireCommitEmitter(): void {
@@ -371,9 +467,22 @@ export class McpServerService extends BaseService {
       return;
     }
 
-    // Unknown or expired session — return a JSON-RPC error so the client can
-    // cleanly reinitialize rather than getting a deserialization error.
-    this.debugLog?.warn('McpServer', 'Expired/unknown session — client must reinitialize', { sessionId });
+    // Unknown or expired session. Some clients (notably Codex) cache the
+    // mcp-session-id across server restarts / idle-sweep purges and keep
+    // POSTing it instead of reinitializing on our 404. Fall back to the
+    // stateless path so the request still succeeds — the transport spins up
+    // a one-shot server + transport pair, processes the JSON-RPC body, and
+    // tears down. The client effectively gets the same answer it would have
+    // had with a fresh session, without needing to handle the error itself.
+    if (req.method === 'POST') {
+      this.debugLog?.warn('McpServer', 'Expired/unknown session — serving via stateless fallback', { sessionId });
+      await this.handleStatelessRpc(req, res);
+      return;
+    }
+    // Non-POST (e.g. GET / DELETE) with an unknown session — there's no
+    // stateless equivalent, so reply with the JSON-RPC error and let the
+    // client reinitialize on its next turn.
+    this.debugLog?.warn('McpServer', 'Expired/unknown session — non-POST cannot fallback', { sessionId, method: req.method });
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       jsonrpc: '2.0',

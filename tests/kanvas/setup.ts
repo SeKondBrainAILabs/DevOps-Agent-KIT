@@ -82,6 +82,19 @@ const mockApi = {
     removeWorktreeByPath: createMockFn({ success: true }),
     deleteBranch: createMockFn({ success: true }),
     performRebase: createMockFn({ success: true, data: { success: true, message: 'ok' } }),
+    getWorktreeSafetyInfo: createMockFn({
+      success: true,
+      data: {
+        worktreePath: '/test/worktree',
+        hasUncommittedChanges: false,
+        uncommittedFiles: [],
+        unmergedCommitCount: 0,
+        mergedIntoBranches: ['main'],
+      },
+    }),
+    analyzeStaleBranches: createMockFn({ success: true, data: [] }),
+    archiveBranch: createMockFn({ success: true, data: { archiveBranchName: 'archive/x' } }),
+    branches: createMockFn({ success: true, data: [] }),
   },
   instance: {
     create: createMockFn({ success: true, data: {} }),
@@ -157,6 +170,12 @@ const mockApi = {
     getWorktreeMode: createMockFn({ success: true, data: 'worktree' }),
     setWorktreeMode: createMockFn({ success: true }),
     getActiveSessionCount: createMockFn({ success: true, data: 0 }),
+    // WorkspaceBrowserView's per-repo status effect calls this for the card
+    // badge (see renderer/components/features/WorkspaceBrowserView.tsx). It
+    // MUST be present or the Promise.all in that effect throws, the catch
+    // swallows it, statusByPath never populates, and priority/risk + session
+    // rows silently break.
+    getRunningSessionCount: createMockFn({ success: true, data: 0 }),
   },
   cleanup: {
     analyze: createMockFn({

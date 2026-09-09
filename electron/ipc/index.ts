@@ -7,6 +7,53 @@ import { ipcMain, BrowserWindow, dialog, app } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import type { Services } from '../services';
 import { databaseService } from '../services/DatabaseService';
+import { isActiveInstance } from '../../shared/instance-status';
+
+// Coalesce AI stream deltas before crossing the IPC boundary. The Groq stream
+// yields one delta per token; sending each over webContents.send() individually
+// means a structured-clone serialize (String::WriteUtf8 + Buffer::New) per token
+// — a serialization storm under load. Buffering deltas and flushing on a short
+// timer (or when the buffer gets large) cuts send() calls by 10–50× with no
+// visible latency, and is transparent to the renderer's append-based onChunk.
+const AI_STREAM_FLUSH_MS = 24;     // ~40 fps — below human-perceptible for text
+const AI_STREAM_FLUSH_CHARS = 2048; // hard flush so a fast stream stays bounded
+
+/**
+ * Pump an async iterable of text deltas to the renderer over AI_STREAM_CHUNK,
+ * coalescing deltas, then emit AI_STREAM_END. Errors propagate to the caller.
+ */
+async function pumpAiStream(
+  win: BrowserWindow,
+  chunks: AsyncIterable<string>
+): Promise<void> {
+  let buffer = '';
+  let flushTimer: NodeJS.Timeout | null = null;
+
+  const send = (text: string) => {
+    if (!text) return;
+    if (win.isDestroyed()) return;
+    win.webContents.send(IPC.AI_STREAM_CHUNK, text);
+  };
+  const flush = () => {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (buffer) { send(buffer); buffer = ''; }
+  };
+
+  try {
+    for await (const chunk of chunks) {
+      buffer += chunk;
+      if (buffer.length >= AI_STREAM_FLUSH_CHARS) {
+        flush();
+      } else if (!flushTimer) {
+        flushTimer = setTimeout(flush, AI_STREAM_FLUSH_MS);
+      }
+    }
+    flush(); // drain whatever is left before signalling end
+    if (!win.isDestroyed()) win.webContents.send(IPC.AI_STREAM_END);
+  } finally {
+    if (flushTimer) clearTimeout(flushTimer);
+  }
+}
 
 /**
  * Register all IPC handlers
@@ -170,6 +217,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.agentInstance.getActiveSessionCountForRepo(repoPath);
   });
 
+  ipcMain.handle(IPC.REPO_GET_RUNNING_SESSION_COUNT, async (_, repoPath: string) => {
+    return services.agentInstance.getRunningSessionCountForRepo(repoPath);
+  });
+
   // Workspaces (Epic A / story A1)
   ipcMain.handle(IPC.WORKSPACE_LIST, async () => services.workspace.list());
   ipcMain.handle(IPC.WORKSPACE_GET, async (_, id: string) => services.workspace.get(id));
@@ -216,6 +267,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return { success: true, data: services.ai.getAvailableModels() };
   });
 
+  ipcMain.handle(IPC.AI_REFINE_SESSION_TASK, async (_, input: { rawTask: string; agentType: string; repoName?: string }) => {
+    return services.ai.refineSessionTask(input);
+  });
+
   ipcMain.handle(IPC.AI_IS_CONFIGURED, async () => {
     return { success: true, data: services.ai.hasApiKey() };
   });
@@ -227,15 +282,14 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.on(IPC.AI_STREAM_START, async (_, messages, modelOverride?: string) => {
     try {
-      for await (const chunk of services.ai.streamChat(messages, modelOverride as any)) {
-        mainWindow.webContents.send(IPC.AI_STREAM_CHUNK, chunk);
-      }
-      mainWindow.webContents.send(IPC.AI_STREAM_END);
+      await pumpAiStream(mainWindow, services.ai.streamChat(messages, modelOverride as any));
     } catch (error) {
-      mainWindow.webContents.send(
-        IPC.AI_STREAM_ERROR,
-        error instanceof Error ? error.message : 'Unknown error'
-      );
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(
+          IPC.AI_STREAM_ERROR,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
     }
   });
 
@@ -250,15 +304,14 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.on(IPC.AI_STREAM_WITH_MODE, async (_, options) => {
     try {
-      for await (const chunk of services.ai.streamWithMode(options)) {
-        mainWindow.webContents.send(IPC.AI_STREAM_CHUNK, chunk);
-      }
-      mainWindow.webContents.send(IPC.AI_STREAM_END);
+      await pumpAiStream(mainWindow, services.ai.streamWithMode(options));
     } catch (error) {
-      mainWindow.webContents.send(
-        IPC.AI_STREAM_ERROR,
-        error instanceof Error ? error.message : 'Unknown error'
-      );
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(
+          IPC.AI_STREAM_ERROR,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
     }
   });
 
@@ -383,6 +436,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.agentInstance.getInstance(instanceId);
   });
 
+  ipcMain.handle(IPC.INSTANCE_FIND_ACTIVE_SIBLING, async (_, sessionId: string) => {
+    return { success: true, data: services.agentInstance.findActiveSiblingInRepo(sessionId) };
+  });
+
   ipcMain.handle(IPC.INSTANCE_DELETE, async (_, instanceId: string) => {
     // Stop watcher before deleting
     await services.watcher.stop(instanceId).catch(() => {});
@@ -395,18 +452,27 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return await services.agentInstance.deleteSessionById(sessionId, repoPath);
   });
 
-  ipcMain.handle(IPC.INSTANCE_DELETE_SAFETY_CHECK, async (_, sessionId: string) => {
-    return services.agentInstance.getDeleteSafetyInfo(sessionId);
+  ipcMain.handle(IPC.INSTANCE_DELETE_SAFETY_CHECK, async (
+    _,
+    sessionId: string,
+    hints?: { repoPath?: string; branchName?: string }
+  ) => {
+    return services.agentInstance.getDeleteSafetyInfo(sessionId, hints);
   });
 
-  ipcMain.handle(IPC.INSTANCE_DELETE_WITH_CLEANUP, async (_, sessionId: string, options: {
-    deleteWorktree?: boolean;
-    deleteLocalBranch?: boolean;
-    deleteRemoteBranch?: boolean;
-  }) => {
+  ipcMain.handle(IPC.INSTANCE_DELETE_WITH_CLEANUP, async (
+    _,
+    sessionId: string,
+    options: {
+      deleteWorktree?: boolean;
+      deleteLocalBranch?: boolean;
+      deleteRemoteBranch?: boolean;
+    },
+    hints?: { repoPath?: string; branchName?: string; worktreePath?: string }
+  ) => {
     // Stop watcher before deleting
     await services.watcher.stop(sessionId).catch(() => {});
-    return await services.agentInstance.deleteInstanceWithCleanup(sessionId, options);
+    return await services.agentInstance.deleteInstanceWithCleanup(sessionId, options, hints);
   });
 
   ipcMain.handle(IPC.INSTANCE_RESTART, async (_, sessionId: string, sessionData?: {
@@ -435,12 +501,20 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return result;
   });
 
+  ipcMain.handle(IPC.INSTANCE_GET_LAST_CHANGE, async (_, sessionId: string) => {
+    return services.agentInstance.getSessionLastChange(sessionId);
+  });
+
   ipcMain.handle(IPC.INSTANCE_CLEAR_ALL, async () => {
     return services.agentInstance.clearAllInstances();
   });
 
   ipcMain.handle(IPC.INSTANCE_UPDATE_BASE_BRANCH, async (_, sessionId: string, newBaseBranch: string) => {
     return services.agentInstance.updateBaseBranch(sessionId, newBaseBranch);
+  });
+
+  ipcMain.handle(IPC.INSTANCE_REPAIR_STALE_REBASE, async (_, instanceId: string) => {
+    return services.agentInstance.repairStaleRebase(instanceId);
   });
 
   ipcMain.handle(IPC.RECENT_REPOS_LIST, async () => {
@@ -526,8 +600,28 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // ==========================================================================
   // GIT REBASE HANDLERS
   // ==========================================================================
+  ipcMain.handle(IPC.GIT_COMMIT_WORKTREE, async (_, worktreePath: string, message: string) => {
+    return services.git.commitWorktree(worktreePath, message);
+  });
+
+  ipcMain.handle(IPC.GIT_DETECT_TAG_PREFIXES, async (_, repoPath: string) => {
+    return services.git.detectVersionTagPrefixes(repoPath);
+  });
+
+  ipcMain.handle(IPC.GIT_NEXT_VERSION_TAG, async (_, repoPath: string, prefix: string) => {
+    return services.git.getNextVersionTag(repoPath, prefix);
+  });
+
+  ipcMain.handle(IPC.GIT_CREATE_PUSH_TAG, async (_, repoPath: string, tag: string, ref?: string) => {
+    return services.git.createAndPushTag(repoPath, tag, ref);
+  });
+
   ipcMain.handle(IPC.GIT_FETCH, async (_, repoPath: string, remote?: string) => {
     return services.git.fetchRemote(repoPath, remote);
+  });
+
+  ipcMain.handle(IPC.GIT_STASH_POP, async (_, repoPath: string) => {
+    return services.git.stashPop(repoPath);
   });
 
   ipcMain.handle(IPC.GIT_CHECK_REMOTE, async (_, repoPath: string, branch: string) => {
@@ -1227,6 +1321,7 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     deleteLocalBranch?: boolean;
     deleteRemoteBranch?: boolean;
     worktreePath?: string;
+    skipCiGate?: boolean;
   }) => {
     return services.merge.executeMerge(repoPath, sourceBranch, targetBranch, options);
   });
@@ -1502,17 +1597,58 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 }
 
 /**
- * Start file watchers for all existing sessions and auto-restart active ones
+ * Start file watchers for all existing sessions and auto-restart active ones.
+ *
+ * Safe-boot escape hatch: if a `.safe-boot` file exists in userData, skip the
+ * watcher startup and the auto-restart loop entirely. Sessions still load into
+ * the UI from electron-store; the user can manually start what they want. Use
+ * this when prior state has stale sessions whose initial-scan watcher events
+ * overwhelm the renderer (one session in a million-file repo emits 10k+ adds
+ * before the user can even see the dashboard).
+ *
+ * To activate:  touch ~/Library/Application\ Support/kit-for-devops/.safe-boot
+ * To restore:   rm    ~/Library/Application\ Support/kit-for-devops/.safe-boot
  */
 async function startWatchersForExistingSessions(services: Services): Promise<void> {
+  try {
+    const { existsSync } = await import('fs');
+    const { join } = await import('path');
+    const safeBootMarker = join(app.getPath('userData'), '.safe-boot');
+    if (existsSync(safeBootMarker)) {
+      console.log(`[IPC] Safe boot: ${safeBootMarker} present — skipping watcher startup and auto-restart`);
+      return;
+    }
+  } catch (err) {
+    console.warn('[IPC] Safe-boot check failed (continuing with normal startup):', err);
+  }
+
+  // First, try to repair any instance whose worktree dir went missing — if
+  // the source repo + branch still exist, `git worktree add --force` brings
+  // the worktree back. Then reap whatever still can't be reached so we don't
+  // start watchers / restart agents against a path that no longer exists.
+  await services.agentInstance.repairOrphanWorktrees();
+  services.agentInstance.reapOrphanInstances();
+
   const result = services.agentInstance.listInstances();
   if (result.success && result.data) {
     console.log(`[IPC] Starting watchers for ${result.data.length} existing sessions`);
     const activeSessions: string[] = [];
 
+    const { existsSync: pathExists } = await import('fs');
     for (const instance of result.data) {
+      // Skip instances already marked closed/completed/failed (e.g. by the
+      // orphan reap above). They stay visible in the UI but get no watcher.
+      if (instance.status === 'closed' || instance.status === 'completed' || instance.status === 'failed') continue;
+
       // Use worktree path if available, otherwise fallback to repo path
       const watchPath = instance.worktreePath || instance.config?.repoPath;
+      // Defensive: even after reaping, a multi-repo entry can leave a
+      // dangling primary path. Skip rather than spawning a watcher that
+      // ENOENTs on every git invocation.
+      if (watchPath && !pathExists(watchPath)) {
+        console.warn(`[IPC] Skipping watcher for ${instance.sessionId} — path missing: ${watchPath}`);
+        continue;
+      }
       if (watchPath) {
         // Start file watcher
         services.watcher.startWithPath(instance.sessionId, watchPath).catch((err) => {
@@ -1522,10 +1658,14 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
         // Start rebase watcher for all non-never frequencies
         const rebaseFrequency = instance.config?.rebaseFrequency || 'never';
         if (rebaseFrequency !== 'never' && instance.config?.baseBranch) {
+          const rootRepoPath = instance.config?.repoPath;
+          const wtPath = instance.worktreePath && instance.worktreePath !== rootRepoPath
+            ? instance.worktreePath : undefined;
           services.rebaseWatcher.startWatching({
             sessionId: instance.sessionId,
-            repoPath: watchPath,
-            baseBranch: instance.config.baseBranch,
+            repoPath: rootRepoPath || watchPath,  // always root — for fetch/remote status
+            worktreePath: wtPath,                 // worktree — for actual rebase execution
+            baseBranch: (instance.config.baseBranch || 'main').replace(/^origin\//, ''),
             currentBranch: instance.config.branchName,
             rebaseFrequency: rebaseFrequency as 'on-demand' | 'daily' | 'weekly',
             pollIntervalMs: 60000,
@@ -1534,17 +1674,23 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
           });
         }
 
-        // Track sessions that were active — will auto-restart after watchers settle
-        if (instance.status === 'active') {
+        // Track every still-alive session — they all auto-restart after watchers
+        // settle so no agent is left dormant after an app restart. (Only terminal
+        // states — completed / closed / failed — are skipped.)
+        if (isActiveInstance(instance)) {
           activeSessions.push(instance.sessionId);
         }
       }
     }
 
-    // Auto-restart sessions that were active when the app was last closed
+    // Auto-restart every alive session when the app starts so all agents resume.
     if (activeSessions.length > 0) {
-      console.log(`[IPC] Auto-restarting ${activeSessions.length} previously active session(s)`);
+      console.log(`[IPC] Auto-restarting ${activeSessions.length} session(s) on app launch`);
       setTimeout(async () => {
+        // STAGGER the restarts. Each restartInstance does git + fs + DB work and
+        // re-inits a worktree; firing them all at once on launch spikes CPU and can
+        // make the app unresponsive. Space them out so the load spreads over time.
+        const RESTART_GAP_MS = 2500;
         for (const sessionId of activeSessions) {
           try {
             const restart = await services.agentInstance.restartInstance(sessionId, undefined, true);
@@ -1559,6 +1705,8 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
           } catch (err) {
             console.warn(`[IPC] Auto-restart failed for session ${sessionId}:`, err);
           }
+          // Breathe between sessions so the event loop stays responsive.
+          await new Promise((r) => setTimeout(r, RESTART_GAP_MS));
         }
       }, 2000); // Wait 2s for watchers to initialise before restarting
     }

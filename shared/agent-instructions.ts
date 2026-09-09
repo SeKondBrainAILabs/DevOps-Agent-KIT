@@ -71,17 +71,40 @@ This session has a KIT MCP server configured at: \`${vars.mcpUrl}\`
 MCP config is provided via \`.mcp.json\` and \`.claude/settings.json\` in this worktree.
 If using global config: check \`~/.claude/settings.json\` (install via KIT Settings > MCP tab).
 You should have these MCP tools available:
-\`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`
+\`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
 
 **⚠️ These are MCP protocol tools, NOT bash commands. Do NOT try to run them in a terminal.**
 **If you do NOT see these tools in your available tools list, the MCP connection failed — use the FALLBACK instructions in each section below.**
 ` : ''}
-## MANDATORY FIRST RESPONSE
-Before doing ANY other work, you MUST respond with:
+## MANDATORY FIRST RESPONSE${vars.mcpUrl ? `
+🛑 **Step 0 — REGISTER YOUR CONNECTION (do this FIRST, before pwd, before anything else):**
+Call the MCP tool \`kit_log_activity\` with:
+\`\`\`
+session_id="${vars.sessionId}"
+type="session"
+message="Session connected — starting setup"
+\`\`\`
+This is REQUIRED. The KIT dashboard shows "Waiting for agent to connect…" until this call lands. Seeing the tool in your list is NOT enough — you must invoke it. If the call fails (tool not available / 404), the MCP connection is broken — use the fallbacks below and tell the user.
+` : ''}
+Then respond with:
 ✓ Current directory: [output of pwd]
 ✓ Houserules read: [yes/no - if yes, summarize key rules]
 ✓ File locks checked: [yes/no]${vars.mcpUrl ? `
-✓ MCP tools available: [yes/no — confirm you see: kit_commit, kit_commit_all, kit_get_session_info, kit_log_activity, kit_lock_file, kit_unlock_file, kit_get_commit_history, kit_request_review]` : ''}
+✓ MCP tools available: [yes/no — confirm you see: kit_commit, kit_commit_all, kit_get_session_info, kit_log_activity, kit_lock_file, kit_unlock_file, kit_get_commit_history, kit_request_review, kit_merge, kit_rebase]
+✓ kit_log_activity registration call succeeded: [yes/no — required from Step 0 above]` : ''}
+
+## 🛑 MERGE POLICY — MAIN IS PROTECTED (S9N-6394)
+**You may NEVER merge into \`main\` / \`master\` (direct push OR PR) unless CI is green.**
+
+Before any merge into main:
+1. Run \`gh pr checks <PR-number>\` (or \`gh run list --branch <source-branch> --limit 1\`)
+2. Every required check must be \`SUCCESS\`. **PENDING or FAILURE = stop.**
+3. Never merge a \`WIP:\` / \`[Kanvas]\` / \`[Kanvas Restart]\` auto-checkpoint commit into main. Squash/interactive-rebase to clean tips first.
+4. After merge, verify: \`gh run watch --exit-status\` on the triggered main run. If it goes red, **revert immediately** (\`git revert <merge-sha> && git push\`).
+
+The KIT MergeService also enforces this at the code level — a red or pending CI blocks \`merge:execute\` and returns an error. But the prompt rule is the primary contract; the code gate is belt-and-suspenders. **Never bypass with \`--force\` / \`--no-verify\` unless the user explicitly authorizes.**
+
+If the target repo has a pre-push hook (\`typecheck\`, \`gate\`, tests), let it run — do not skip it.
 
 ## 1. SETUP (run first)
 \`\`\`bash
@@ -173,6 +196,12 @@ EOF
 \`\`\`
 
 ## 6. COMMITS${vars.mcpUrl ? `
+### ⚠️ COMMIT FREQUENTLY — this is required, not optional
+- **Commit after every meaningful change** (a function written, a file completed, a bug fixed, a test passing). Don't batch a whole task into one commit at the end.
+- A good cadence is a commit every few minutes of work, or whenever you finish a logical unit. Small, frequent commits make your work recoverable and reviewable.
+- KIT runs a periodic auto-save (~every 5 min) as a safety net, but those are generic "WIP" commits — YOUR commits with real messages are what matter. Don't rely on the safety net.
+- Before pausing, switching files, or ending the session: commit.
+
 🔧 **PREFERRED: Use MCP tool \`kit_commit\`** to commit changes.
 - These are **MCP protocol tools** available via your MCP server connection.
 - ⛔ They are NOT bash commands — do NOT run \`kit_commit\` or \`kit_commit_all\` in a terminal.
@@ -185,13 +214,17 @@ EOF
 ### Available MCP Tools
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| \`kit_commit\` | session_id, message, push (optional) | Stage + commit + record + push |
+| \`kit_commit\` | session_id, message, **cwd**, push (optional) | Stage + commit + record + push |
+| \`kit_commit_all\` | session_id, message, **cwd**, push (optional) | Commit across all repos (multi-repo) |
 | \`kit_get_session_info\` | session_id | Session config and metadata |
 | \`kit_log_activity\` | session_id, type, message | Log to KIT dashboard timeline |
-| \`kit_lock_file\` | session_id, files | Declare file edit intent |
+| \`kit_lock_file\` | session_id, files, **cwd** | Declare file edit intent |
 | \`kit_unlock_file\` | session_id, files | Release file locks |
 | \`kit_get_commit_history\` | session_id | Recent commits for session branch |
-| \`kit_request_review\` | session_id, summary | Signal work ready for review |
+| \`kit_request_review\` | session_id, summary, **cwd** | Signal work ready for review |
+
+⚠️ **\`cwd\` is REQUIRED on \`kit_commit\`, \`kit_commit_all\`, \`kit_lock_file\`, and \`kit_request_review\`.**
+Pass the output of \`pwd\` (your current shell directory). KIT verifies it matches this session's worktree (\`${vars.repoPath}\`) AND that the worktree is on branch \`${vars.branchName || 'YOUR_SESSION_BRANCH'}\`. If you have \`cd\`'d elsewhere or run \`git checkout\`/detached HEAD, the call is **rejected** with a correction message — your work would otherwise be committed to the wrong place or lost. Always \`cd\` back into the worktree and stay on your session branch before committing.
 
 ### ⚠️ FALLBACK: If MCP tools are NOT in your available tools list
 If the \`kit_commit\` MCP tool is not listed in your tools (MCP connection failed):
@@ -235,12 +268,13 @@ ${vars.multiRepoEntries.map(r => `| ${r.repoName} | ${r.role} | ${r.branchName} 
 ### Multi-Repo MCP Tools (these are MCP protocol tools, NOT bash commands)
 | Tool | Extra Parameters | Description |
 |------|-----------------|-------------|
-| \`kit_commit\` | repo (optional) | Commit in a specific repo |
-| \`kit_commit_all\` | — | Commit across ALL repos at once |
-| \`kit_lock_file\` | repo (optional) | Lock files in a specific repo |
+| \`kit_commit\` | **cwd**, repo (optional) | Commit in a specific repo |
+| \`kit_commit_all\` | **cwd** | Commit across ALL repos at once |
+| \`kit_lock_file\` | **cwd**, repo (optional) | Lock files in a specific repo |
 | \`kit_get_commit_history\` | repo (optional) | History for a specific repo |
 
 When no \`repo\` parameter is specified, operations target the **primary** repo.
+⚠️ \`cwd\` (output of \`pwd\`) is REQUIRED on \`kit_commit\`/\`kit_commit_all\`/\`kit_lock_file\`. KIT rejects the call if you are not in the correct worktree on the correct branch.
 
 ### ⚠️ Branch naming — read carefully
 - **Primary repo**: use the branch name shown in the table above — do NOT invent or rename it.
@@ -274,6 +308,10 @@ YOU MUST WORK ONLY IN THIS DIRECTORY - NOT THE MAIN REPO
 
 BRANCH: ${vars.branchName}
 TASK: ${task}
+
+# 🛑 DO NOT START IMPLEMENTATION YET
+Complete the SETUP steps below, then STOP and wait for the user to explicitly say to begin.
+Do NOT infer that pasting this prompt is permission to start working.
 ${(vars.rpcUrl || vars.mcpUrl) ? `
 ## 🔌 MCP SERVER CONNECTION
 This session has a KIT MCP server.
@@ -283,10 +321,25 @@ This session has a KIT MCP server.
 \`\`\`json
 { "mcpServers": { "kit": { "type": "http", "url": "${vars.rpcUrl || vars.mcpUrl}" } } }
 \`\`\`
-Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`
+Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
 
 **⚠️ These are MCP protocol tools — NOT bash commands. Do not run them in a terminal.**
+
+🛑 **REGISTER FIRST**: Before any setup steps, call the MCP tool \`kit_log_activity\` with \`session_id="${vars.sessionId}"\`, \`type="session"\`, \`message="Session connected — starting setup"\`. The KIT dashboard stays on "Waiting for agent to connect…" until this lands. Seeing the tool listed is not enough — you must invoke it.
 ` : ''}
+## 🛑 MERGE POLICY — MAIN IS PROTECTED (S9N-6394)
+**You may NEVER merge into \`main\` / \`master\` (direct push OR PR) unless CI is green.**
+
+Before any merge into main:
+1. Run \`gh pr checks <PR-number>\` (or \`gh run list --branch <source-branch> --limit 1\`)
+2. Every required check must be \`SUCCESS\`. **PENDING or FAILURE = stop.**
+3. Never merge a \`WIP:\` / \`[Kanvas]\` / \`[Kanvas Restart]\` auto-checkpoint commit into main. Squash/interactive-rebase to clean tips first.
+4. After merge, verify: \`gh run watch --exit-status\` on the triggered main run. If it goes red, **revert immediately** (\`git revert <merge-sha> && git push\`).
+
+The KIT MergeService also enforces this at the code level — a red or pending CI blocks \`merge:execute\` and returns an error. But the prompt rule is the primary contract; the code gate is belt-and-suspenders. **Never bypass with \`--force\` / \`--no-verify\` unless the user explicitly authorizes.**
+
+If the target repo has a pre-push hook (\`typecheck\`, \`gate\`, tests), let it run — do not skip it.
+
 ## 1. SETUP (run first)
 \`\`\`bash
 cd "${vars.repoPath}"
@@ -328,6 +381,8 @@ EOF
 ## 4. COMMITS${vars.mcpUrl ? `
 🔧 **PREFERRED: Use MCP tool \`kit_commit\`** (NOT a bash command — MCP protocol only)
 **session_id for all MCP calls: \`${vars.sessionId}\`**
+⚠️ **COMMIT FREQUENTLY** — commit after every meaningful change (a logical unit, a passing test, a fixed bug), not once at the end. Aim for a commit every few minutes of work. KIT auto-saves WIP every ~5 min as a safety net, but your real, message-bearing commits are what count — commit before pausing or ending the session.
+⚠️ **\`kit_commit\`, \`kit_commit_all\`, \`kit_lock_file\`, \`kit_request_review\` REQUIRE a \`cwd\` parameter** — pass the output of \`pwd\`. KIT verifies it equals this session's worktree (\`${vars.repoPath}\`) on branch \`${vars.branchName || 'YOUR_SESSION_BRANCH'}\` and REJECTS the call otherwise. Never commit from a different directory or after \`git checkout\` to another branch — \`cd\` back first.
 
 ### ⚠️ FALLBACK: If MCP tools are not available` : ''}
 \`\`\`bash
@@ -349,7 +404,7 @@ ${vars.multiRepoEntries && vars.multiRepoEntries.length > 1 ? `
 ${vars.multiRepoEntries.map(r => `| ${r.repoName} | ${r.role} | ${r.branchName} | ${r.worktreePath} |`).join('\n')}
 ` : ''}
 ---
-Run with: \`codex --approval-mode full-auto\``;
+⛔ STOP: Run setup commands above, read houserules.md, then await explicit user instructions before starting any implementation work.`;
 }
 
 function getClaudeInstructions(vars: InstructionVars): string {
@@ -439,13 +494,16 @@ Your activity will appear in KIT once Claude starts working.
 }
 
 function getCursorInstructions(vars: InstructionVars): string {
-  const mcpSection = vars.mcpUrl ? `
-### KIT MCP Setup
-Cursor supports MCP via \`.mcp.json\` in the project root (auto-created by KIT) or via Cursor Settings → MCP.
+  const shortSessionId = vars.sessionId.replace('sess_', '').slice(0, 8);
+  const task = vars.taskDescription || vars.branchName || 'development';
 
-If not auto-detected, add to **Cursor Settings → MCP → Add Server**:
+  const mcpSetupSection = vars.mcpUrl ? `
+### KIT MCP Setup
+Cursor auto-detects \`.mcp.json\` in the project root (KIT creates this automatically).
+
+If not auto-detected, add via **Cursor Settings → MCP → Add Server**:
 - Name: \`kit\`
-- Type: \`HTTP\`
+- Type: \`Streamable HTTP\`
 - URL: \`${vars.mcpUrl}\`
 
 Or add \`.mcp.json\` to the project root:
@@ -453,42 +511,127 @@ Or add \`.mcp.json\` to the project root:
 { "mcpServers": { "kit": { "type": "streamable-http", "url": "${vars.mcpUrl}" } } }
 \`\`\`
 
-Available MCP tools: \`kit_commit\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`
+Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
 ` : '';
+
+  const agentPrompt = `# SESSION ${shortSessionId}
+WORKDIR: ${vars.repoPath}
+BRANCH: ${vars.branchName}
+TASK: ${task}
+
+# 🛑 DO NOT START IMPLEMENTATION YET
+Complete setup steps below, then STOP and wait for the user to explicitly say to begin.
+${vars.mcpUrl ? `
+## 🔌 MCP SERVER CONNECTION
+KIT MCP server: \`${vars.mcpUrl}\`
+Config via \`.mcp.json\` in project root (auto-created by KIT) or Cursor Settings → MCP.
+Available tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
+**These are MCP protocol tools — NOT bash commands.**
+` : ''}
+## 1. SETUP (run in Cursor terminal)
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+cat houserules.md 2>/dev/null || echo "No houserules.md"
+cat FOLDER_STRUCTURE.md 2>/dev/null || echo "No FOLDER_STRUCTURE.md"
+ls House_Rules_Contracts/ 2>/dev/null && echo "Found contract docs"
+\`\`\`
+
+## 2. CONTEXT FILE
+\`\`\`bash
+cat > .cursor-session-${shortSessionId}.md << 'EOF'
+# Cursor Session ${shortSessionId}
+Dir: ${vars.repoPath}
+Branch: ${vars.branchName}
+Task: ${task}
+
+## Progress
+- [ ] Task started
+- [ ] Files identified
+- [ ] Implementation in progress
+- [ ] Testing complete
+- [ ] Ready for commit
+EOF
+\`\`\`
+
+## 3. FILE LOCKS (before editing any file)${vars.mcpUrl ? `
+🔧 PREFERRED: Use MCP tool \`kit_lock_file\` with session_id="${vars.sessionId}", files=["file.ts"]
+Release with \`kit_unlock_file\` when done.
+
+FALLBACK:` : ''}
+\`\`\`bash
+ls .file-coordination/active-edits/
+cat > .file-coordination/active-edits/cursor-${shortSessionId}.json << 'EOF'
+{"agent":"cursor","session":"${shortSessionId}","files":["<file1.ts>"],"operation":"edit","reason":"${task}"}
+EOF
+\`\`\`
+
+## 4. COMMITS${vars.mcpUrl ? `
+🔧 PREFERRED: Use MCP tool \`kit_commit\` (NOT a bash command — MCP protocol only)
+**session_id for all MCP calls: \`${vars.sessionId}\`**
+
+FALLBACK:` : ''}
+Use Cursor's Source Control panel or:
+\`\`\`bash
+git add -A && git commit -m "your message"
+\`\`\`
+
+⛔ CRITICAL GIT PUSH RULES:
+- ONLY push to your session branch: \`git push origin HEAD:${vars.branchName || 'YOUR_SESSION_BRANCH'}\`
+- NEVER push to \`${vars.baseBranch || 'main'}\`, \`main\`, \`master\`, or any base/production branch
+- Merging to base branch is done by the human via Kanvas — NOT by the agent
+
+⛔ STOP: Run setup commands, read houserules.md, then await explicit user instructions before starting any implementation work.`;
 
   return `## Setup Cursor for ${vars.repoName}
 
 ### Quick Start
 
-1. **Open Cursor IDE** and open folder: \`${vars.repoPath}\`
+1. **Open Cursor** and open the folder:
+\`\`\`bash
+cursor "${vars.repoPath}"
+\`\`\`
 
-2. **Checkout branch**:
+2. **Enable Agent mode**: Cmd+I → open Composer → toggle "Agent" in the top-right
+
+3. **Checkout branch** (in Cursor's integrated terminal):
 \`\`\`bash
 cd "${vars.repoPath}"
 git checkout ${vars.branchName}
 \`\`\`
 
-3. **Read house rules before making changes**:
+4. **Read house rules**:
 \`\`\`bash
 cat houserules.md 2>/dev/null
-cat FOLDER_STRUCTURE.md 2>/dev/null
 \`\`\`
-${mcpSection}
-### Task
-${vars.taskDescription}
+${mcpSetupSection}
+---
+
+### Prompt to paste into Cursor Composer (Agent mode)
+
+Copy and paste the ENTIRE block below into the Cursor Composer input:
+
+\`\`\`
+${agentPrompt}
+\`\`\`
 
 ---
 
-Use Cursor's agent mode (Cmd+I) to work on the task. Commits appear in KIT automatically.
+**After Cursor confirms setup** (directory verified, houserules read, context file created), explicitly tell it to start work.
+
+Activity will appear in the KIT dashboard once the MCP server is connected.
 `;
 }
 
 function getCopilotInstructions(vars: InstructionVars): string {
-  const mcpSection = vars.mcpUrl ? `
-### KIT MCP Setup
-VS Code with Copilot supports MCP via \`.mcp.json\` in the project root (auto-created by KIT).
+  const shortSessionId = vars.sessionId.replace('sess_', '').slice(0, 8);
+  const task = vars.taskDescription || vars.branchName || 'development';
 
-If not auto-detected, add to \`~/.vscode/settings.json\` or workspace settings:
+  const mcpSetupSection = vars.mcpUrl ? `
+### KIT MCP Setup
+VS Code Copilot auto-detects \`.mcp.json\` in the project root (KIT creates this automatically).
+
+If not auto-detected, add to VS Code settings (\`Cmd+,\` → search "mcp"):
 \`\`\`json
 {
   "mcp.servers": {
@@ -497,10 +640,77 @@ If not auto-detected, add to \`~/.vscode/settings.json\` or workspace settings:
 }
 \`\`\`
 
-Or use the \`.mcp.json\` in the project root — VS Code Copilot discovers this automatically.
-
-Available MCP tools: \`kit_commit\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`
+Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
 ` : '';
+
+  const agentPrompt = `# SESSION ${shortSessionId}
+WORKDIR: ${vars.repoPath}
+BRANCH: ${vars.branchName}
+TASK: ${task}
+
+# 🛑 DO NOT START IMPLEMENTATION YET
+Complete setup steps below, then STOP and wait for the user to explicitly say to begin.
+${vars.mcpUrl ? `
+## 🔌 MCP SERVER CONNECTION
+KIT MCP server: \`${vars.mcpUrl}\`
+Config via \`.mcp.json\` in project root (auto-detected by VS Code) or VS Code settings → mcp.servers.
+Available tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
+**These are MCP protocol tools — NOT bash commands.**
+` : ''}
+## 1. SETUP (run in VS Code terminal)
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+cat houserules.md 2>/dev/null || echo "No houserules.md"
+cat FOLDER_STRUCTURE.md 2>/dev/null || echo "No FOLDER_STRUCTURE.md"
+ls House_Rules_Contracts/ 2>/dev/null && echo "Found contract docs"
+\`\`\`
+
+## 2. CONTEXT FILE
+\`\`\`bash
+cat > .copilot-session-${shortSessionId}.md << 'EOF'
+# Copilot Session ${shortSessionId}
+Dir: ${vars.repoPath}
+Branch: ${vars.branchName}
+Task: ${task}
+
+## Progress
+- [ ] Task started
+- [ ] Files identified
+- [ ] Implementation in progress
+- [ ] Testing complete
+- [ ] Ready for commit
+EOF
+\`\`\`
+
+## 3. FILE LOCKS (before editing any file)${vars.mcpUrl ? `
+🔧 PREFERRED: Use MCP tool \`kit_lock_file\` with session_id="${vars.sessionId}", files=["file.ts"]
+Release with \`kit_unlock_file\` when done.
+
+FALLBACK:` : ''}
+\`\`\`bash
+ls .file-coordination/active-edits/
+cat > .file-coordination/active-edits/copilot-${shortSessionId}.json << 'EOF'
+{"agent":"copilot","session":"${shortSessionId}","files":["<file1.ts>"],"operation":"edit","reason":"${task}"}
+EOF
+\`\`\`
+
+## 4. COMMITS${vars.mcpUrl ? `
+🔧 PREFERRED: Use MCP tool \`kit_commit\` (NOT a bash command — MCP protocol only)
+**session_id for all MCP calls: \`${vars.sessionId}\`**
+
+FALLBACK:` : ''}
+Use VS Code Source Control panel or:
+\`\`\`bash
+git add -A && git commit -m "your message"
+\`\`\`
+
+⛔ CRITICAL GIT PUSH RULES:
+- ONLY push to your session branch: \`git push origin HEAD:${vars.branchName || 'YOUR_SESSION_BRANCH'}\`
+- NEVER push to \`${vars.baseBranch || 'main'}\`, \`main\`, \`master\`, or any base/production branch
+- Merging to base branch is done by the human via Kanvas — NOT by the agent
+
+⛔ STOP: Run setup commands, read houserules.md, then await explicit user instructions before starting any implementation work.`;
 
   return `## Setup GitHub Copilot for ${vars.repoName}
 
@@ -511,40 +721,123 @@ Available MCP tools: \`kit_commit\`, \`kit_get_session_info\`, \`kit_log_activit
 code "${vars.repoPath}"
 \`\`\`
 
-2. **Checkout branch**:
+2. **Enable Agent mode**: Cmd+Shift+I → open Copilot Chat → set mode to "Agent" in the dropdown
+
+3. **Checkout branch** (in VS Code terminal):
 \`\`\`bash
 cd "${vars.repoPath}"
 git checkout ${vars.branchName}
 \`\`\`
 
-3. **Read house rules before making changes**:
+4. **Read house rules**:
 \`\`\`bash
 cat houserules.md 2>/dev/null
 \`\`\`
-${mcpSection}
-### Task
-${vars.taskDescription}
+${mcpSetupSection}
+---
+
+### Prompt to paste into Copilot Chat (Agent mode)
+
+Copy and paste the ENTIRE block below into the Copilot Chat "Agent" input:
+
+\`\`\`
+${agentPrompt}
+\`\`\`
 
 ---
 
-Use Copilot Chat (Cmd+Shift+I) or inline suggestions. Commits appear in KIT automatically.
+**After Copilot confirms setup** (directory verified, houserules read, context file created), explicitly tell it to start work.
+
+Activity will appear in the KIT dashboard once the MCP server is connected.
 `;
 }
 
 function getClineInstructions(vars: InstructionVars): string {
-  const mcpSection = vars.mcpUrl ? `
+  const shortSessionId = vars.sessionId.replace('sess_', '').slice(0, 8);
+  const task = vars.taskDescription || vars.branchName || 'development';
+
+  const mcpSetupSection = vars.mcpUrl ? `
 ### KIT MCP Setup
-Cline supports MCP natively. Add the KIT server in **Cline Settings → MCP Servers → Add**:
+Cline supports MCP natively. KIT auto-creates \`.mcp.json\` in the project root (Cline discovers it automatically).
+
+If not auto-detected, add via **Cline Settings → MCP Servers → Add**:
 - Name: \`kit\`
 - Type: \`Streamable HTTP\`
 - URL: \`${vars.mcpUrl}\`
 
-Or KIT auto-creates \`.mcp.json\` in the project root which Cline discovers automatically.
-
-Available MCP tools: \`kit_commit\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`
+Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
 
 **session_id for all MCP calls: \`${vars.sessionId}\`**
 ` : '';
+
+  const agentPrompt = `# SESSION ${shortSessionId}
+WORKDIR: ${vars.repoPath}
+BRANCH: ${vars.branchName}
+TASK: ${task}
+
+# 🛑 DO NOT START IMPLEMENTATION YET
+Complete setup steps below, then STOP and wait for the user to explicitly say to begin.
+${vars.mcpUrl ? `
+## 🔌 MCP SERVER CONNECTION
+KIT MCP server: \`${vars.mcpUrl}\`
+Config via \`.mcp.json\` in project root (auto-detected by Cline) or Cline Settings → MCP Servers.
+Available tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
+**These are MCP protocol tools — NOT bash commands.**
+` : ''}
+## 1. SETUP (run in terminal)
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+cat houserules.md 2>/dev/null || echo "No houserules.md"
+cat FOLDER_STRUCTURE.md 2>/dev/null || echo "No FOLDER_STRUCTURE.md"
+ls House_Rules_Contracts/ 2>/dev/null && echo "Found contract docs"
+\`\`\`
+
+## 2. CONTEXT FILE
+\`\`\`bash
+cat > .cline-session-${shortSessionId}.md << 'EOF'
+# Cline Session ${shortSessionId}
+Dir: ${vars.repoPath}
+Branch: ${vars.branchName}
+Task: ${task}
+
+## Progress
+- [ ] Task started
+- [ ] Files identified
+- [ ] Implementation in progress
+- [ ] Testing complete
+- [ ] Ready for commit
+EOF
+\`\`\`
+
+## 3. FILE LOCKS (before editing any file)${vars.mcpUrl ? `
+🔧 PREFERRED: Use MCP tool \`kit_lock_file\` with session_id="${vars.sessionId}", files=["file.ts"]
+Release with \`kit_unlock_file\` when done.
+
+FALLBACK:` : ''}
+\`\`\`bash
+ls .file-coordination/active-edits/
+cat > .file-coordination/active-edits/cline-${shortSessionId}.json << 'EOF'
+{"agent":"cline","session":"${shortSessionId}","files":["<file1.ts>"],"operation":"edit","reason":"${task}"}
+EOF
+\`\`\`
+
+## 4. COMMITS${vars.mcpUrl ? `
+🔧 PREFERRED: Use MCP tool \`kit_commit\` (NOT a bash command — MCP protocol only)
+**session_id for all MCP calls: \`${vars.sessionId}\`**
+Or use the \`kit_commit\` MCP tool directly from Cline's MCP panel.
+
+FALLBACK:` : ''}
+\`\`\`bash
+git add -A && git commit -m "your message"
+\`\`\`
+
+⛔ CRITICAL GIT PUSH RULES:
+- ONLY push to your session branch: \`git push origin HEAD:${vars.branchName || 'YOUR_SESSION_BRANCH'}\`
+- NEVER push to \`${vars.baseBranch || 'main'}\`, \`main\`, \`master\`, or any base/production branch
+- Merging to base branch is done by the human via Kanvas — NOT by the agent
+
+⛔ STOP: Run setup commands, read houserules.md, then await explicit user instructions before starting any implementation work.`;
 
   return `## Setup Cline for ${vars.repoName}
 
@@ -553,102 +846,250 @@ Available MCP tools: \`kit_commit\`, \`kit_get_session_info\`, \`kit_log_activit
 1. **Open VS Code**:
 \`\`\`bash
 code "${vars.repoPath}"
-cd "${vars.repoPath}" && git checkout ${vars.branchName}
 \`\`\`
 
-2. **Open Cline panel** (Cmd+Shift+P → "Cline: Open")
-${mcpSection}
-### Task
-Paste into Cline:
+2. **Open Cline**: Click the robot icon in the sidebar, or Cmd+Shift+P → "Cline: Open in New Tab"
+
+3. **Checkout branch** (in VS Code terminal):
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
 \`\`\`
-${vars.taskDescription}
 
-Working directory: ${vars.repoPath}
-Branch: ${vars.branchName}
+4. **Read house rules**:
+\`\`\`bash
+cat houserules.md 2>/dev/null
+\`\`\`
+${mcpSetupSection}
+---
 
-Read houserules.md and FOLDER_STRUCTURE.md before making changes.
+### Prompt to paste as the first message in Cline's task input
+
+Copy and paste the ENTIRE block below into Cline's task input:
+
+\`\`\`
+${agentPrompt}
 \`\`\`
 
 ---
 
-Cline will work autonomously. Activity appears in KIT once MCP is connected.
+**After Cline confirms setup** (directory verified, houserules read, context file created), explicitly tell it to start work.
+
+Activity will appear in the KIT dashboard once the MCP server is connected.
 `;
 }
 
 function getAiderInstructions(vars: InstructionVars): string {
-  const mcpSection = vars.mcpUrl ? `
-### KIT MCP Setup
-Aider does not natively support MCP. Use the \`.mcp.json\` in the project root for other agents.
-KIT tracks Aider activity via git commits automatically — no MCP needed.
-` : '';
+  const shortSessionId = vars.sessionId.replace('sess_', '').slice(0, 8);
+  const task = vars.taskDescription || vars.branchName || 'development';
+
+  const agentPrompt = `# SESSION ${shortSessionId}
+WORKDIR: ${vars.repoPath}
+BRANCH: ${vars.branchName}
+TASK: ${task}
+
+# 🛑 DO NOT START IMPLEMENTATION YET
+Complete setup steps below, then STOP and wait for the user to explicitly say to begin.
+
+Note: Aider does not natively support MCP. KIT tracks your activity via git commits automatically.
+
+## 1. SETUP (confirm after pasting this)
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+cat houserules.md 2>/dev/null || echo "No houserules.md"
+cat FOLDER_STRUCTURE.md 2>/dev/null || echo "No FOLDER_STRUCTURE.md"
+ls House_Rules_Contracts/ 2>/dev/null && echo "Found contract docs"
+\`\`\`
+
+## 2. CONTEXT FILE
+\`\`\`bash
+cat > .aider-session-${shortSessionId}.md << 'EOF'
+# Aider Session ${shortSessionId}
+Dir: ${vars.repoPath}
+Branch: ${vars.branchName}
+Task: ${task}
+
+## Progress
+- [ ] Task started
+- [ ] Files identified
+- [ ] Implementation in progress
+- [ ] Testing complete
+- [ ] Ready for commit
+EOF
+\`\`\`
+
+## 3. FILE LOCKS (before editing any file)
+\`\`\`bash
+ls .file-coordination/active-edits/
+cat > .file-coordination/active-edits/aider-${shortSessionId}.json << 'EOF'
+{"agent":"aider","session":"${shortSessionId}","files":["<file1.ts>"],"operation":"edit","reason":"${task}"}
+EOF
+\`\`\`
+
+## 4. COMMITS
+Use the \`/commit\` command or:
+\`\`\`bash
+git add -A && git commit -m "your message"
+\`\`\`
+
+⛔ CRITICAL GIT PUSH RULES:
+- ONLY push to your session branch: \`git push origin HEAD:${vars.branchName || 'YOUR_SESSION_BRANCH'}\`
+- NEVER push to \`${vars.baseBranch || 'main'}\`, \`main\`, \`master\`, or any base/production branch
+- Merging to base branch is done by the human via Kanvas — NOT by the agent
+
+## Useful Aider Commands
+- \`/add <file>\` — add files to context
+- \`/commit\` — commit changes
+- \`/diff\` — show pending changes
+- \`/undo\` — undo last commit
+
+⛔ STOP: Run setup commands, read houserules.md, then await explicit user instructions before starting any implementation work.`;
 
   return `## Setup Aider for ${vars.repoName}
 
 ### Quick Start
+
+1. **Open a terminal** and navigate to the repo:
 \`\`\`bash
-cd "${vars.repoPath}"
-git checkout ${vars.branchName}
+cd "${vars.repoPath}" && git checkout ${vars.branchName}
+\`\`\`
+
+2. **Read house rules**:
+\`\`\`bash
 cat houserules.md 2>/dev/null
 \`\`\`
 
-### Start Aider
+3. **Start Aider**:
 \`\`\`bash
-cd "${vars.repoPath}"
-KANVAS_SESSION_ID="${vars.sessionId}" aider --model claude-3-5-sonnet-20241022
-\`\`\`
-${mcpSection}
-### Task
-Once Aider starts, paste:
-\`\`\`
-${vars.taskDescription}
+cd "${vars.repoPath}" && git checkout ${vars.branchName} && aider --model claude-3-5-sonnet-20241022
 \`\`\`
 
-### Useful Commands
-- \`/add <file>\` — add files to context
-- \`/commit\` — commit changes
-- \`/diff\` — show pending changes
+Note: Aider does not natively support MCP. KIT tracks your activity via git commits automatically — no extra setup needed.
 
 ---
 
-Aider commits appear in KIT automatically via git watcher.
+### Prompt to paste into Aider chat
+
+Once Aider starts, paste the ENTIRE block below as your first message:
+
+\`\`\`
+${agentPrompt}
+\`\`\`
+
+---
+
+**After Aider confirms setup** (directory verified, houserules read, context file created), explicitly tell it to start work.
+
+Aider commits appear in KIT automatically via the git watcher.
 `;
 }
 
 function getWarpInstructions(vars: InstructionVars): string {
-  const mcpSection = vars.mcpUrl ? `
-### KIT MCP Setup
-Warp does not natively support MCP. KIT tracks activity via git commits automatically.
-If Warp adds MCP support, add to \`.mcp.json\` in the project root:
-\`\`\`json
-{ "mcpServers": { "kit": { "type": "streamable-http", "url": "${vars.mcpUrl}" } } }
+  const shortSessionId = vars.sessionId.replace('sess_', '').slice(0, 8);
+  const task = vars.taskDescription || vars.branchName || 'development';
+
+  const agentPrompt = `# SESSION ${shortSessionId}
+WORKDIR: ${vars.repoPath}
+BRANCH: ${vars.branchName}
+TASK: ${task}
+
+# 🛑 DO NOT START IMPLEMENTATION YET
+Complete setup steps below, then STOP and wait for the user to explicitly say to begin.
+
+Note: Warp does not natively support MCP. KIT tracks your activity via git commits automatically.
+
+## 1. SETUP (run these commands first)
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+cat houserules.md 2>/dev/null || echo "No houserules.md"
+cat FOLDER_STRUCTURE.md 2>/dev/null || echo "No FOLDER_STRUCTURE.md"
+ls House_Rules_Contracts/ 2>/dev/null && echo "Found contract docs"
 \`\`\`
-` : '';
+
+## 2. CONTEXT FILE
+\`\`\`bash
+cat > .warp-session-${shortSessionId}.md << 'EOF'
+# Warp Session ${shortSessionId}
+Dir: ${vars.repoPath}
+Branch: ${vars.branchName}
+Task: ${task}
+
+## Progress
+- [ ] Task started
+- [ ] Files identified
+- [ ] Implementation in progress
+- [ ] Testing complete
+- [ ] Ready for commit
+EOF
+\`\`\`
+
+## 3. FILE LOCKS (before editing any file)
+\`\`\`bash
+ls .file-coordination/active-edits/
+cat > .file-coordination/active-edits/warp-${shortSessionId}.json << 'EOF'
+{"agent":"warp","session":"${shortSessionId}","files":["<file1.ts>"],"operation":"edit","reason":"${task}"}
+EOF
+\`\`\`
+
+## 4. COMMITS
+\`\`\`bash
+git add -A && git commit -m "your message"
+\`\`\`
+
+⛔ CRITICAL GIT PUSH RULES:
+- ONLY push to your session branch: \`git push origin HEAD:${vars.branchName || 'YOUR_SESSION_BRANCH'}\`
+- NEVER push to \`${vars.baseBranch || 'main'}\`, \`main\`, \`master\`, or any base/production branch
+- Merging to base branch is done by the human via Kanvas — NOT by the agent
+
+## Warp AI Tips
+- Use the \`#\` key or Cmd+I for natural language commands
+- Use "Warp Drive" to save and reuse command workflows
+- Warp AI can help you understand errors and suggest fixes
+
+⛔ STOP: Run setup commands, read houserules.md, then await explicit user instructions before starting any implementation work.`;
 
   return `## Setup Warp AI for ${vars.repoName}
 
 ### Quick Start
+
+1. **Open Warp terminal** and navigate to the repo:
 \`\`\`bash
 cd "${vars.repoPath}"
-export KANVAS_SESSION_ID="${vars.sessionId}"
 git checkout ${vars.branchName}
+\`\`\`
+
+2. **Read house rules**:
+\`\`\`bash
 cat houserules.md 2>/dev/null
 \`\`\`
 
-### Optional: Warp Workflow
-\`\`\`yaml
-name: ${vars.repoName} — KIT Session
-command: |
-  cd "${vars.repoPath}"
-  export KANVAS_SESSION_ID="${vars.sessionId}"
-  git checkout ${vars.branchName}
-\`\`\`
-${mcpSection}
-### Task
-${vars.taskDescription}
+3. **Use Warp AI**: Press \`#\` or Cmd+I to activate natural language mode. Use Warp Drive to save workflows.
+
+Note: Warp does not natively support MCP. KIT tracks your activity via git commits automatically — no extra setup needed.
 
 ---
 
-Use Warp AI (# key) to get help. Commits appear in KIT via git watcher.
+### Setup commands to run (paste into Warp)
+
+\`\`\`bash
+cd "${vars.repoPath}" && git checkout ${vars.branchName} && cat houserules.md 2>/dev/null
+\`\`\`
+
+### Prompt to guide your Warp AI session
+
+Paste the ENTIRE block below into Warp AI (# key) as your starting instructions:
+
+\`\`\`
+${agentPrompt}
+\`\`\`
+
+---
+
+**After Warp confirms setup** (directory verified, houserules read, context file created), explicitly tell it to start work.
+
+Commits appear in KIT automatically via the git watcher.
 `;
 }
 
@@ -662,7 +1103,7 @@ If not auto-detected, add to \`~/.codex/config.json\`:
 { "mcpServers": { "kit": { "type": "http", "url": "${vars.mcpUrl}" } } }
 \`\`\`
 
-Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`
+Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
 
 **session_id for all MCP calls: \`${vars.sessionId}\`**
 ` : `
@@ -672,23 +1113,36 @@ export KANVAS_SESSION_ID="${vars.sessionId}"
 \`\`\`
 `;
 
+  // Build the prompt block that the user pastes into Codex
+  const codexPromptBlock = generateCodexPrompt(vars);
+
   return `## Codex Agent Setup for ${vars.repoName}
 
-### Repository
+### 1. Navigate to the working directory
 \`\`\`bash
 cd "${vars.repoPath}"
 git checkout ${vars.branchName}
 \`\`\`
 
-### Task
-${vars.taskDescription}
+### 2. Start Codex
+\`\`\`bash
+codex
+\`\`\`
+
+> **Don't use \`--approval-mode full-auto\`** when pasting this prompt — Codex will start working without waiting. Start Codex normally, paste the prompt, and then explicitly tell it to begin once it has confirmed setup.
 ${mcpSection}
-### System Context
-${vars.systemPrompt}
+### 3. Paste this prompt into Codex
+
+Copy and paste the ENTIRE block below when the Codex session opens:
+
+\`\`\`
+${codexPromptBlock}
+\`\`\`
 
 ---
 
-Run Codex in full-auto mode with: \`codex --approval-mode full-auto\`
+**After Codex confirms setup** (directory, houserules read), explicitly tell it to start work, e.g. *"Go ahead and start on the task."*
+
 Activity will appear in the KIT dashboard once the MCP server is connected.
 `;
 }

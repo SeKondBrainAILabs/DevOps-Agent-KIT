@@ -182,11 +182,15 @@ describe('WorkspaceBrowserView — happy path', () => {
   it('renders read-only Docker and local storage metrics panel', async () => {
     const user = userEvent.setup();
     render(<WorkspaceBrowserView />);
-    await user.click(screen.getByTestId('workspace-tab-workflow'));
+
+    // Workflow queue lives under the Workflow tab
+    await user.click(await screen.findByTestId('workspace-tab-workflow'));
     await waitFor(() => {
       expect(screen.getByTestId('workflow-queue-panel')).toBeInTheDocument();
       expect(screen.getByTestId('workflow-queue-item-0')).toHaveTextContent(/Prune missing worktree refs/i);
     });
+
+    // Storage metrics + cleanup actions live under the Storage tab
     await user.click(screen.getByTestId('workspace-tab-storage'));
     await waitFor(() => {
       expect(screen.getByTestId('storage-metrics-panel')).toBeInTheDocument();
@@ -235,7 +239,7 @@ describe('WorkspaceBrowserView — happy path', () => {
       .spyOn(navigator.clipboard, 'writeText')
       .mockResolvedValue(undefined as never);
     render(<WorkspaceBrowserView />);
-    await user.click(screen.getByTestId('workspace-tab-storage'));
+    await user.click(await screen.findByTestId('workspace-tab-storage'));
     await waitFor(() => {
       expect(screen.getByTestId('top-priority-action-copy-0')).toBeInTheDocument();
     });
@@ -262,7 +266,7 @@ describe('WorkspaceBrowserView — happy path', () => {
       .spyOn(navigator.clipboard, 'writeText')
       .mockResolvedValue(undefined as never);
     render(<WorkspaceBrowserView />);
-    await user.click(screen.getByTestId('workspace-tab-storage'));
+    await user.click(await screen.findByTestId('workspace-tab-storage'));
     await waitFor(() => {
       expect(screen.getByTestId('abandoned-worktree-clean-0')).toBeInTheDocument();
       expect(screen.getByTestId('abandoned-worktree-clean-1')).toBeInTheDocument();
@@ -392,7 +396,7 @@ describe('WorkspaceBrowserView — happy path', () => {
   it('workflow queue primary cleanup action runs and hides item after success', async () => {
     const user = userEvent.setup();
     render(<WorkspaceBrowserView />);
-    await user.click(screen.getByTestId('workspace-tab-workflow'));
+    await user.click(await screen.findByTestId('workspace-tab-workflow'));
     await waitFor(() => {
       expect(screen.getByTestId('workflow-queue-primary-0')).toBeInTheDocument();
       expect(screen.getByTestId('workflow-queue-item-0')).toHaveTextContent(/Prune missing worktree refs/i);
@@ -424,7 +428,7 @@ describe('WorkspaceBrowserView — happy path', () => {
   it('workflow queue stores snooze state and reset restores hidden items', async () => {
     const user = userEvent.setup();
     render(<WorkspaceBrowserView />);
-    await user.click(screen.getByTestId('workspace-tab-workflow'));
+    await user.click(await screen.findByTestId('workspace-tab-workflow'));
     await waitFor(() => {
       expect(screen.getByTestId('workflow-queue-snooze-0')).toBeInTheDocument();
       expect(screen.getByText(/Prune missing worktree refs/i)).toBeInTheDocument();
@@ -456,7 +460,7 @@ describe('WorkspaceBrowserView — happy path', () => {
       error: { message: 'cleanup failed' },
     } as never);
     render(<WorkspaceBrowserView />);
-    await user.click(screen.getByTestId('workspace-tab-workflow'));
+    await user.click(await screen.findByTestId('workspace-tab-workflow'));
     await waitFor(() => {
       expect(screen.getByTestId('workflow-queue-primary-0')).toBeInTheDocument();
     });

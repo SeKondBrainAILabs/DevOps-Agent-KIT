@@ -1,17 +1,69 @@
 /**
  * Electron Main Process Entry Point
- * SeKondBrain Kanvas - Desktop DevOps Agent
+ * KIT for DevOps - Desktop DevOps Agent
  */
 
 import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'path';
+import { existsSync, mkdirSync, renameSync, rmSync } from 'fs';
 import { registerIpcHandlers, removeIpcHandlers } from './ipc';
 import { initializeServices, disposeServices, type Services } from './services';
+import { startMemoryProbe } from './diagnostics/MemoryProbe';
 
 import { IPC } from '../shared/ipc-channels';
 
+// One-time data-dir migration from the legacy "sekondbrain-kanvas" userData
+// directory to the current "kit-for-devops" one. Must run before any service
+// touches userData, so we do it synchronously at module load.
+//
+// Why not just check "does the new dir exist?": Electron pre-creates the
+// userData directory and writes Chromium files (Cookies, Preferences, …)
+// before our module-level code runs. So the dir always exists by the time
+// we get here — we need a marker tied to *our* data instead. The DB file is
+// the right signal: present in legacy = real data; absent in current = nothing
+// to lose. We move only our files (data/, logs/, *.json), leaving Chromium
+// state alone in whichever dir it already lives.
+(function migrateLegacyUserDataDir() {
+  try {
+    const appData = app.getPath('appData');
+    const legacyDir = join(appData, 'sekondbrain-kanvas');
+    const currentDir = join(appData, 'kit-for-devops');
+    const legacyDb = join(legacyDir, 'data', 'kanvas.db');
+    const currentDb = join(currentDir, 'data', 'kanvas.db');
+    if (!existsSync(legacyDb) || existsSync(currentDb)) return;
+
+    mkdirSync(currentDir, { recursive: true });
+    // Move our data subdir (DB + WAL/SHM travel together)
+    renameSync(join(legacyDir, 'data'), join(currentDir, 'data'));
+    // Move our electron-store JSON files and logs subdir if present
+    for (const item of [
+      'kanvas-instances.json',
+      'kanvas-project-groups.json',
+      'kanvas-workspaces.json',
+      'sekondbrain-kanvas.json',
+      'logs',
+    ]) {
+      const src = join(legacyDir, item);
+      const dst = join(currentDir, item);
+      if (existsSync(src) && !existsSync(dst)) renameSync(src, dst);
+    }
+    // Best-effort cleanup of the now-empty (or Chromium-only) legacy dir.
+    // We don't fail migration if this trips — the data is what mattered.
+    try {
+      rmSync(legacyDir, { recursive: true, force: true });
+    } catch {
+      // leave it; user can delete by hand
+    }
+    console.log(`[Migration] Moved userData files ${legacyDir} -> ${currentDir}`);
+  } catch (err) {
+    console.error('[Migration] Failed to migrate legacy userData dir:', err);
+  }
+})();
+
 let mainWindow: BrowserWindow | null = null;
 let services: Services | null = null;
+// Stored so it can be cleared on window close / recreate — prevents stacking intervals
+let updateCheckInterval: NodeJS.Timeout | null = null;
 
 /**
  * Check for orphaned sessions and notify the renderer
@@ -34,6 +86,116 @@ async function checkForOrphanedSessions(svc: Services | null): Promise<void> {
     }
   } catch (error) {
     console.error('[Recovery] Error scanning for orphaned sessions:', error);
+  }
+}
+
+/**
+ * Startup stale-session scan.
+ *
+ * A session is "stale" when its worktree has been idle >= STALE days and is
+ * fully committed. Sessions with uncommitted/unstaged changes are intentionally
+ * skipped — they stay visible in the workspace view rather than being touched.
+ *
+ * Behavior (per product decision):
+ *   - safe   (no unmerged commits)  → auto-removed silently (worktree + local branch)
+ *   - risky  (has unmerged commits) → surfaced to the renderer for confirmation
+ */
+const STALE_SESSION_DAYS = 14;
+
+async function checkForStaleSessions(svc: Services | null): Promise<void> {
+  if (!svc || !mainWindow) return;
+
+  try {
+    const { existsSync } = await import('fs');
+    const { stat } = await import('fs/promises');
+
+    const listed = svc.agentInstance.listInstances();
+    if (!listed.success || !listed.data) return;
+
+    const safe: import('../shared/types').StaleSessionInfo[] = [];
+    const risky: import('../shared/types').StaleSessionInfo[] = [];
+
+    for (const instance of listed.data) {
+      // Never touch a session that's actively running or still spinning up.
+      if (instance.status === 'active' || instance.status === 'initializing') continue;
+
+      const worktreePath = instance.worktreePath;
+      const repoPath = instance.config?.repoPath;
+      // Only sessions with a real, separate worktree are candidates.
+      if (!worktreePath || !repoPath || worktreePath === repoPath) continue;
+      if (!existsSync(worktreePath)) continue; // missing worktrees handled by cleanup view
+
+      // Idle days from the worktree directory mtime (same signal as the
+      // abandoned-worktree classifier, keeps thresholds consistent).
+      let daysIdle = 0;
+      try {
+        const stats = await stat(worktreePath);
+        daysIdle = Math.floor((Date.now() - stats.mtime.getTime()) / (24 * 60 * 60 * 1000));
+      } catch {
+        continue;
+      }
+      if (daysIdle < STALE_SESSION_DAYS) continue;
+
+      // Fully-committed check + merge status.
+      const safetyResult = await svc.git.getWorktreeSafetyInfo(worktreePath);
+      if (!safetyResult.success || !safetyResult.data) continue;
+      const safety = safetyResult.data;
+
+      // Uncommitted/unstaged work → NOT stale. Leave it for the workspace view.
+      if (safety.hasUncommittedChanges) continue;
+
+      const info: import('../shared/types').StaleSessionInfo = {
+        sessionId: instance.sessionId || instance.id,
+        repoPath,
+        repoName: repoPath.split('/').filter(Boolean).pop() || repoPath,
+        branchName: instance.config?.branchName || '(unknown)',
+        worktreePath,
+        daysIdle,
+        unmergedCommitCount: safety.unmergedCommitCount,
+        mergedIntoBranches: safety.mergedIntoBranches,
+        safeToDelete: safety.unmergedCommitCount === 0,
+      };
+
+      if (info.safeToDelete) safe.push(info);
+      else risky.push(info);
+    }
+
+    // Auto-remove the provably-safe stale sessions (worktree + local branch).
+    const autoRemoved: import('../shared/types').StaleSessionInfo[] = [];
+    for (const session of safe) {
+      try {
+        const result = await svc.agentInstance.deleteInstanceWithCleanup(session.sessionId, {
+          deleteWorktree: true,
+          deleteLocalBranch: true,   // safe: HEAD is already merged into main/development
+          deleteRemoteBranch: false, // never touch the remote automatically
+        });
+        if (result.success) {
+          autoRemoved.push(session);
+          console.log(`[StaleScan] Auto-removed safe stale session ${session.sessionId} (${session.branchName}, idle ${session.daysIdle}d)`);
+        }
+      } catch (err) {
+        console.warn(`[StaleScan] Failed to auto-remove ${session.sessionId}:`, err);
+      }
+    }
+
+    if (autoRemoved.length > 0) {
+      svc.terminalLog.logSystem(
+        `[StaleScan] Auto-removed ${autoRemoved.length} stale session(s) with fully-merged work`
+      );
+      mainWindow.webContents.send(IPC.STALE_SESSIONS_AUTOREMOVED, autoRemoved);
+    }
+
+    if (risky.length > 0) {
+      console.log(`[StaleScan] ${risky.length} stale session(s) have unmerged commits — prompting user`);
+      svc.terminalLog.warn(
+        `${risky.length} stale session(s) have unmerged commits and need review before removal`,
+        undefined,
+        'StaleScan'
+      );
+      mainWindow.webContents.send(IPC.STALE_SESSIONS_FOUND, risky);
+    }
+  } catch (error) {
+    console.error('[StaleScan] Error scanning for stale sessions:', error);
   }
 }
 
@@ -89,6 +251,25 @@ async function createWindow(): Promise<void> {
     console.error('Service init error:', error);
   }
 
+  // Main-process memory/CPU watchdog. Always-on, cheap (one log line / 60s).
+  // Surfaces rss/heap growth, V8 detached-context count, active libuv handle
+  // tallies, and app gauges so a runaway is visible in logs; `kill -SIGUSR2 <pid>`
+  // dumps a heap snapshot on demand. Counters read `services` lazily each tick.
+  startMemoryProbe({
+    vitalsMs: 60_000,
+    counters: () => {
+      const w = services?.watcher?.debugCounts();
+      return {
+        watchers: w?.watchers ?? 0,
+        debounceTimers: w?.debounce ?? 0,
+        periodicTimers: w?.periodic ?? 0,
+        pendingEmits: services?.activity?.debugPendingEmits?.() ?? 0,
+        mcpSessions: services?.mcpServer?.debugSessionCount?.() ?? 0,
+        aiStreaming: services?.ai?.debugStreamActive?.() ? 1 : 0,
+      };
+    },
+  });
+
   // Handle load failures
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     console.error('Page load failed:', errorCode, errorDescription);
@@ -133,6 +314,13 @@ async function createWindow(): Promise<void> {
       await checkForOrphanedSessions(services);
     }, 1500);
 
+    // Scan for stale sessions (idle 14+ days, fully committed): auto-remove the
+    // safe ones, prompt for any with unmerged commits. Runs after the orphaned
+    // scan so the two don't contend for git on the same repos.
+    setTimeout(async () => {
+      await checkForStaleSessions(services);
+    }, 3000);
+
     // Check for app updates after startup (only runs in production)
     setTimeout(() => {
       if (services?.autoUpdate) {
@@ -141,6 +329,19 @@ async function createWindow(): Promise<void> {
         });
       }
     }, 3000);
+
+    // Periodic update check every 30 minutes — clear any existing interval first
+    // to prevent stacking when the window reloads (macOS dock re-open, etc.)
+    if (updateCheckInterval) {
+      clearInterval(updateCheckInterval);
+    }
+    updateCheckInterval = setInterval(() => {
+      if (services?.autoUpdate) {
+        services.autoUpdate.checkForUpdates().catch((err) => {
+          console.warn('[Main] Periodic update check failed:', err);
+        });
+      }
+    }, 30 * 60 * 1000);
   });
 
   // Load the app
@@ -185,8 +386,13 @@ async function createWindow(): Promise<void> {
     return { action: 'deny' };
   });
 
-  // Handle window close
+  // Handle window close — clear the periodic update interval so it doesn't
+  // keep firing after the window is gone or stack up on recreate
   mainWindow.on('closed', () => {
+    if (updateCheckInterval) {
+      clearInterval(updateCheckInterval);
+      updateCheckInterval = null;
+    }
     mainWindow = null;
   });
 }

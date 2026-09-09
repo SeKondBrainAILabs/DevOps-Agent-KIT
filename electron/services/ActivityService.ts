@@ -17,7 +17,12 @@ export class ActivityService extends BaseService {
   // Throttle IPC emissions to renderer (batch file events)
   private pendingEmits: ActivityLogEntry[] = [];
   private emitTimer: NodeJS.Timeout | null = null;
+  private droppedEmits = 0;
   private static EMIT_THROTTLE_MS = 500; // Batch emissions every 500ms
+  // Hard cap so a file-save storm can't grow the queue unbounded between flushes.
+  // Dropped entries are still persisted to the DB, so the renderer can recover
+  // them via getLogs() — only the live IPC nudge is skipped.
+  private static MAX_PENDING_EMITS = 2000;
 
   /**
    * Log an activity entry (persisted to database)
@@ -74,17 +79,35 @@ export class ActivityService extends BaseService {
   private throttledEmitToRenderer(entry: ActivityLogEntry): void {
     this.pendingEmits.push(entry);
 
+    // Bound the queue: under a heavy file-save burst, drop the oldest pending
+    // nudges (they're already in the DB) so memory can't balloon between flushes.
+    if (this.pendingEmits.length > ActivityService.MAX_PENDING_EMITS) {
+      const overflow = this.pendingEmits.length - ActivityService.MAX_PENDING_EMITS;
+      this.pendingEmits.splice(0, overflow);
+      this.droppedEmits += overflow;
+    }
+
     // If timer already running, the pending entries will be sent when it fires
     if (this.emitTimer) return;
 
     this.emitTimer = setTimeout(() => {
-      // Emit all pending entries
-      for (const pending of this.pendingEmits) {
-        this.emitToRenderer(IPC.LOG_ENTRY, pending);
-      }
+      // Snapshot and reset first so entries arriving during emit go to the next batch
+      const batch = this.pendingEmits;
       this.pendingEmits = [];
       this.emitTimer = null;
+      for (const pending of batch) {
+        this.emitToRenderer(IPC.LOG_ENTRY, pending);
+      }
+      if (this.droppedEmits > 0) {
+        console.warn(`[ActivityService] Dropped ${this.droppedEmits} live log nudge(s) under load (still in DB)`);
+        this.droppedEmits = 0;
+      }
     }, ActivityService.EMIT_THROTTLE_MS);
+  }
+
+  /** Current pending-emit queue depth (diagnostics gauge). */
+  debugPendingEmits(): number {
+    return this.pendingEmits.length;
   }
 
   /**

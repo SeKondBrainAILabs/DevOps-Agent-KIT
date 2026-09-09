@@ -2,7 +2,7 @@
 # Multi-Session Agent Simulator
 # Simulates multiple AI agents working concurrently in separate processes
 # Date: September 28, 2025
-# Author: SecondBrain AI
+# Author: SeKondBrain AI
 
 set -euo pipefail
 

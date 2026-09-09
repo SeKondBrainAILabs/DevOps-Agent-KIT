@@ -33,7 +33,7 @@ export function KanvasLogo({
       <div className={`${sizes.container} rounded-xl overflow-hidden flex-shrink-0 ${className}`}>
         <img
           src={logoSrc}
-          alt="Kanvas"
+          alt="KIT"
           className="w-full h-full object-cover"
         />
       </div>
@@ -43,7 +43,7 @@ export function KanvasLogo({
   return (
     <img
       src={logoSrc}
-      alt="Kanvas"
+      alt="KIT"
       className={`${sizes.container} rounded-xl object-cover flex-shrink-0 ${className}`}
     />
   );

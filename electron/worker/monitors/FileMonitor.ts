@@ -43,18 +43,33 @@ export class FileMonitor {
         }
         // Ignore other dotfiles and common directories
         if (basename.startsWith('.')) return true;
+        // Nested worktree containers (`local_deploy`, `.worktrees`): a worktree
+        // checkout can hold its own local_deploy with OTHER sessions' worktrees,
+        // and via symlinks/submodules this nests arbitrarily deep — recursing in
+        // produces thousands of phantom add events → main-process memory runaway.
+        // Check segments RELATIVE to the watched root (a substring check would
+        // self-ignore the root, whose own path contains '/local_deploy/').
+        const rel = path.relative(worktreePath, filePath);
+        if (rel) {
+          const segs = rel.split(path.sep);
+          if (segs.includes('local_deploy') || segs.includes('.worktrees')) return true;
+        }
         if (filePath.includes('node_modules')) return true;
         if (filePath.includes('.git')) return true;
-        if (filePath.includes('.worktrees')) return true;
         if (filePath.includes('/dist/')) return true;
         if (filePath.includes('/build/')) return true;
         return false;
       },
       persistent: true,
       ignoreInitial: true,
+      // Do NOT follow symlinks — repos link to sibling repos (e.g. lib/*-link),
+      // and following them recurses into other repos' worktree trees (unbounded).
+      followSymlinks: false,
       awaitWriteFinish: {
-        stabilityThreshold: 1000,
-        pollInterval: 500,
+        // 30s stability window — see WatcherService.ts for rationale. Worker
+        // watcher needs the same value so both code paths agree.
+        stabilityThreshold: 30_000,
+        pollInterval: 2_000,
       },
     });
 

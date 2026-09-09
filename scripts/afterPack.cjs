@@ -45,10 +45,10 @@ module.exports = async function afterPack(context) {
 
   // Step 2: Sign helper .app bundles
   const helpers = [
-    'Kanvas for Kit Helper (GPU).app',
-    'Kanvas for Kit Helper (Plugin).app',
-    'Kanvas for Kit Helper (Renderer).app',
-    'Kanvas for Kit Helper.app',
+    'KIT for DevOps Helper (GPU).app',
+    'KIT for DevOps Helper (Plugin).app',
+    'KIT for DevOps Helper (Renderer).app',
+    'KIT for DevOps Helper.app',
   ];
   for (const helper of helpers) {
     const helperPath = path.join(frameworksDir, helper);

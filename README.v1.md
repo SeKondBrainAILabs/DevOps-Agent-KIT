@@ -520,10 +520,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments 🙏
 
-Built with ❤️ by [SecondBrain Labs](https://secondbrain.ai)
+Built with ❤️ by [SeKondBrain Labs](https://secondbrain.ai)
 
 Special thanks to all contributors and the open-source community.
 
 ---
 
-**Copyright © 2024 SecondBrain Labs. All rights reserved.**
+**Copyright © 2024 SeKondBrain Labs. All rights reserved.**
