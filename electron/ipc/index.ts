@@ -620,10 +620,6 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.git.fetchRemote(repoPath, remote);
   });
 
-  ipcMain.handle(IPC.GIT_STASH_POP, async (_, repoPath: string) => {
-    return services.git.stashPop(repoPath);
-  });
-
   ipcMain.handle(IPC.GIT_CHECK_REMOTE, async (_, repoPath: string, branch: string) => {
     return services.git.checkRemoteChanges(repoPath, branch);
   });
