@@ -5,6 +5,127 @@ All notable changes to s9n-devops-agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.21] - 2026-05-30
+
+### Fixed
+- **Conflict Resolution dialog shows `origin/main` as base branch** — `errorDetails.baseBranch` comes from session data with the legacy `origin/` prefix. Now stripped in the footer, advanced details, and when passed to `generatePreviews`.
+- **Stash-pop conflict shows empty "Conflicted Files" + useless "Auto-Fix with AI" button** — When the rebase itself succeeds but re-applying stashed uncommitted changes fails (stash pop conflict), the conflicted files list was empty (because no rebase conflicts existed) and "Auto-Fix with AI" would find nothing to fix. The dialog now detects this case (`errorMessage` contains "stash pop had conflicts") and shows a "Re-apply Stashed Changes" button that retries `git stash pop` directly, with a fallback to manual fix instructions.
+- **`git stash pop` now available via IPC** — Added `GIT_STASH_POP` channel, IPC handler, and `window.api.git.stashPop()` preload binding so the dialog can retry stash pop without requiring a terminal.
+
+## [2.6.20] - 2026-05-29
+
+### Fixed
+- **"Restarting..." pill stuck after restart** — The success path assumed the old session component would unmount when the new session replaced it. But there's a timing gap between `restartInstance` returning and the `SESSION_REMOVED` IPC event re-rendering the list — during that gap `restarting` stayed `true` with nothing to clear it. Now always calls `setRestarting(false)` after the await resolves regardless of whether the component unmounts.
+
+## [2.6.19] - 2026-05-29
+
+### Fixed
+- **Auto-update never shows pill after startup** — The update check only ran once, 3 seconds after launch. If the app was already open when a new version was published, the notification never appeared. Added a periodic check every 30 minutes so long-running sessions catch new releases without requiring a restart.
+- **"AI could not auto-resolve any files" in Merge Workflow** — When the session branch was in a mid-rebase state (detached HEAD after a failed auto-rebase), the Merge Workflow's AI conflict step called `generateResolutionPreviews` which tried to start a fresh rebase on top of the stuck one. Git rejected it immediately, returning zero conflicts, so `resolvable.length === 0` → error. Fixed: both `generateResolutionPreviews` and `rebaseWithResolution` now abort any in-progress rebase before starting.
+- **Merge Workflow shows `origin/main` as target** — The `MergeWorkflowModal` component state was seeded from session props without stripping the legacy `origin/` prefix, so the UI header, dropdown, and error logs all showed `origin/main` instead of `main`. Both `useState` initializer and the `setTargetBranch` re-sync on open now strip the prefix.
+
+## [2.6.18] - 2026-05-29
+
+### Fixed
+- **Conflict dialog: detached HEAD / empty currentBranch** — When the conflict resolution dialog opens after a failed auto-rebase, git is mid-rebase (detached HEAD), causing `git branch --show-current` to return empty. `generateResolutionPreviews` and `rebaseWithResolution` now abort any in-progress rebase before checking the current branch, ensuring git is on a named branch before the next rebase attempt starts.
+- **Cascade of backup tags** — Each retry from the conflict dialog was creating a new backup tag and launching a new rebase on top of an unaborted previous one. The pre-flight abort prevents this runaway accumulation.
+- **MergeWorkflowModal `targetBranch` state retains `origin/` prefix** — Component state was initialized and re-synced from session props without stripping the legacy prefix, so error logs always showed `origin/main` even when the service had already stripped it. Both `useState` initializer and `setTargetBranch` call now strip `origin/`.
+
+## [2.6.17] - 2026-05-29
+
+### Fixed
+- **"Resolution Failed - Failed to fetch origin/Development"** — `MergeConflictService.generateResolutionPreviews` and `rebaseWithResolution` both received the `targetBranch` with an `origin/` prefix (e.g. `origin/Development`) from session data stored before the prefix-stripping fixes. Added `.replace(/^origin\//, '')` at the top of both entry points so git fetch and rebase use the bare branch name. This is the same fix applied in v2.6.12–2.6.14 to GitService, MergeService, and AgentInstanceService — now complete for the conflict resolution path.
+
+## [2.6.16] - 2026-05-29
+
+### Added
+- **DebugLogService logging for auto-update, MCP calls, and git failures** — All update check results (checking, available, up-to-date, errors) now appear in the exported debug log under source `AutoUpdate`. MCP tool call failures log under `McpTool`. Expired MCP sessions and stale cleanup log under `McpServer`. This makes failures visible in the debug log export rather than silently disappearing into `console.log`.
+
+### Fixed
+- **Auto-update redirect chain** — GitHub serves 2 redirects before `latest-mac.yml` content. Previous code only followed one, reading an empty body on the second so no update was ever detected. Now follows the full chain (up to 5 hops).
+
+## [2.6.15] - 2026-05-29
+
+### Fixed
+- **Auto-update notification not appearing** — GitHub serves two 302 redirects before the `latest-mac.yml` content (`/releases/latest/download/` → `/releases/download/v{n}/` → CDN). The previous implementation only followed one redirect, so the second fetch got an empty 302 body, `parseVersion` returned null, and no update was detected. Replaced with a recursive redirect follower that handles up to 5 hops.
+
+## [2.6.14] - 2026-05-29
+
+### Fixed
+- **Restart timed out on large repos** — Safety timeout in `SessionDetailView` was 30 seconds. Restarts on large repos (commit + worktree + setup) legitimately take 60-90s and were always hitting the timeout. Increased to 120 seconds.
+- **`origin/` prefix in restart flow** — `createBranchIfNeeded` and session data config now strip the `origin/` prefix from `baseBranch` (e.g. `origin/Development` → `Development`) so branch creation doesn't fail when the stored base branch has the prefix.
+
+## [2.6.13] - 2026-05-29
+
+### Fixed
+- **MCP `kit_lock_file` transport/deserialization error** — Session timeout was 5 minutes; agents idle for longer (thinking, running tests) had their transport cleaned up. The next MCP call arrived with an expired session ID, received a bare `400` HTTP response instead of a JSON-RPC error, and the client reported it as a deserialization error. Fixed: (1) session timeout extended to 30 minutes, (2) expired-session response is now a proper JSON-RPC `-32001` error so clients can reinitialize cleanly.
+
+## [2.6.11] - 2026-05-29
+
+### Fixed
+- **Auto-update check on unsigned macOS builds** — Replaced `electron-updater` / Squirrel.Mac with a direct HTTPS fetch of `latest-mac.yml` from GitHub Releases. Squirrel.Mac requires a Developer ID certificate to call `checkForUpdates()` at all; without one it throws silently and the update pill never appeared. The new implementation works without code signing: fetches the yml, parses the version, compares with semver, fires the same `UPDATE_AVAILABLE` IPC event. The install step opens the GitHub releases page in the browser so the user can download the DMG.
+
+## [2.6.10] - 2026-05-29
+
+### Changed
+- Version bump to test auto-update end-to-end from v2.6.9.
+
+## [2.6.9] - 2026-05-29
+
+### Changed
+- Version bump to test auto-update install flow end-to-end from v2.6.8 (which has the install fallback fix).
+
+## [2.6.8] - 2026-05-29
+
+### Fixed
+- **Auto-update check failing silently** — `publish.repo` in `package.json` still pointed to the old `CS_DevOpsAgent` repo name. Updated to `DevOps-Agent-KIT` so `electron-updater` hits the correct GitHub API endpoint and the update notification pill now appears.
+- **Auto-update install fallback** — `quitAndInstall()` fails on macOS without a Developer ID code signature. Added a fallback that opens the GitHub releases page in the browser so users can manually download the DMG.
+
+## [2.6.7] - 2026-05-29
+
+### Fixed
+- **Sync Failed "Branch 'origin/main' not found on remote"** — `rebaseOntoBaseBranch` and `performRebaseWithAI` in `GitService` now strip the `origin/` prefix from `baseBranch` before calling `git fetch origin <branch>`. Sessions where `baseBranch` was stored as `"origin/main"` were causing fetch to run `git fetch origin origin/main`, which fails.
+
+## [2.6.6] - 2026-05-29
+
+### Changed
+- Version bump to validate auto-update notification flow end-to-end.
+
+## [2.6.5] - 2026-05-29
+
+### Added
+- **Auto-update notification UI** — StatusBar now shows a live update pill when a new version is available. Clicking downloads the update; once downloaded it turns blue ("Restart to update vX.X.X") and installs on click. The backend (`AutoUpdateService`) was already wired but had no renderer UI.
+
+## [2.6.4] - 2026-05-29
+
+### Fixed
+- **Merge: `origin/main` target branch** — merges now strip the `origin/` prefix from target branches, fixing "couldn't find remote ref origin/main" for sessions where `baseBranch` was stored with the prefix. Branch picker dropdown also cleaned up to never produce `origin/main` entries.
+- **Merge: missing remote branch detection** — `previewMerge` and `executeMerge` now detect when the target branch doesn't exist on the remote and return an actionable error message (including the actual remote default branch name) instead of a cryptic git fatal error.
+- **AI conflict resolution: kimi-k2 model unavailable** — updated kimi-k2 model ID to `moonshotai/kimi-k2-instruct` (removed stale `-0905` version suffix). `AIService.sendWithMode` now falls back to `llama-3.3-70b` on 404/model-not-found errors so conflict resolution no longer silently fails.
+- **Merge conflict resolver default model** — changed from `kimi-k2` to `llama-3.3-70b` so the AI pipeline works reliably even when kimi-k2 is unavailable.
+- **RebaseWatcher race condition** — `isRebasing` flag is now set synchronously before the fire-and-forget `performAutoRebase` call, preventing two concurrent rebases from starting.
+- **RebaseWatcher permanent pause on transient errors** — watcher now only pauses (`isPaused=true`) for conflict or auth errors. Network timeouts, git lock errors, and other transient failures now let the next poll cycle retry automatically.
+- **Restarting button stuck** — `handleRestartSession` now throws on failure so `SessionDetailView` resets the spinner. Added 30-second safety timeout as a backstop.
+- **Spurious `git merge --abort` after failed pull** — removed no-op merge abort that ran before any merge had started.
+
+## [2.6.3] - 2026-05-26
+
+### Added
+- **Stateless `/rpc` MCP endpoint** — Codex and other `type:"http"` plain JSON-RPC clients now connect to `/rpc` instead of the stateful `/mcp` endpoint, eliminating JSON-RPC deserialize errors. Each new session's `.mcp.json` includes both `kit` (streamable-http) and `kit-rpc` (http) entries.
+- **SSE keep-alive pings** — The `/sse` endpoint now writes a `: ping` comment every 25 seconds, preventing `mcp-remote` from dropping the Claude Desktop connection with a Body Timeout Error after ~5 minutes of idle.
+
+### Fixed
+- **CommitsTab shows on merged/deleted worktrees** — When `git` fails to spawn (e.g. worktree directory no longer exists), the Commits tab now falls back to DB-recorded commits instead of showing an error.
+- **View Commits button** — Switching to the universal commits view was silently blocked when a session was selected. Fixed view priority order in App.tsx.
+- **Chrome extension MCP calls visible in MCP tab** — `getMcpCallLog` was returning stale in-memory entries, missing calls made by external clients (Chrome extension, remote agents). Now always reads from the database.
+- **Agent push-to-main blocked** — Added explicit ⛔ rules to both the Claude fallback block and the Codex prompt: agents must never push to `main`/base branch directly. Merging is human-initiated via Kanvas. If MCP and direct git both fail, agent must stop and report.
+- **Merge auto-commit excludes session files** — The pre-merge auto-commit no longer stages Kanvas session/runtime files (`.claude-session-*.md`, `.codex-session-*.md`, `.S9N_KIT_DevOpsAgent/config.json`, `.mcp.json`). `ensureAgentArtifactsIgnored` now adds all KIT patterns to `.gitignore`, not just the agent directory.
+- **`kit_commit` MCP emits COMMIT_COMPLETED** — The `CommitsTab` now updates in real time when a coding agent commits via MCP, without waiting for the 10-second poll interval.
+- **Neutral UI copy** — Instructional text in `InstructionsModal` and session setup docs now says "coding agent" instead of "Claude Code", making the UI agent-agnostic.
+
+### Security
+- **Agent push-to-main investigation** — Root-caused an incident where a Codex agent pushed directly to `main` when `kit_commit` kept failing. The agent used the git fallback from session instructions and invented a `HEAD:main` push strategy. Now blocked at the instruction level with explicit prohibition text.
+
 ## [2.0.18-dev.3] - 2026-01-06
 
 ### Added

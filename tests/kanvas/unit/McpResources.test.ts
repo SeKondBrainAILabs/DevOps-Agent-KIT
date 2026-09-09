@@ -101,7 +101,7 @@ describe('MCP Resources', () => {
     });
 
     it('should return correct session shape', async () => {
-      const result = await callResource('session-info', 'kanvas://session/sess_test_123/info');
+      const result = await callResource('session-info', 'kit://session/sess_test_123/info');
       const data = parseJsonResult(result);
 
       expect(data.sessionId).toBe('sess_test_123');
@@ -111,7 +111,7 @@ describe('MCP Resources', () => {
     });
 
     it('should return error for unknown session', async () => {
-      const result = await callResource('session-info', 'kanvas://session/unknown_sess/info');
+      const result = await callResource('session-info', 'kit://session/unknown_sess/info');
       const data = parseJsonResult(result);
       expect(data.error).toBe('Unknown session');
     });
@@ -131,7 +131,7 @@ describe('MCP Resources', () => {
       });
       mockReadFileSync.mockReturnValue('# Team Rules\n- Use TypeScript');
 
-      const result = await callResource('houserules', 'kanvas://session/sess_test_123/houserules');
+      const result = await callResource('houserules', 'kit://session/sess_test_123/houserules');
       expect(result.contents[0].text).toBe('# Team Rules\n- Use TypeScript');
       expect(result.contents[0].mimeType).toBe('text/markdown');
     });
@@ -142,14 +142,14 @@ describe('MCP Resources', () => {
       });
       mockReadFileSync.mockReturnValue('# Fallback Rules');
 
-      const result = await callResource('houserules', 'kanvas://session/sess_test_123/houserules');
+      const result = await callResource('houserules', 'kit://session/sess_test_123/houserules');
       expect(result.contents[0].text).toBe('# Fallback Rules');
     });
 
     it('should return no-rules message when neither exists', async () => {
       mockExistsSync.mockReturnValue(false);
 
-      const result = await callResource('houserules', 'kanvas://session/sess_test_123/houserules');
+      const result = await callResource('houserules', 'kit://session/sess_test_123/houserules');
       expect(result.contents[0].text).toContain('No House Rules');
     });
   });
@@ -171,7 +171,7 @@ describe('MCP Resources', () => {
         'SQL_CONTRACT.json',
       ] as any);
 
-      const result = await callResource('contracts', 'kanvas://session/sess_test_123/contracts');
+      const result = await callResource('contracts', 'kit://session/sess_test_123/contracts');
       const data = parseJsonResult(result);
 
       expect(data.files).toHaveLength(3); // Only .md and .json
@@ -183,7 +183,7 @@ describe('MCP Resources', () => {
     it('should return empty list when directory does not exist', async () => {
       mockExistsSync.mockReturnValue(false);
 
-      const result = await callResource('contracts', 'kanvas://session/sess_test_123/contracts');
+      const result = await callResource('contracts', 'kit://session/sess_test_123/contracts');
       const data = parseJsonResult(result);
       expect(data.files).toEqual([]);
     });
@@ -198,7 +198,7 @@ describe('MCP Resources', () => {
     });
 
     it('should return commit history', async () => {
-      const result = await callResource('commits', 'kanvas://session/sess_test_123/commits');
+      const result = await callResource('commits', 'kit://session/sess_test_123/commits');
       const data = parseJsonResult(result);
 
       expect(data.commits).toHaveLength(1);
@@ -206,7 +206,7 @@ describe('MCP Resources', () => {
     });
 
     it('should return empty commits for unknown session', async () => {
-      const result = await callResource('commits', 'kanvas://session/unknown_sess/commits');
+      const result = await callResource('commits', 'kit://session/unknown_sess/commits');
       const data = parseJsonResult(result);
       expect(data.error).toBe('Unknown session');
     });

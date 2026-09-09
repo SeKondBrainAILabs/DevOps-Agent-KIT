@@ -229,7 +229,7 @@ export function TimeoutWarning({
   if (!showWarning) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 max-w-sm bg-yellow-50 border border-yellow-200 rounded-xl shadow-lg p-4 z-50">
+    <div className="fixed bottom-4 right-4 max-w-sm bg-yellow-50 border border-yellow-200 rounded-[14px] shadow-lg p-4 z-50">
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0">
           <svg className="w-6 h-6 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">

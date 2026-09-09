@@ -16,12 +16,15 @@ import { randomUUID } from 'crypto';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import type { InstanceStatus } from '../../shared/types';
 import { homedir } from 'os';
 import type { Server } from 'http';
 import { BaseService } from './BaseService';
 import { McpSessionBinder } from './mcp/session-binder';
 import { MCP_DEFAULT_PORT_START, MCP_SERVER_HOST } from '../../shared/mcp-types';
+import { IPC } from '../../shared/ipc-channels';
 import type { McpServerStatus, McpInstallConfigStatus, McpInstallTarget } from '../../shared/mcp-types';
+import type { DebugLogService } from './DebugLogService';
 
 // Lazy imports for MCP SDK (ESM modules)
 let _McpServer: typeof import('@modelcontextprotocol/sdk/server/mcp.js').McpServer | null = null;
@@ -56,26 +59,145 @@ async function getSseTransport() {
 export interface McpServiceDeps {
   gitService?: {
     commit: (sessionId: string, message: string, repoName?: string) => Promise<any>;
-    push: (sessionId: string, repoName?: string) => Promise<any>;
+    push: (sessionId: string, repoName?: string, options?: { forceWithLease?: boolean }) => Promise<any>;
     getStatus: (sessionId: string) => Promise<any>;
     getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number) => Promise<any>;
+    // Current branch of a worktree path, TRI-STATE: branch name | 'HEAD' (detached)
+    // | null (couldn't determine). Used by the MCP worktree-divergence guards
+    // (injectable so it's mockable in tests). Distinct name from the IpcResult
+    // getCurrentBranch(repoPath) to avoid a method-name collision on GitService.
+    getCurrentBranchName?: (worktreePath: string) => Promise<string | null>;
+    // Day 1.5 + Day 2 additions — repo-path-keyed reads for the workspace
+    // browser / agent operations. Each returns IpcResult<T>.
+    getRepoStatus?: (repoPath: string) => Promise<any>;
+    listBranchesForRepo?: (repoPath: string) => Promise<any>;
+    listWorktrees?: (repoPath: string) => Promise<any>;
   };
   activityService?: {
     log: (sessionId: string, type: string, message: string, details?: Record<string, unknown>) => void;
   };
   lockService?: {
     checkConflicts: (repoPath: string, files: string[], excludeSessionId?: string) => Promise<any>;
-    declareFiles: (sessionId: string, files: string[], operation: 'edit' | 'read' | 'delete') => Promise<any>;
-    releaseFiles: (sessionId: string) => Promise<any>;
+    declareFiles: (repoPath: string, sessionId: string, files: string[], operation: 'edit' | 'read' | 'delete') => Promise<any>;
+    releaseFiles: (repoPath: string, sessionId: string) => Promise<any>;
     forceReleaseLock: (repoPath: string, filePath: string) => Promise<any>;
+  };
+  /**
+   * Session lifecycle. Both the IPC layer and this one go through the same
+   * orchestrator, so the MCP tools cannot drift from what the UI does.
+   */
+  /** The server's own public URL, for the launch block kit_start_session returns. */
+  mcpUrl?: () => string | null;
+  sessionOrchestrator?: {
+    startSession: (config: any) => Promise<any>;
+    listSessions: () => any[];
+    expandSessionAliases: (sessionId: string) => string[];
+    teardownSession: (sessionId: string, opts?: { unbindMcp?: boolean }) => Promise<any>;
+    resolveSessionId: (instanceOrSessionId: string) => string | undefined;
+    closeSession: (sessionId: string, opts?: any) => Promise<any>;
+    descendantSessionIds: (sessionId: string) => string[];
+    closeSessions: (selector: any, opts?: any) => Promise<any>;
+    directChildSessionIds: (sessionId: string) => string[];
+    // M5 — control tools.
+    restartSession: (sessionId: string, sessionData?: any, commitChanges?: boolean) => Promise<any>;
+    adoptSession: (input: any) => Promise<any>;
+    updateSession: (sessionId: string, patch: any) => Promise<any>;
+    extendSession: (sessionId: string, opts: { minutes: number }) => Promise<any>;
+  };
+  /** KIT-PR-P4 — pull request creation for kit_request_review. */
+  githubService?: {
+    ensurePullRequest: (session: {
+      sessionId: string;
+      branchName: string;
+      baseBranch: string;
+      taskDescription: string;
+      worktreePath: string;
+    }) => Promise<{
+      status: string;
+      url?: string;
+      number?: number;
+      reason?: string;
+      message?: string;
+    }>;
   };
   agentInstanceService?: {
     listInstances: () => { success: boolean; data?: any[] };
+    // R1 + C5 additions — count / mode queries per repo path.
+    getActiveSessionCountForRepo?: (repoPath: string) => { success: boolean; data?: number };
+    getActiveSessionsForRepo?: (repoPath: string) => any[];
+    /**
+     * Flip an instance's status. Takes an INSTANCE id (`inst_*`), not a
+     * session id — the two id spaces never collide, so passing the wrong one
+     * silently matches nothing. Was called by tools.ts without being declared
+     * here at all, which is the same shape of type lie that let recordCommit's
+     * arguments sit swapped.
+     */
+    updateInstanceStatus?: (instanceId: string, status: InstanceStatus, error?: string) => void;
+    /** KIT-PR-P5 — record an outstanding review request. */
+    setReviewRequest?: (
+      sessionId: string,
+      review: { summary: string; prUrl?: string; prNumber?: number; prStatus?: string }
+    ) => { success: boolean; error?: { code: string; message: string } };
+  };
+  // C5 Single-Session Mode per-repo settings + O5 telemetry toggle live here.
+  configService?: {
+    getRepoWorktreeMode: (repoPath: string) => 'in-place' | 'worktree';
+    setRepoWorktreeMode: (repoPath: string, mode: 'in-place' | 'worktree') => void;
+  };
+  // Epic A — Workspace discovery.
+  workspaceService?: {
+    list: () => any;
+    get: (id: string) => any;
+    add: (input: { path: string; name?: string; scanDepth?: number; ignoreGlobs?: string[] }) => any;
+    remove: (id: string) => any;
+    getActive: () => any;
+    scan: (id: string) => Promise<any>;
+  };
+  // Epic F — Project groups.
+  projectGroupService?: {
+    list: () => any;
+    add: (input: { name: string; repoPaths: string[]; color?: string }) => any;
   };
   databaseService?: {
-    recordCommit: (sessionId: string, hash: string, message: string, filesChanged: number) => void;
-    recordSessionEvent: (sessionId: string, type: string, data: Record<string, unknown>) => void;
+    /**
+     * Matches DatabaseService.recordCommit exactly: (hash, sessionId, ...).
+     *
+     * This declaration previously read (sessionId, hash, message, filesChanged)
+     * — wrong order AND wrong arity. Every call site already passed the real
+     * five-argument shape, so the mismatch was invisible until the deps object
+     * became a narrowed façade that had to implement the declaration literally.
+     */
+    recordCommit: (
+      hash: string,
+      sessionId: string,
+      message: string,
+      timestamp: string,
+      stats?: {
+        filesChanged?: number;
+        additions?: number;
+        deletions?: number;
+        author?: string;
+        repoName?: string;
+      }
+    ) => void;
+    recordSessionEvent: (
+      sessionId: string,
+      type: string,
+      details?: Record<string, unknown>,
+      commitHash?: string
+    ) => void;
     getSetting: (key: string, defaultValue?: any) => any;
+    /**
+     * Read-only. There is deliberately NO setSetting / setSessionLimits here:
+     * exposing a writer would let an agent raise its own concurrency cap or
+     * re-enable the kill switch the user just turned off. Writes go through
+     * IPC from the UI only.
+     */
+    getSessionLimits?: () => {
+      enabled: boolean;
+      maxConcurrentGlobal: number;
+      maxConcurrentPerRepo: number;
+    };
   };
   contractDetectionService?: {
     analyzeCommit: (worktreePath: string, commitHash: string) => Promise<any>;
@@ -83,6 +205,37 @@ export interface McpServiceDeps {
   contractGenerationService?: {
     generateFeatureContract: (worktreePath: string, feature: any) => Promise<any>;
   };
+  emitCommitCompleted?: (sessionId: string, hash: string, message: string, filesChanged: number) => void;
+  /**
+   * Fire the on-demand rebase logic after an MCP-driven commit succeeds. Not
+   * required — omitting it just means MCP commits skip the post-commit
+   * remote sync (same behavior as pre-v2.6.92). Wired in services/index.ts.
+   */
+  postCommitRebase?: (sessionId: string, repoName?: string) => Promise<{
+    ok: boolean;
+    rewrote: boolean;     // true when the rebase added replayed commits (needs force-with-lease)
+    commitsIntegrated: number;
+    baseBranch?: string;
+    message: string;      // human-readable summary for the activity feed / agent response
+    conflictFiles?: string[]; // when ok=false due to conflicts
+  }>;
+  /** v2.6.95 — expose merge to agents. Same code path as the UI merge modal,
+   *  same S9N-6394 CI gate. force=true maps to skipCiGate=true and requires
+   *  the agent to have explicit user authorization (per the prompt rule). */
+  mergeService?: {
+    executeMerge: (
+      repoPath: string,
+      sourceBranch: string,
+      targetBranch: string,
+      options?: { worktreePath?: string; skipCiGate?: boolean }
+    ) => Promise<any>;
+  };
+  /** v2.6.95 — expose on-demand rebase to agents. Calls performRebaseForPath
+   *  which uses AI conflict resolution when there are conflicts. */
+  rebaseWatcherService?: {
+    performRebaseForPath: (sessionId: string, repoPath: string, baseBranch: string) => Promise<any>;
+  };
+  debugLog?: DebugLogService | null;
 }
 
 export interface McpCallLogEntry {
@@ -98,6 +251,7 @@ export class McpServerService extends BaseService {
   private httpServer: Server | null = null;
   private port: number | null = null;
   private startedAt: string | null = null;
+  private debugLog: DebugLogService | null = null;
 
   // Per-connection transports (stateful mode) — keyed by mcp-session-id
   private transports = new Map<
@@ -117,7 +271,12 @@ export class McpServerService extends BaseService {
   // Track last activity per transport for stale session cleanup
   private lastActivity = new Map<string, number>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  // 2 hours. Was 30 min, which was too aggressive for long agent runs — the
+  // sweep purged active transports and clients with non-spec error handling
+  // (Codex specifically) couldn't recover without manual restart. The
+  // stateless fallback above is the safety net; this bump prevents triggering
+  // it during normal use.
+  private static readonly SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
   // MCP call log — in-memory cache backed by persistent database
   private mcpCallLog: McpCallLogEntry[] = [];
@@ -128,14 +287,23 @@ export class McpServerService extends BaseService {
     this._dbService = db;
   }
 
+  /** Open transport count for diagnostics (HTTP + SSE sessions). */
+  debugSessionCount(): number {
+    return this.transports.size + this.sseTransports.size;
+  }
+
+  setDebugLog(debugLog: DebugLogService): void {
+    this.debugLog = debugLog;
+  }
+
   getMcpCallLog(limit = 200): McpCallLogEntry[] {
-    // Load from database if available and in-memory cache is empty
-    if (this.mcpCallLog.length === 0 && this._dbService) {
+    // Always read from DB when available — ensures calls from other clients (Chrome extension,
+    // remote agents) are included even if they never passed through this process's in-memory log
+    if (this._dbService) {
       try {
-        const rows = this._dbService.getMcpCalls(limit);
-        this.mcpCallLog = rows;
+        return this._dbService.getMcpCalls(limit);
       } catch {
-        // Fall back to empty
+        // Fall back to in-memory
       }
     }
     return this.mcpCallLog.slice(-limit);
@@ -174,6 +342,18 @@ export class McpServerService extends BaseService {
     this.deps.agentInstanceService = svc;
   }
 
+  setMcpUrlProvider(fn: () => string | null): void {
+    this.deps.mcpUrl = fn;
+  }
+
+  setGitHubService(svc: McpServiceDeps['githubService']): void {
+    this.deps.githubService = svc;
+  }
+
+  setSessionOrchestrator(svc: McpServiceDeps['sessionOrchestrator']): void {
+    this.deps.sessionOrchestrator = svc;
+  }
+
   setDatabaseService(svc: McpServiceDeps['databaseService']): void {
     this.deps.databaseService = svc;
   }
@@ -186,8 +366,57 @@ export class McpServerService extends BaseService {
     this.deps.contractGenerationService = svc;
   }
 
+  // v2.5 additions — workspace / config / project group so the MCP tool
+  // layer can expose kit_workspace_* / kit_get_repo_worktree_mode / etc.
+  setConfigServiceForMcp(svc: McpServiceDeps['configService']): void {
+    this.deps.configService = svc;
+  }
+
+  setWorkspaceServiceForMcp(svc: McpServiceDeps['workspaceService']): void {
+    this.deps.workspaceService = svc;
+  }
+
+  setProjectGroupServiceForMcp(svc: McpServiceDeps['projectGroupService']): void {
+    this.deps.projectGroupService = svc;
+  }
+
+  setDebugLogDep(debugLog: DebugLogService): void {
+    this.deps.debugLog = debugLog;
+  }
+
   getDeps(): McpServiceDeps {
     return this.deps;
+  }
+
+  /** Wire the post-commit rebase hook. Called from services/index.ts once
+   *  WatcherService is constructed — the hook fires after every successful
+   *  MCP kit_commit so agent-driven commits get the same "on-demand" rebase
+   *  every .commit-msg-file-driven commit already got. */
+  setPostCommitRebase(fn: NonNullable<McpServiceDeps['postCommitRebase']>): void {
+    this.deps.postCommitRebase = fn;
+  }
+
+  /** v2.6.95 — expose MergeService to the kit_merge tool. */
+  setMergeService(svc: NonNullable<McpServiceDeps['mergeService']>): void {
+    this.deps.mergeService = svc;
+  }
+
+  /** v2.6.95 — expose RebaseWatcherService to the kit_rebase tool. */
+  setRebaseWatcherService(svc: NonNullable<McpServiceDeps['rebaseWatcherService']>): void {
+    this.deps.rebaseWatcherService = svc;
+  }
+
+  wireCommitEmitter(): void {
+    this.deps.emitCommitCompleted = (sessionId, hash, message, filesChanged) => {
+      this.emitToRenderer(IPC.COMMIT_COMPLETED, {
+        sessionId,
+        commitHash: hash,
+        message,
+        filesChanged,
+        timestamp: new Date().toISOString(),
+        source: 'mcp',
+      });
+    };
   }
 
   // ==========================================================================
@@ -317,6 +546,12 @@ export class McpServerService extends BaseService {
       return;
     }
 
+    // ---- Stateless JSON-RPC route (for Codex / type:"http" clients) ----
+    if (url.pathname === '/rpc') {
+      await this.handleStatelessRpc(req, res);
+      return;
+    }
+
     // ---- Streamable HTTP transport route (for Claude Code) ----
     if (url.pathname !== '/mcp') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -339,9 +574,28 @@ export class McpServerService extends BaseService {
       return;
     }
 
-    // Unknown session or invalid request
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Bad Request: No valid session' }));
+    // Unknown or expired session. Some clients (notably Codex) cache the
+    // mcp-session-id across server restarts / idle-sweep purges and keep
+    // POSTing it instead of reinitializing on our 404. Fall back to the
+    // stateless path so the request still succeeds — the transport spins up
+    // a one-shot server + transport pair, processes the JSON-RPC body, and
+    // tears down. The client effectively gets the same answer it would have
+    // had with a fresh session, without needing to handle the error itself.
+    if (req.method === 'POST') {
+      this.debugLog?.warn('McpServer', 'Expired/unknown session — serving via stateless fallback', { sessionId });
+      await this.handleStatelessRpc(req, res);
+      return;
+    }
+    // Non-POST (e.g. GET / DELETE) with an unknown session — there's no
+    // stateless equivalent, so reply with the JSON-RPC error and let the
+    // client reinitialize on its next turn.
+    this.debugLog?.warn('McpServer', 'Expired/unknown session — non-POST cannot fallback', { sessionId, method: req.method });
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32001, message: 'Session not found or expired. Please reinitialize.' },
+    }));
   }
 
   private async createSessionAndHandle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -390,6 +644,45 @@ export class McpServerService extends BaseService {
   }
 
   // ==========================================================================
+  // STATELESS JSON-RPC (Codex / type:"http" clients)
+  // ==========================================================================
+
+  /**
+   * Handles a single stateless JSON-RPC request (no session management).
+   * Codex uses `type: "http"` which sends plain JSON-RPC POST requests without
+   * the MCP Streamable HTTP session protocol. A fresh server + stateless transport
+   * is created for each request and torn down after the response is sent.
+   */
+  private async handleStatelessRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const McpServerClass = _McpServer!;
+    const TransportClass = _StreamableHTTPServerTransport!;
+
+    // Stateless mode: pass sessionIdGenerator: undefined so the transport
+    // assigns no session ID and treats every request as independent.
+    const mcpServer = new McpServerClass({ name: 'kit', version: '1.0.0' });
+    const transport = new TransportClass({ sessionIdGenerator: undefined });
+
+    const { registerTools } = await import('./mcp/tools');
+    const { registerResources } = await import('./mcp/resources');
+    registerTools(mcpServer, this.sessionBinder, this.deps, this);
+    registerResources(mcpServer, this.sessionBinder, this.deps);
+
+    await mcpServer.connect(transport);
+
+    try {
+      await transport.handleRequest(req, res);
+    } finally {
+      try { await (transport as any).close?.(); } catch { this.debugLog?.warn('McpServer', 'Stateless RPC transport close error', {}); }
+    }
+  }
+
+  // ==========================================================================
   // SSE TRANSPORT (Claude Desktop compatibility)
   // ==========================================================================
 
@@ -421,7 +714,20 @@ export class McpServerService extends BaseService {
       console.log(`[McpServerService] SSE session opened: ${sid} (${this.sseTransports.size} active)`);
     }
 
+    // Send SSE keep-alive comment every 25 s to prevent mcp-remote's body timeout
+    // (mcp-remote / node-fetch kills idle SSE streams after ~5 minutes without data)
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch {
+        clearInterval(keepAlive);
+      }
+    }, 25_000);
+
+    res.on('close', () => clearInterval(keepAlive));
+
     transport.onclose = () => {
+      clearInterval(keepAlive);
       if (sid) {
         this.sseTransports.delete(sid);
         this.lastActivity.delete(sid);
@@ -453,6 +759,7 @@ export class McpServerService extends BaseService {
 
     if (cleaned > 0) {
       console.log(`[McpServerService] Cleaned ${cleaned} stale session(s) (${this.transports.size + this.sseTransports.size} active)`);
+      this.debugLog?.info('McpServer', `Cleaned ${cleaned} stale session(s)`, { remaining: this.transports.size + this.sseTransports.size });
     }
   }
 
@@ -467,6 +774,12 @@ export class McpServerService extends BaseService {
   getUrl(): string | null {
     if (!this.port) return null;
     return `http://${MCP_SERVER_HOST}:${this.port}/mcp`;
+  }
+
+  /** Stateless JSON-RPC endpoint for Codex / type:"http" clients */
+  getRpcUrl(): string | null {
+    if (!this.port) return null;
+    return `http://${MCP_SERVER_HOST}:${this.port}/rpc`;
   }
 
   getStatus(): McpServerStatus {

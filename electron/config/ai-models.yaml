@@ -28,7 +28,7 @@ models:
       - summarization
 
   kimi-k2:
-    id: moonshotai/kimi-k2-instruct-0905
+    id: moonshotai/kimi-k2-instruct
     name: "Kimi K2"
     description: "Best for coding/agentic tasks, 256K context"
     provider: groq

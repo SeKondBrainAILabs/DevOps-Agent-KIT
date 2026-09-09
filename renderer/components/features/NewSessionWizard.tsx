@@ -3,8 +3,9 @@
  * Modal form for creating new sessions
  */
 
-import React, { useState } from 'react';
-import type { AgentType } from '../../../shared/types';
+import React, { useEffect, useState } from 'react';
+import type { AgentType, WorktreeMode } from '../../../shared/types';
+import { evaluateSingleSessionGuard } from '../../../shared/single-session-guard';
 
 interface NewSessionWizardProps {
   onClose: () => void;
@@ -12,6 +13,7 @@ interface NewSessionWizardProps {
 
 const agentTypes: { value: AgentType; label: string }[] = [
   { value: 'claude', label: 'Claude' },
+  { value: 'codex', label: 'Codex' },
   { value: 'cursor', label: 'Cursor' },
   { value: 'copilot', label: 'GitHub Copilot' },
   { value: 'cline', label: 'Cline' },
@@ -28,6 +30,40 @@ export function NewSessionWizard({
   const [agentType, setAgentType] = useState<AgentType>('claude');
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // C5 Single-Session Mode: when worktrees are disabled for the chosen repo
+  // and an active session exists, block the "Create Session" CTA.
+  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('worktree');
+  const [activeSessionCount, setActiveSessionCount] = useState(0);
+
+  useEffect(() => {
+    if (!repoPath) {
+      setWorktreeMode('worktree');
+      setActiveSessionCount(0);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [modeRes, countRes] = await Promise.all([
+          window.api.repoWorkspace.getWorktreeMode(repoPath),
+          window.api.repoWorkspace.getActiveSessionCount(repoPath),
+        ]);
+        if (cancelled) return;
+        if (modeRes.success && modeRes.data) setWorktreeMode(modeRes.data);
+        if (countRes.success && typeof countRes.data === 'number') {
+          setActiveSessionCount(countRes.data);
+        }
+      } catch {
+        // Non-fatal — fall back to default (allow creation)
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath]);
+
+  const singleSessionGuard = evaluateSingleSessionGuard(worktreeMode, activeSessionCount);
 
   const handleSelectDirectory = async () => {
     const result = await window.api.dialog.openDirectory();
@@ -72,10 +108,10 @@ export function NewSessionWizard({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-secondary border border-border rounded-lg w-full max-w-md animate-slide-up">
+    <div className="fixed inset-0 bg-black/15 backdrop-blur-[2px] flex items-center justify-center z-50">
+      <div className="bg-white border border-[rgba(0,0,0,0.10)] rounded-[22px] shadow-[0_4px_6px_rgba(0,0,0,0.08)] w-full max-w-md animate-slide-up">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border">
+        <div className="flex items-center justify-between p-4 border-b border-[rgba(0,0,0,0.10)]">
           <h2 className="text-lg font-semibold text-gray-100">New Session</h2>
           <button
             onClick={onClose}
@@ -164,12 +200,23 @@ export function NewSessionWizard({
             </div>
           )}
 
+          {/* Single-Session Mode notice (C5) */}
+          {singleSessionGuard.blocked && (
+            <div
+              className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-md text-amber-300 text-sm"
+              data-testid="single-session-mode-notice"
+            >
+              <strong>Single-Session Mode active.</strong>{' '}
+              {singleSessionGuard.error?.message}
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex gap-2 pt-2">
             <button
               type="button"
               onClick={onClose}
-              className="btn-secondary flex-1"
+              className="kb-btn flex-1"
               disabled={isCreating}
             >
               Cancel
@@ -177,7 +224,12 @@ export function NewSessionWizard({
             <button
               type="submit"
               className="btn-primary flex-1"
-              disabled={isCreating}
+              disabled={isCreating || singleSessionGuard.blocked}
+              title={
+                singleSessionGuard.blocked
+                  ? singleSessionGuard.error?.message
+                  : undefined
+              }
             >
               {isCreating ? 'Creating...' : 'Create Session'}
             </button>

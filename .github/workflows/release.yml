@@ -45,10 +45,24 @@ jobs:
           CXX: g++-13
 
       - name: Install Dependencies
-        # --ignore-scripts skips postinstall (electron-builder install-app-deps)
-        # which tries to rebuild optional native modules like tree-sitter.
-        # electron-builder handles native deps via npmRebuild config at build time.
+        # --ignore-scripts skips postinstall (electron-builder install-app-deps),
+        # which would try to rebuild optional native modules like tree-sitter
+        # against Electron headers and fail. We rebuild only the required native
+        # modules explicitly in the next step.
         run: npm ci --ignore-scripts
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc-13' || '' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++-13' || '' }}
+
+      - name: Rebuild required native modules for Electron
+        # better-sqlite3 is required at startup (DatabaseService). With
+        # --ignore-scripts above, its prebuild-install didn't run, and
+        # `npmRebuild: false` in package.json keeps electron-builder from
+        # rebuilding it. Rebuild it explicitly against Electron's Node ABI so
+        # the .node binary lands in node_modules/better-sqlite3/build/Release/
+        # and gets packaged into the .app. Without this, the app launches to
+        # an empty Welcome screen because DatabaseService.initialize() throws.
+        run: npx @electron/rebuild --force --only better-sqlite3
         env:
           CC: ${{ runner.os == 'Linux' && 'gcc-13' || '' }}
           CXX: ${{ runner.os == 'Linux' && 'g++-13' || '' }}
@@ -88,3 +102,70 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
+
+  # Announce to SoWork #prod-releases after publish. Inlined rather than
+  # calling _shared-sowork-release-notify.yml because the shared workflow
+  # reads github.event.release.* which is only populated on release: events;
+  # our tag-push trigger leaves those undefined. The API contract (list
+  # channels → resolve id → POST message) is trivial enough that a short
+  # inline block is clearer than adding a push-compatible variant to the
+  # shared workflow.
+  notify-sowork:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post release announcement to SoWork
+        env:
+          SOWORK_API_KEY: ${{ secrets.SOWORK_API_KEY }}
+          SOWORK_CHANNEL: prod-releases
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SOWORK_API_KEY:-}" ]; then
+            echo "::warning::SOWORK_API_KEY not present; skipping announcement."
+            exit 0
+          fi
+
+          # Release URL — canonical GitHub link for the tag.
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${RELEASE_TAG}"
+          RELEASE_NAME="${RELEASE_TAG#v}"
+
+          # Auto-generate release notes so the message has context — repo
+          # doesn't set a human-written body during CI-driven releases.
+          BODY=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/releases/generate-notes" \
+            -d "$(jq -n --arg t "${RELEASE_TAG}" '{tag_name: $t}')" 2>/dev/null \
+            | jq -r '.body // ""' 2>/dev/null || true)
+          BODY=$(printf '%s\n' "${BODY}" \
+            | grep -viE '^[[:space:]]*(Co-authored-by|Signed-off-by):' \
+            | grep -viE '^[[:space:]]*\**Full Changelog\**:?[[:space:]]*https?://' \
+            | sed '/./,$!d' || true)
+          BODY_TRUNCATED=$(printf '%s' "${BODY}" | head -c 1800)
+
+          # Resolve channel name → id. Tolerate transient SoWork failures.
+          CHANNEL_ID=$(curl -sS --fail \
+            -H "Authorization: Bearer ${SOWORK_API_KEY}" \
+            "https://api.sowork.com/public/v1/chat/channels" \
+            | jq -r --arg n "${SOWORK_CHANNEL}" \
+                '(.channels // []) | map(select(.name == $n)) | .[0].id // empty' \
+            || true)
+          if [ -z "${CHANNEL_ID}" ]; then
+            echo "::warning::SoWork channel '${SOWORK_CHANNEL}' not found or list-call failed; skipping."
+            exit 0
+          fi
+
+          MSG="🚀 KIT for DevOps ${RELEASE_NAME} shipped — ${RELEASE_URL}"
+          if [ -n "${BODY_TRUNCATED}" ]; then
+            MSG="${MSG}"$'\n\n'"${BODY_TRUNCATED}"
+          fi
+
+          curl -sS --fail -X POST \
+            -H "Authorization: Bearer ${SOWORK_API_KEY}" \
+            -H "Content-Type: application/json" \
+            "https://api.sowork.com/public/v1/chat/channels/${CHANNEL_ID}/messages" \
+            -d "$(jq -n --arg t "${MSG}" '{text: $t}')" \
+            || echo "::warning::SoWork POST failed; continuing."

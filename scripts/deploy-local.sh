@@ -28,7 +28,7 @@ echo "Copying files..."
 rsync -av --exclude 'node_modules' \
           --exclude '.git' \
           --exclude '.DS_Store' \
-          --exclude '.worktrees' \
+          --exclude 'local_deploy' \
           --exclude 'coverage' \
           --exclude 'test_cases' \
           "$SOURCE_DIR/" "$DEST_DIR/"

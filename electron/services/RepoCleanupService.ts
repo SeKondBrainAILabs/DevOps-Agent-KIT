@@ -10,8 +10,22 @@ import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
 import Store from 'electron-store';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { KANVAS_PATHS } from '../../shared/agent-protocol';
-import type { IpcResult, AgentInstance, RecentRepo } from '../../shared/types';
+import type {
+  IpcResult,
+  AgentInstance,
+  RecentRepo,
+  StorageMetricsOverview,
+  DockerUsageBucket,
+  LocalStorageRepoUsage,
+  AbandonedWorktreeUsage,
+  ReclaimableRepoUsage,
+} from '../../shared/types';
+
+const execFileAsync = promisify(execFile);
+const STALE_WORKTREE_DAYS = 14;
 
 interface WorktreeInfo {
   path: string;
@@ -54,6 +68,12 @@ interface CleanupResult {
 interface StoreSchema {
   recentRepos: RecentRepo[];
   instances: AgentInstance[];
+}
+
+interface DockerSystemDfRow {
+  Type?: string;
+  Size?: string;
+  Reclaimable?: string;
 }
 
 export class RepoCleanupService extends BaseService {
@@ -190,9 +210,26 @@ export class RepoCleanupService extends BaseService {
 
       // 1. Remove orphaned worktrees
       if (removeWorktrees) {
-        emitProgress('Removing orphaned worktrees...');
-        await this.gitService.pruneWorktrees(plan.repoPath);
-        result.worktreesRemoved = plan.worktreesToRemove.length;
+        emitProgress('Removing abandoned worktrees...');
+        for (const worktree of plan.worktreesToRemove) {
+          try {
+            const removeResult = await this.gitService.removeWorktreeByPath(plan.repoPath, worktree.path);
+            if (removeResult.success) {
+              result.worktreesRemoved += 1;
+            } else {
+              result.errors.push(
+                removeResult.error?.message || `Failed to remove worktree: ${worktree.path}`
+              );
+            }
+          } catch (error) {
+            result.errors.push(`Error removing worktree ${worktree.path}: ${error}`);
+          }
+        }
+
+        const pruneResult = await this.gitService.pruneWorktrees(plan.repoPath);
+        if (!pruneResult.success) {
+          result.errors.push(pruneResult.error?.message || 'Failed to prune worktree references');
+        }
       }
 
       // 2. Merge completed branches (in order)
@@ -320,6 +357,334 @@ export class RepoCleanupService extends BaseService {
       console.log(`[RepoCleanupService] Cleaned up Kanvas directory in ${repoPath}:`, result);
       return result;
     }, 'CLEANUP_KANVAS_FAILED');
+  }
+
+  /**
+   * Read-only storage metrics for the Workspace "Disk & Cleanup" panel.
+   * Includes Docker system usage + per-repo local disk hotspots.
+   */
+  async getStorageMetrics(repoPaths: string[]): Promise<IpcResult<StorageMetricsOverview>> {
+    return this.wrap(async () => {
+      const normalizedRepos = [...new Set(
+        repoPaths
+          .map((repoPath) => repoPath?.trim())
+          .filter((repoPath): repoPath is string => Boolean(repoPath))
+      )];
+
+      const [docker, local] = await Promise.all([
+        this.collectDockerUsage(),
+        this.collectLocalUsage(normalizedRepos),
+      ]);
+
+      return {
+        fetchedAt: new Date().toISOString(),
+        docker,
+        local,
+      };
+    }, 'GET_STORAGE_METRICS_FAILED');
+  }
+
+  private async collectDockerUsage(): Promise<StorageMetricsOverview['docker']> {
+    const emptyBucket: DockerUsageBucket = {
+      sizeBytes: 0,
+      reclaimableBytes: 0,
+      reclaimablePercent: null,
+    };
+
+    try {
+      const { stdout } = await execFileAsync('docker', [
+        'system',
+        'df',
+        '--format',
+        '{{json .}}',
+      ], {
+        timeout: 15_000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+
+      const rows = stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as DockerSystemDfRow);
+
+      const pickRow = (needle: string): DockerSystemDfRow | undefined =>
+        rows.find((row) => row.Type?.toLowerCase() === needle);
+
+      return {
+        available: true,
+        images: this.parseDockerBucket(pickRow('images')),
+        localVolumes: this.parseDockerBucket(pickRow('local volumes')),
+        buildCache: this.parseDockerBucket(pickRow('build cache')),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to query Docker usage';
+      return {
+        available: false,
+        error: message,
+        images: emptyBucket,
+        localVolumes: emptyBucket,
+        buildCache: emptyBucket,
+      };
+    }
+  }
+
+  private parseDockerBucket(row?: DockerSystemDfRow): DockerUsageBucket {
+    if (!row) {
+      return {
+        sizeBytes: 0,
+        reclaimableBytes: 0,
+        reclaimablePercent: null,
+      };
+    }
+
+    const reclaimableRaw = row.Reclaimable ?? '';
+    const reclaimablePercentMatch = reclaimableRaw.match(/\((\d+)%\)/);
+    const reclaimablePercent = reclaimablePercentMatch ? Number(reclaimablePercentMatch[1]) : null;
+    const reclaimableSize = reclaimableRaw.replace(/\(.*\)/, '').trim();
+
+    return {
+      sizeBytes: this.parseHumanSizeToBytes(row.Size ?? ''),
+      reclaimableBytes: this.parseHumanSizeToBytes(reclaimableSize),
+      reclaimablePercent: Number.isFinite(reclaimablePercent as number) ? reclaimablePercent : null,
+    };
+  }
+
+  private async collectAbandonedWorktrees(repoPaths: string[]): Promise<AbandonedWorktreeUsage[]> {
+    const abandonedWorktrees: AbandonedWorktreeUsage[] = [];
+    const instances = this.store.get('instances', []);
+    const activeWorktreePaths = new Set<string>();
+
+    for (const instance of instances) {
+      if (!instance.worktreePath) continue;
+      activeWorktreePaths.add(path.resolve(instance.worktreePath));
+      try {
+        activeWorktreePaths.add(await fs.realpath(instance.worktreePath));
+      } catch {
+        // Ignore unresolved paths.
+      }
+    }
+
+    for (const repoPath of repoPaths) {
+      const worktreesResult = await this.gitService.listWorktrees(repoPath);
+      if (!worktreesResult.success || !worktreesResult.data) continue;
+
+      const normalizedRepoPath = await this.normalizePath(repoPath);
+      for (const worktree of worktreesResult.data) {
+        const normalizedWorktreePath = await this.normalizePath(worktree.path);
+        if (normalizedWorktreePath === normalizedRepoPath) continue;
+
+        const exists = existsSync(worktree.path);
+        const hasActiveSession =
+          activeWorktreePaths.has(path.resolve(worktree.path)) ||
+          activeWorktreePaths.has(normalizedWorktreePath);
+        let lastTouchedAt: string | null = null;
+        let daysSinceLastTouched: number | null = null;
+        let bytes = 0;
+
+        if (exists) {
+          try {
+            const stats = await fs.stat(worktree.path);
+            lastTouchedAt = stats.mtime.toISOString();
+            daysSinceLastTouched = Math.max(
+              0,
+              Math.floor((Date.now() - stats.mtime.getTime()) / (24 * 60 * 60 * 1000))
+            );
+          } catch {
+            // Keep null values when stat fails.
+          }
+          bytes = await this.getDirectoryBytes(worktree.path);
+        }
+
+        const isMissingPath = !exists;
+        const isStaleNoSession = exists &&
+          !hasActiveSession &&
+          daysSinceLastTouched !== null &&
+          daysSinceLastTouched >= STALE_WORKTREE_DAYS;
+
+        if (!isMissingPath && !isStaleNoSession) continue;
+
+        abandonedWorktrees.push({
+          repoPath,
+          worktreePath: worktree.path,
+          branch: worktree.branch || '(detached)',
+          bytes,
+          exists,
+          lastTouchedAt,
+          daysSinceLastTouched,
+          reason: isMissingPath ? 'missing-path' : 'stale-no-session',
+        });
+      }
+    }
+
+    abandonedWorktrees.sort((a, b) => {
+      if (a.reason !== b.reason) return a.reason === 'missing-path' ? -1 : 1;
+      if (a.bytes !== b.bytes) return b.bytes - a.bytes;
+      return (b.daysSinceLastTouched ?? -1) - (a.daysSinceLastTouched ?? -1);
+    });
+    return abandonedWorktrees;
+  }
+
+  private buildReclaimableRanking(
+    repoPaths: string[],
+    nodeModulesByRepo: LocalStorageRepoUsage[],
+    pythonEnvsByRepo: LocalStorageRepoUsage[],
+    abandonedWorktrees: AbandonedWorktreeUsage[],
+  ): ReclaimableRepoUsage[] {
+    const byRepo = new Map<string, ReclaimableRepoUsage>();
+    const ensureEntry = (repoPath: string): ReclaimableRepoUsage => {
+      const existing = byRepo.get(repoPath);
+      if (existing) return existing;
+      const created: ReclaimableRepoUsage = {
+        repoPath,
+        totalReclaimableBytes: 0,
+        nodeModulesBytes: 0,
+        pythonEnvsBytes: 0,
+        abandonedWorktreeBytes: 0,
+        abandonedWorktreeCount: 0,
+      };
+      byRepo.set(repoPath, created);
+      return created;
+    };
+
+    for (const repoPath of repoPaths) ensureEntry(repoPath);
+
+    for (const row of nodeModulesByRepo) {
+      ensureEntry(row.repoPath).nodeModulesBytes += row.bytes;
+    }
+    for (const row of pythonEnvsByRepo) {
+      ensureEntry(row.repoPath).pythonEnvsBytes += row.bytes;
+    }
+    for (const worktree of abandonedWorktrees) {
+      const entry = ensureEntry(worktree.repoPath);
+      entry.abandonedWorktreeBytes += worktree.bytes;
+      entry.abandonedWorktreeCount += 1;
+    }
+
+    return [...byRepo.values()]
+      .map((entry) => ({
+        ...entry,
+        totalReclaimableBytes: entry.nodeModulesBytes + entry.pythonEnvsBytes + entry.abandonedWorktreeBytes,
+      }))
+      .filter((entry) => entry.totalReclaimableBytes > 0 || entry.abandonedWorktreeCount > 0)
+      .sort((a, b) => {
+        if (a.totalReclaimableBytes !== b.totalReclaimableBytes) {
+          return b.totalReclaimableBytes - a.totalReclaimableBytes;
+        }
+        return b.abandonedWorktreeCount - a.abandonedWorktreeCount;
+      });
+  }
+
+  private async normalizePath(targetPath: string): Promise<string> {
+    try {
+      return await fs.realpath(targetPath);
+    } catch {
+      return path.resolve(targetPath);
+    }
+  }
+
+  private parseHumanSizeToBytes(raw: string): number {
+    const value = raw.trim();
+    if (!value || value === '0B' || value === '0') return 0;
+    const match = value.match(/^([\d.]+)\s*([kmgtpe]?i?b?)$/i);
+    if (!match) return 0;
+
+    const numeric = Number(match[1]);
+    if (!Number.isFinite(numeric)) return 0;
+
+    const unit = match[2].toLowerCase();
+    const base = 1024;
+    const powerByUnit: Record<string, number> = {
+      b: 0,
+      kb: 1,
+      kib: 1,
+      mb: 2,
+      mib: 2,
+      gb: 3,
+      gib: 3,
+      tb: 4,
+      tib: 4,
+      pb: 5,
+      pib: 5,
+      eb: 6,
+      eib: 6,
+    };
+    const power = powerByUnit[unit] ?? 0;
+    return Math.round(numeric * (base ** power));
+  }
+
+  private async collectLocalUsage(repoPaths: string[]): Promise<StorageMetricsOverview['local']> {
+    const nodeModulesByRepo: LocalStorageRepoUsage[] = [];
+    const pythonEnvsByRepo: LocalStorageRepoUsage[] = [];
+
+    for (const repoPath of repoPaths) {
+      const nodeModulesPath = path.join(repoPath, 'node_modules');
+      const nodeModulesBytes = await this.getDirectoryBytes(nodeModulesPath);
+      if (nodeModulesBytes > 0) {
+        nodeModulesByRepo.push({
+          repoPath,
+          bytes: nodeModulesBytes,
+          paths: [nodeModulesPath],
+        });
+      }
+
+      const pythonCandidates = [path.join(repoPath, '.venv'), path.join(repoPath, 'venv')];
+      let pythonBytes = 0;
+      const existingPythonPaths: string[] = [];
+      for (const pythonPath of pythonCandidates) {
+        const candidateBytes = await this.getDirectoryBytes(pythonPath);
+        if (candidateBytes > 0) {
+          pythonBytes += candidateBytes;
+          existingPythonPaths.push(pythonPath);
+        }
+      }
+      if (pythonBytes > 0) {
+        pythonEnvsByRepo.push({
+          repoPath,
+          bytes: pythonBytes,
+          paths: existingPythonPaths,
+        });
+      }
+    }
+
+    nodeModulesByRepo.sort((a, b) => b.bytes - a.bytes);
+    pythonEnvsByRepo.sort((a, b) => b.bytes - a.bytes);
+
+    const nodeModulesTotalBytes = nodeModulesByRepo.reduce((sum, item) => sum + item.bytes, 0);
+    const pythonEnvsTotalBytes = pythonEnvsByRepo.reduce((sum, item) => sum + item.bytes, 0);
+    const abandonedWorktrees = await this.collectAbandonedWorktrees(repoPaths);
+    const reclaimableByRepo = this.buildReclaimableRanking(
+      repoPaths,
+      nodeModulesByRepo,
+      pythonEnvsByRepo,
+      abandonedWorktrees
+    );
+
+    return {
+      scannedRepoCount: repoPaths.length,
+      nodeModulesTotalBytes,
+      pythonEnvsTotalBytes,
+      nodeModulesByRepo,
+      pythonEnvsByRepo,
+      abandonedWorktrees,
+      reclaimableByRepo,
+    };
+  }
+
+  private async getDirectoryBytes(directoryPath: string): Promise<number> {
+    if (!existsSync(directoryPath)) return 0;
+    try {
+      const { stdout } = await execFileAsync('du', ['-sk', directoryPath], {
+        timeout: 20_000,
+        maxBuffer: 5 * 1024 * 1024,
+      });
+      const firstColumn = stdout.trim().split(/\s+/)[0];
+      const kb = Number(firstColumn);
+      if (!Number.isFinite(kb) || kb < 0) return 0;
+      return Math.round(kb * 1024);
+    } catch {
+      return 0;
+    }
   }
 
   /**

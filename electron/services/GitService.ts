@@ -15,7 +15,16 @@ import type {
   BranchInfo,
   FileStatus,
   IpcResult,
+  RepoStatus,
+  RepoBranchRow,
+  WorktreeSafetyInfo,
 } from '../../shared/types';
+import {
+  countNonBlankLines,
+  countWorktreeListPorcelain,
+  parseLastCommit,
+  parsePorcelainV2,
+} from '../../shared/repo-status-parser';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -45,6 +54,25 @@ async function getExeca() {
 }
 
 export class GitService extends BaseService {
+  /** Optional debug logger — wired in services/index.ts. */
+  private debugLog: { warn: (source: string, message: string, details?: unknown) => void } | null = null;
+  setDebugLog(debugLog: { warn: (source: string, message: string, details?: unknown) => void }): void {
+    this.debugLog = debugLog;
+  }
+
+  /**
+   * Audit every worktree removal. Worktree deletion is destructive (it can lose
+   * an agent's uncommitted work), so we record WHO triggered it — the caller
+   * stack — to the persistent debug log. This makes accidental removals (from
+   * merge/cleanup/restart/stale-scan paths) traceable after the fact.
+   */
+  private auditWorktreeRemoval(worktreePath: string, repoPath: string, reason: string): void {
+    const stack = (new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' <- ');
+    const payload = { worktreePath, repoPath, reason, caller: stack };
+    console.warn(`[GitService] WORKTREE REMOVE (${reason}): ${worktreePath}\n  caller: ${stack}`);
+    this.debugLog?.warn('GitService', `Worktree removed (${reason})`, payload);
+  }
+
   /**
    * Execute a git command (uses dynamic import for ESM-only execa)
    */
@@ -174,6 +202,7 @@ export class GitService extends BaseService {
         if (paths && existsSync(paths.worktreePath)) {
           try {
             // Only remove actual worktrees (not submodule directories)
+            this.auditWorktreeRemoval(paths.worktreePath, paths.repoPath, 'removeAllWorktrees(sessionId)');
             await this.git(['worktree', 'remove', paths.worktreePath, '--force'], paths.repoPath);
           } catch {
             // May be a submodule path, not a worktree
@@ -214,6 +243,7 @@ export class GitService extends BaseService {
 
       // Remove worktree
       if (existsSync(worktreePath)) {
+        this.auditWorktreeRemoval(worktreePath, repoPath, `removeWorktree(${sessionId})`);
         await this.git(['worktree', 'remove', worktreePath, '--force'], repoPath);
       }
 
@@ -305,11 +335,20 @@ export class GitService extends BaseService {
     }, 'GIT_COMMIT_FAILED');
   }
 
-  async push(sessionId: string, repoName?: string): Promise<IpcResult<void>> {
+  async push(
+    sessionId: string,
+    repoName?: string,
+    options?: { forceWithLease?: boolean }
+  ): Promise<IpcResult<void>> {
     return this.wrap(async () => {
       const cwd = this.getWorkingDir(sessionId, repoName);
       const branch = await this.git(['branch', '--show-current'], cwd);
-      await this.git(['push', '-u', 'origin', branch], cwd);
+      const args = ['push', '-u', 'origin', branch];
+      // v2.7.5 — force-with-lease when a post-commit rebase rewrote history.
+      // Regular push would fail "not fast-forward"; --force-with-lease is
+      // safe (refuses if someone else pushed since our last fetch).
+      if (options?.forceWithLease) args.push('--force-with-lease');
+      await this.git(args, cwd);
     }, 'GIT_PUSH_FAILED');
   }
 
@@ -348,13 +387,20 @@ export class GitService extends BaseService {
         const match = line.match(/^\*?\s+(\S+)\s+(\S+)/);
         if (match) {
           const [, name, lastCommit] = match;
-          // Skip remotes/origin/ prefix for remote branches
-          const cleanName = name.replace('remotes/origin/', '');
+          const isRemote = name.startsWith('remotes/');
+          // Strip 'remotes/origin/' or 'origin/' prefix so remote tracking
+          // branches never appear in the list as 'origin/main'.
+          const cleanName = name.replace(/^remotes\/origin\//, '').replace(/^origin\//, '');
+
+          // Skip HEAD pointer entries (e.g. remotes/origin/HEAD -> origin/main)
+          // Also skip detached HEAD pseudo-entries like "(HEAD" which appear when
+          // a worktree is checked out at a tag or detached commit.
+          if (cleanName === 'HEAD' || cleanName.startsWith('(')) continue;
 
           branches.push({
             name: cleanName,
             current: isCurrent,
-            remote: name.startsWith('remotes/') ? 'origin' : undefined,
+            remote: isRemote ? 'origin' : undefined,
             lastCommit,
           });
         }
@@ -362,6 +408,292 @@ export class GitService extends BaseService {
 
       return branches;
     }, 'GIT_BRANCHES_FAILED');
+  }
+
+  /**
+   * Current branch of a worktree path, as a TRI-STATE for the divergence guards:
+   *   - a branch name  → HEAD is on that branch
+   *   - 'HEAD'         → genuinely detached HEAD (definitive)
+   *   - null           → could NOT determine (path missing, git lock, error)
+   *
+   * Uses `rev-parse --abbrev-ref HEAD`, which prints the branch name on a branch
+   * and the literal "HEAD" when detached. Crucially this lets callers tell a real
+   * detached HEAD apart from a failed check — we must never report "detached"
+   * (and block/scare the agent) just because the command errored. `symbolic-ref`
+   * conflated the two (exit 1 for both), which caused false "detached" warnings.
+   */
+  /**
+   * Stage and commit ALL changes in a worktree path (used to save uncommitted work
+   * before a merge/rebase when the user opts to commit first). No-op-safe: returns
+   * committed:false when there's nothing to commit.
+   */
+  async commitWorktree(worktreePath: string, message: string): Promise<IpcResult<{ committed: boolean; hash?: string }>> {
+    return this.wrap(async () => {
+      const status = await this.git(['status', '--porcelain'], worktreePath);
+      if (!status.trim()) return { committed: false };
+      await this.git(['add', '-A'], worktreePath);
+      await this.git(['commit', '-m', message], worktreePath);
+      const hash = (await this.git(['rev-parse', 'HEAD'], worktreePath)).trim();
+      return { committed: true, hash };
+    }, 'GIT_COMMIT_WORKTREE_FAILED');
+  }
+
+  /**
+   * Crash-safety snapshot: capture the worktree's tracked + untracked state as
+   * a stash commit and pin it under `refs/kit-autosave/<sessionId>` without
+   * touching HEAD, the index, or `git log`. Replaces the old WIP periodic
+   * auto-commit which polluted history AND let truncated/broken files
+   * (Kemory's ai_chat_service.py being the loud case) get pushed to origin.
+   *
+   * Cost: roughly the same as `git stash create` — sub-100ms for typical
+   * worktrees. The pinned ref is reachable for GC but invisible in
+   * `git log` unless explicitly asked for. Recovery:
+   *   git diff refs/kit-autosave/<sessionId> -- <file>
+   *   git checkout refs/kit-autosave/<sessionId> -- <file>
+   *
+   * Returns null when there's nothing to snapshot (clean tree) or when the
+   * stash invocation produces no SHA. Either is fine and counts as a no-op.
+   */
+  async createSnapshot(
+    worktreePath: string,
+    sessionId: string
+  ): Promise<IpcResult<{ sha: string; refName: string } | null>> {
+    return this.wrap(async () => {
+      // `git stash create` makes a stash commit without storing it in
+      // `refs/stash` — we get the SHA back and pin it ourselves. `-u`
+      // (include untracked) captures new files that haven't been added yet,
+      // which is where most agent edits live before the first kit_commit.
+      const sha = (await this.git(['stash', 'create', '-u', 'kit-autosave'], worktreePath)).trim();
+      if (!sha) return null; // clean tree — nothing to snapshot
+      const refName = `refs/kit-autosave/${sessionId}`;
+      await this.git(['update-ref', refName, sha], worktreePath);
+      return { sha, refName };
+    }, 'GIT_CREATE_SNAPSHOT_FAILED');
+  }
+
+  /**
+   * `git remote get-url origin`, or null when there is no origin (KIT-PR-P3).
+   *
+   * Null is a normal answer — a local-only repo is a valid way to work — so
+   * this never throws for a missing remote.
+   */
+  async getRemoteUrl(repoPath: string, remote = 'origin'): Promise<string | null> {
+    try {
+      const out = await this.git(['remote', 'get-url', remote], repoPath);
+      const url = out.trim();
+      return url.length > 0 ? url : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Commits on `branchName` that are not on `baseBranch` (KIT-PR-P3).
+   *
+   * This is the source of truth for what a pull request contains. KIT's own
+   * `commits` table is NOT used for that: it is only written by kit_commit,
+   * kit_commit_all and the watcher's idle checkpoint, so an agent that runs
+   * `git commit` in bash leaves no row and the PR body would silently omit it.
+   *
+   * Uses %x1f as the field separator because commit subjects legitimately
+   * contain every printable character including tabs and pipes.
+   */
+  async getCommitsAhead(
+    repoPath: string,
+    baseBranch: string,
+    branchName: string
+  ): Promise<Array<{ hash: string; subject: string }>> {
+    try {
+      const out = await this.git(
+        ['log', `${baseBranch}..${branchName}`, '--pretty=format:%H%x1f%s'],
+        repoPath
+      );
+      return out
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => {
+          const [hash, ...rest] = line.split('\x1f');
+          return { hash: hash ?? '', subject: rest.join(' ') };
+        })
+        .filter((c) => c.hash.length > 0);
+    } catch {
+      // An unresolvable base ref is the same class of problem the reaper hit:
+      // report nothing rather than a confident wrong answer.
+      return [];
+    }
+  }
+
+  /**
+   * Local, network-free safety probe for the reaper (R1).
+   *
+   * ## Why this exists alongside `getWorktreeSafetyInfo`
+   *
+   * `getWorktreeSafetyInfo` compares HEAD against the hardcoded `main` and
+   * `development`, and wraps both comparisons in a swallow-all `safe()`. When
+   * neither ref exists — a repo whose primary branch is `trunk`, `master`, or
+   * anything else — BOTH comparisons fail silently and it reports
+   * `unmergedCommitCount: 0` with `mergedIntoBranches: ['main','development']`.
+   * A branch full of unmerged work is presented as clean and fully merged.
+   * Verified against a real repo, not assumed.
+   *
+   * That is survivable for the dialog it feeds, where a human reads the result.
+   * It is not survivable for the reaper, which would take it as authorisation
+   * to delete the worktree AND the local branch.
+   *
+   * So this compares against the session's OWN recorded base branch and, when
+   * that comparison cannot be made, says so via `conclusive: false` instead of
+   * reporting a confident zero.
+   */
+  async getReapSafetyInfo(
+    worktreePath: string,
+    baseBranch: string | undefined
+  ): Promise<IpcResult<{
+    conclusive: boolean;
+    hasUncommittedChanges: boolean;
+    unmergedCommitCount: number;
+    comparedAgainst?: string;
+    inconclusiveReason?: string;
+  }>> {
+    return this.wrap(async () => {
+      let status: string;
+      try {
+        status = await this.git(['status', '--porcelain'], worktreePath);
+      } catch (err) {
+        // We could not even read the worktree. Report inconclusive AND assume
+        // there is work, so every caller refuses to delete.
+        return {
+          conclusive: false,
+          hasUncommittedChanges: true,
+          unmergedCommitCount: 0,
+          inconclusiveReason: `git status failed: ${(err as Error)?.message ?? 'unknown'}`,
+        };
+      }
+
+      const hasUncommittedChanges = status
+        .split('\n')
+        .some((line) => line.trim().length > 0);
+
+      if (!baseBranch) {
+        return {
+          conclusive: false,
+          hasUncommittedChanges,
+          unmergedCommitCount: 0,
+          inconclusiveReason: 'session records no base branch to compare against',
+        };
+      }
+
+      // Does the base ref actually resolve? This is the check whose absence
+      // makes getWorktreeSafetyInfo unsafe.
+      try {
+        await this.git(['rev-parse', '--verify', `${baseBranch}^{commit}`], worktreePath);
+      } catch {
+        return {
+          conclusive: false,
+          hasUncommittedChanges,
+          unmergedCommitCount: 0,
+          inconclusiveReason: `base branch '${baseBranch}' does not resolve in this worktree`,
+        };
+      }
+
+      try {
+        const out = await this.git(
+          ['rev-list', '--count', `${baseBranch}..HEAD`],
+          worktreePath
+        );
+        const count = Number.parseInt(out.trim(), 10);
+        if (!Number.isFinite(count)) {
+          return {
+            conclusive: false,
+            hasUncommittedChanges,
+            unmergedCommitCount: 0,
+            comparedAgainst: baseBranch,
+            inconclusiveReason: `rev-list returned unparseable output: ${out.trim()}`,
+          };
+        }
+        return {
+          conclusive: true,
+          hasUncommittedChanges,
+          unmergedCommitCount: count,
+          comparedAgainst: baseBranch,
+        };
+      } catch (err) {
+        return {
+          conclusive: false,
+          hasUncommittedChanges,
+          unmergedCommitCount: 0,
+          comparedAgainst: baseBranch,
+          inconclusiveReason: `rev-list failed: ${(err as Error)?.message ?? 'unknown'}`,
+        };
+      }
+    }, 'GIT_REAP_SAFETY_INFO_FAILED');
+  }
+
+  /**
+   * Find existing version-tag prefixes in a repo (for the wizard to suggest one).
+   * A "version tag" is any tag ending in vMAJOR.MINOR.PATCH; the returned prefix
+   * is everything up to and including the leading "v" (e.g. "SDDMini-KH/v").
+   */
+  async detectVersionTagPrefixes(repoPath: string): Promise<IpcResult<Array<{ prefix: string; count: number; latest: string }>>> {
+    return this.wrap(async () => {
+      const out = await this.git(['tag', '--list'], repoPath).catch(() => '');
+      const byPrefix = new Map<string, { count: number; latestVer: [number, number, number]; latest: string }>();
+      for (const raw of out.split('\n')) {
+        const tag = raw.trim();
+        const m = tag.match(/^(.*v)(\d+)\.(\d+)\.(\d+)$/);
+        if (!m) continue;
+        const prefix = m[1];
+        const ver: [number, number, number] = [Number(m[2]), Number(m[3]), Number(m[4])];
+        const cur = byPrefix.get(prefix);
+        const isNewer = !cur || ver[0] > cur.latestVer[0] || (ver[0] === cur.latestVer[0] && (ver[1] > cur.latestVer[1] || (ver[1] === cur.latestVer[1] && ver[2] > cur.latestVer[2])));
+        byPrefix.set(prefix, { count: (cur?.count ?? 0) + 1, latestVer: isNewer ? ver : (cur?.latestVer ?? ver), latest: isNewer ? tag : (cur?.latest ?? tag) });
+      }
+      return Array.from(byPrefix.entries())
+        .map(([prefix, v]) => ({ prefix, count: v.count, latest: v.latest }))
+        .sort((a, b) => b.count - a.count);
+    }, 'GIT_DETECT_TAG_PREFIXES_FAILED');
+  }
+
+  /**
+   * Compute the next version tag for a prefix by bumping the patch of the highest
+   * existing tag. Fetches tags first (best-effort) so remote releases are counted.
+   */
+  async getNextVersionTag(repoPath: string, prefix: string): Promise<IpcResult<{ latest: string | null; next: string }>> {
+    return this.wrap(async () => {
+      try { await this.git(['fetch', '--tags', '--quiet', 'origin'], repoPath); } catch { /* offline ok */ }
+      const out = await this.git(['tag', '--list', `${prefix}*`], repoPath).catch(() => '');
+      const versions = out.split('\n')
+        .map(t => t.trim())
+        .filter(t => t.startsWith(prefix))
+        .map(t => t.slice(prefix.length).match(/^(\d+)\.(\d+)\.(\d+)$/))
+        .filter((m): m is RegExpMatchArray => !!m)
+        .map(m => [Number(m[1]), Number(m[2]), Number(m[3])] as [number, number, number]);
+      versions.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+      const top = versions[versions.length - 1];
+      const latest = top ? `${prefix}${top[0]}.${top[1]}.${top[2]}` : null;
+      const next = top ? `${prefix}${top[0]}.${top[1]}.${top[2] + 1}` : `${prefix}0.0.1`;
+      return { latest, next };
+    }, 'GIT_NEXT_VERSION_FAILED');
+  }
+
+  /**
+   * Create an annotated tag and push it to origin. Pushing a tag that matches a
+   * workflow's `on: push: tags` pattern is what fires the GitHub Action.
+   */
+  async createAndPushTag(repoPath: string, tag: string, ref?: string): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      await this.git(['tag', '-a', tag, '-m', tag, ...(ref ? [ref] : [])], repoPath);
+      await this.git(['push', 'origin', tag], repoPath);
+    }, 'GIT_CREATE_TAG_FAILED');
+  }
+
+  async getCurrentBranchName(worktreePath: string): Promise<string | null> {
+    try {
+      const out = await this.git(['rev-parse', '--abbrev-ref', 'HEAD'], worktreePath);
+      return out.trim() || null;
+    } catch {
+      return null; // unknown — caller treats this as "can't tell", NOT as detached
+    }
   }
 
   /**
@@ -398,6 +730,11 @@ export class GitService extends BaseService {
    */
   async fetchRemote(repoPath: string, remote = 'origin'): Promise<IpcResult<void>> {
     return this.wrap(async () => {
+      // Guard against ENOENT when the path (e.g. a deleted worktree) no longer exists
+      if (!existsSync(repoPath)) {
+        console.warn(`[GitService] fetchRemote skipped — path no longer exists: ${repoPath}`);
+        return;
+      }
       await this.git(['fetch', remote, '--prune'], repoPath);
     }, 'GIT_FETCH_FAILED');
   }
@@ -599,6 +936,7 @@ export class GitService extends BaseService {
     incomingCommits?: string[];
   }>> {
     return this.wrap(async () => {
+      baseBranch = baseBranch.replace(/^origin\//, '');
       console.log(`[GitService] ========== REBASE OPERATION START ==========`);
       console.log(`[GitService] Repository: ${repoPath}`);
       console.log(`[GitService] Base branch: ${baseBranch}`);
@@ -703,11 +1041,13 @@ export class GitService extends BaseService {
     success: boolean;
     message: string;
     hadChanges: boolean;
+    stashPopFailed?: boolean;
     conflictsResolved?: number;
     conflictsFailed?: number;
     resolutions?: import('./MergeConflictService').ResolutionResult[];
   }>> {
     return this.wrap(async () => {
+      baseBranch = baseBranch.replace(/^origin\//, '');
       console.log(`[GitService] Starting AI-powered rebase of ${repoPath} onto ${baseBranch}`);
 
       // 1. Fetch latest
@@ -770,9 +1110,13 @@ export class GitService extends BaseService {
             await this.git(['reset', 'HEAD', '--', '.'], repoPath);
             await this.git(['checkout', '--', '.'], repoPath);
           } catch { /* best-effort cleanup — stash entry is preserved for manual recovery */ }
+          // Return success:true — the rebase succeeded; only the stash pop had trouble.
+          // The stashPopFailed flag lets callers surface a targeted warning without
+          // opening the merge-conflict dialog (which would show an empty conflict list).
           return {
-            success: false,
-            message: 'Rebase successful but stash pop had conflicts. Stashed changes were preserved — run "git stash pop" manually to recover them.',
+            success: true,
+            stashPopFailed: true,
+            message: 'Rebase successful. Your uncommitted changes were stashed and need to be recovered — run "git stash pop" in the worktree directory to restore them.',
             hadChanges,
             conflictsResolved: rebaseResult.data.conflictsResolved,
             conflictsFailed: rebaseResult.data.conflictsFailed,
@@ -842,6 +1186,45 @@ export class GitService extends BaseService {
     return this.wrap(async () => {
       await this.git(['worktree', 'prune'], repoPath);
     }, 'GIT_PRUNE_WORKTREES_FAILED');
+  }
+
+  /**
+   * Remove a specific worktree by path (repo-path based cleanup flow).
+   * If the path no longer exists on disk, prune stale references instead.
+   */
+  async removeWorktreeByPath(repoPath: string, worktreePath: string): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      const resolvedRepoPath = path.resolve(repoPath);
+      const resolvedWorktreePath = path.resolve(worktreePath);
+      if (resolvedRepoPath === resolvedWorktreePath) {
+        throw new Error('Refusing to remove primary worktree');
+      }
+
+      // SAFETY: this path is for cleaning up ABANDONED worktrees. Never delete a
+      // worktree that is currently registered to a live session — doing so would
+      // pull the directory out from under a running agent and lose its work.
+      for (const [sid, value] of worktreePaths.entries()) {
+        if (path.resolve(value.worktreePath) === resolvedWorktreePath) {
+          const msg = `Refusing to remove worktree still registered to live session ${sid}: ${worktreePath}`;
+          console.warn(`[GitService] ${msg}`);
+          this.debugLog?.warn('GitService', 'Blocked removal of live-session worktree', { sessionId: sid, worktreePath, repoPath });
+          throw new Error(msg);
+        }
+      }
+
+      if (existsSync(worktreePath)) {
+        this.auditWorktreeRemoval(worktreePath, repoPath, 'removeWorktreeByPath (cleanup)');
+        await this.git(['worktree', 'remove', worktreePath, '--force'], repoPath);
+      }
+
+      await this.git(['worktree', 'prune'], repoPath);
+
+      for (const [key, value] of worktreePaths.entries()) {
+        if (path.resolve(value.worktreePath) === resolvedWorktreePath) {
+          worktreePaths.delete(key);
+        }
+      }
+    }, 'GIT_REMOVE_WORKTREE_BY_PATH_FAILED');
   }
 
   /**
@@ -1394,6 +1777,162 @@ export class GitService extends BaseService {
   // ==========================================================================
 
   /**
+   * Compact status snapshot keyed on raw repo path (no sessionId required).
+   * Powers the RepoStatusCard in the Workspace Browser.
+   *
+   * Issues 4 git invocations in parallel:
+   *   1) status --porcelain=v2 -b   (branch + ahead/behind + per-file counts)
+   *   2) stash list                 (count via line count)
+   *   3) worktree list --porcelain  (count via 'worktree ' header count)
+   *   4) log -1 --format=%H|%h|%s|%aI   (last commit)
+   *
+   * Each sub-call is independently fault-tolerant: if any fails (e.g. no
+   * upstream, fresh repo with no commits) we still return what we have.
+   */
+  async getRepoStatus(repoPath: string): Promise<IpcResult<RepoStatus>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await p;
+        } catch {
+          return fallback;
+        }
+      };
+
+      const [statusOut, stashOut, worktreeOut, lastCommitOut] = await Promise.all([
+        safe(this.git(['status', '--porcelain=v2', '-b'], repoPath), ''),
+        safe(this.git(['stash', 'list'], repoPath), ''),
+        safe(this.git(['worktree', 'list', '--porcelain'], repoPath), ''),
+        safe(this.git(['log', '-1', '--format=%H|%h|%s|%aI'], repoPath), ''),
+      ]);
+
+      const parsed = parsePorcelainV2(statusOut);
+      const stashCount = countNonBlankLines(stashOut);
+      const worktreeCount = countWorktreeListPorcelain(worktreeOut);
+      const lastCommit = parseLastCommit(lastCommitOut) ?? undefined;
+
+      const result: RepoStatus = {
+        repoPath,
+        currentBranch: parsed.currentBranch,
+        upstream: parsed.upstream,
+        ahead: parsed.ahead,
+        behind: parsed.behind,
+        modifiedCount: parsed.modifiedCount,
+        stagedCount: parsed.stagedCount,
+        untrackedCount: parsed.untrackedCount,
+        unmergedCount: parsed.unmergedCount,
+        stashCount,
+        worktreeCount,
+        lastCommit,
+        fetchedAt: new Date().toISOString(),
+      };
+      return result;
+    }, 'GIT_GET_REPO_STATUS_FAILED');
+  }
+
+  /**
+   * Enumerate branches with C7 hygiene metadata, keyed on raw repoPath.
+   *
+   * Issues 4 git invocations:
+   *   1) symbolic-ref HEAD               — current branch (may fail in detached)
+   *   2) for-each-ref refs/heads ...     — name + last-commit timestamp
+   *   3) branch --merged <default>       — set of merged branches
+   *   4) branch -r --format ...          — set of remote branch names
+   *   5) worktree list --porcelain       — set of branch names that have worktrees
+   *
+   * Default branch is detected via `symbolic-ref refs/remotes/origin/HEAD`
+   * with `'main'` as the fallback.
+   */
+  async listBranchesForRepo(repoPath: string): Promise<IpcResult<RepoBranchRow[]>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await p;
+        } catch {
+          return fallback;
+        }
+      };
+
+      // Default branch detection
+      let defaultBranch = 'main';
+      const headRef = await safe(
+        this.git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath),
+        ''
+      );
+      if (headRef.startsWith('origin/')) defaultBranch = headRef.slice('origin/'.length);
+
+      const [branchListOut, currentOut, mergedOut, remoteOut, worktreeOut] = await Promise.all([
+        safe(
+          this.git(
+            [
+              'for-each-ref',
+              '--format=%(refname:short)|%(committerdate:unix)',
+              'refs/heads',
+            ],
+            repoPath
+          ),
+          ''
+        ),
+        safe(this.git(['symbolic-ref', '--short', '-q', 'HEAD'], repoPath), ''),
+        safe(this.git(['branch', '--format=%(refname:short)', '--merged', defaultBranch], repoPath), ''),
+        safe(this.git(['branch', '-r', '--format=%(refname:short)'], repoPath), ''),
+        safe(this.git(['worktree', 'list', '--porcelain'], repoPath), ''),
+      ]);
+
+      const currentBranch = currentOut.trim();
+      const mergedSet = new Set(
+        mergedOut
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+      const remoteSet = new Set(
+        remoteOut
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+      // Worktree porcelain blocks: `worktree <path>` then `branch refs/heads/<name>`
+      const worktreeBranches = new Set<string>();
+      for (const line of worktreeOut.split('\n')) {
+        if (line.startsWith('branch refs/heads/')) {
+          worktreeBranches.add(line.slice('branch refs/heads/'.length).trim());
+        }
+      }
+
+      const rows: RepoBranchRow[] = branchListOut
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [name, ts] = line.split('|');
+          const lastCommitMs = Number(ts) > 0 ? Number(ts) * 1000 : 0;
+          // Heuristic: deleted-on-remote = our branch had a tracking remote in
+          // the past (origin/<name> was once a remote), but origin/<name> isn't
+          // present now. We approximate "had remote in the past" by checking
+          // whether origin/<name> is present right now: if NOT present and
+          // origin/HEAD points at <defaultBranch>, only flag user's own
+          // branches that match a known prefix or have no remote at all.
+          // Simplest defensible signal: NOT present in remoteSet AND it's not
+          // the default branch itself.
+          const remoteRef = `origin/${name}`;
+          const deletedOnRemote = !remoteSet.has(remoteRef) && name !== defaultBranch;
+          return {
+            name,
+            isCurrent: name === currentBranch,
+            lastCommitMs,
+            mergedIntoDefault: mergedSet.has(name),
+            deletedOnRemote,
+            hasWorktree: worktreeBranches.has(name),
+          };
+        })
+        .sort((a, b) => b.lastCommitMs - a.lastCommitMs || a.name.localeCompare(b.name));
+
+      return rows;
+    }, 'GIT_LIST_BRANCHES_FOR_REPO_FAILED');
+  }
+
+  /**
    * Get commit history for a branch since divergence from base branch
    * Used by CommitsTab to show all commits in a session
    */
@@ -1654,5 +2193,50 @@ export class GitService extends BaseService {
 
       return { commit, files };
     }, 'GIT_GET_COMMIT_DIFF_FAILED');
+  }
+
+  /**
+   * Get safety info for an abandoned worktree:
+   * - uncommitted changes (git status --porcelain)
+   * - unmerged commits relative to main and development
+   */
+  async getWorktreeSafetyInfo(worktreePath: string): Promise<IpcResult<WorktreeSafetyInfo>> {
+    return this.wrap(async () => {
+      const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+        try { return await p; } catch { return fallback; }
+      };
+
+      const [statusOut, mainLogOut, devLogOut] = await Promise.all([
+        safe(this.git(['status', '--porcelain'], worktreePath), ''),
+        safe(this.git(['log', 'main..HEAD', '--oneline'], worktreePath), ''),
+        safe(this.git(['log', 'development..HEAD', '--oneline'], worktreePath), ''),
+      ]);
+
+      const uncommittedFiles = statusOut
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => ({
+          status: line.slice(0, 2).trim(),
+          path: line.slice(3).trim(),
+        }));
+
+      const mainCommits = mainLogOut.split('\n').filter((l) => l.trim().length > 0);
+      const devCommits = devLogOut.split('\n').filter((l) => l.trim().length > 0);
+
+      // Total unmerged = max of the two (they share commits that are not in either)
+      const unmergedCommitCount = Math.max(mainCommits.length, devCommits.length);
+
+      const mergedIntoBranches: string[] = [];
+      if (mainCommits.length === 0) mergedIntoBranches.push('main');
+      if (devCommits.length === 0) mergedIntoBranches.push('development');
+
+      return {
+        worktreePath,
+        hasUncommittedChanges: uncommittedFiles.length > 0,
+        uncommittedFiles,
+        unmergedCommitCount,
+        mergedIntoBranches,
+      } satisfies WorktreeSafetyInfo;
+    }, 'GIT_WORKTREE_SAFETY_INFO_FAILED');
   }
 }

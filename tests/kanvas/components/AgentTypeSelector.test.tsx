@@ -59,14 +59,15 @@ describe('AgentTypeSelector', () => {
     // Claude Code should be visually selected - use getAllByText and find the button
     const claudeTexts = screen.getAllByText('Claude Code');
     const claudeButton = claudeTexts[0].closest('button');
-    expect(claudeButton).toHaveClass('border-kanvas-blue');
+    // KIT redesign: selected state uses black border (was border-kanvas-blue)
+    expect(claudeButton).toHaveClass('border-black');
 
     // Rerender with different selection
     rerender(<AgentTypeSelector selectedType="cursor" onSelect={mockOnSelect} />);
 
     const cursorTexts = screen.getAllByText('Cursor');
     const cursorButton = cursorTexts[0].closest('button');
-    expect(cursorButton).toHaveClass('border-kanvas-blue');
+    expect(cursorButton).toHaveClass('border-black');
   });
 
   it('should show description panel when agent type is selected', () => {
@@ -91,7 +92,7 @@ describe('AgentTypeSelector', () => {
 
     // All agent type buttons should be in a grid
     const buttons = screen.getAllByRole('button');
-    expect(buttons.length).toBe(7); // 7 agent types
+    expect(buttons.length).toBe(8); // 8 agent types (claude, cursor, copilot, cline, aider, warp, codex, custom)
   });
 
   describe('Agent Type Selection', () => {

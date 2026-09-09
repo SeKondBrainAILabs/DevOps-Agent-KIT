@@ -24,7 +24,9 @@ describe('Agent Instructions Generator', () => {
       // Short session ID: sess_123456_abc -> 123456_a (first 8 chars after removing prefix)
       const shortSessionId = defaultVars.sessionId.replace('sess_', '').slice(0, 8);
 
-      expect(instructions).toContain('Claude Code');
+      // Heading was genericized to "Setup Coding Agent"; the `claude` launch command
+      // is the stable claude-specific marker in the template.
+      expect(instructions).toContain('claude');
       expect(instructions).toContain(defaultVars.repoPath);
       expect(instructions).toContain(defaultVars.branchName);
       expect(instructions).toContain(shortSessionId);

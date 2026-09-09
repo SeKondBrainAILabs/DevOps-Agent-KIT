@@ -10,6 +10,7 @@ import { FixedSizeList as List } from 'react-window';
 import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentInstance, ContractType, Contract, ActivityLogEntry, DiscoveredFeature } from '../../../shared/types';
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
+import { formatDateTime } from '../../../shared/format-datetime';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
@@ -20,6 +21,33 @@ type DetailTab = 'prompt' | 'activity' | 'commits' | 'files' | 'contracts' | 'te
 
 // Threshold for switching to virtualized rendering
 const VIRTUALIZATION_LINE_THRESHOLD = 100;
+
+/**
+ * Short, header-safe label for a session card. A raw multi-sentence task
+ * description shouldn't be the page heading — it wraps and looks broken.
+ * Prefers an explicit short title if one was set (e.g. by the Refine-with-AI
+ * flow), otherwise derives from the task: first sentence (.!? or newline),
+ * trimmed to ~80 chars at a word boundary with an ellipsis. Falls back to
+ * branchName, then a generic label.
+ */
+function sessionHeaderTitle(session: SessionReport): string {
+  const explicit = (session as { taskTitle?: string }).taskTitle;
+  if (explicit && explicit.trim()) return explicit.trim();
+  const task = (session.task || '').trim();
+  if (task) {
+    // First sentence or first 80 chars, whichever ends sooner.
+    const firstBreak = task.search(/[.!?\n]/);
+    let head = firstBreak > 0 && firstBreak <= 80 ? task.slice(0, firstBreak) : task.slice(0, 80);
+    if (head.length < task.length) {
+      // Snap back to the last word boundary so we don't truncate mid-word.
+      const lastSpace = head.lastIndexOf(' ');
+      if (lastSpace > 30) head = head.slice(0, lastSpace);
+      head = head.replace(/[\s,;:]+$/, '') + '…';
+    }
+    return head;
+  }
+  return session.branchName || 'Session Details';
+}
 
 /**
  * VirtualizedDiff - Renders large diffs with react-window for performance
@@ -107,11 +135,24 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [showRestartConfirm, setShowRestartConfirm] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
+  // v2.7.2 — Push button state. `unpushedCount` is the ahead-of-upstream count
+  // from `git rev-list --left-right --count origin/<branch>...HEAD` (via the
+  // existing getStatus IPC). Cached against the LOCAL origin/<branch> ref, so
+  // the number can lag behind a background push — a fresh Sync refreshes it.
+  const [unpushedCount, setUnpushedCount] = useState<number>(0);
+  const [pushing, setPushing] = useState(false);
+  const [pushResult, setPushResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showErrorPopup, setShowErrorPopup] = useState(false);
+  // Prompt shown before sync/rebase when the worktree has uncommitted changes.
+  const [dirtyRebasePrompt, setDirtyRebasePrompt] = useState<{ count: number; repoPath: string; baseBranch: string } | null>(null);
   const [editingBaseBranch, setEditingBaseBranch] = useState(false);
-  const [branches, setBranches] = useState<string[]>([]);
+  const [branches, setBranches] = useState<string[]>([]);       // primary branches only
+  const [allBranches, setAllBranches] = useState<string[]>([]);  // full list for advanced dialog
+  const [showAdvancedBranches, setShowAdvancedBranches] = useState(false);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
+  const [rebaseRepairBusy, setRebaseRepairBusy] = useState(false);
+  const [rebaseRepairResult, setRebaseRepairResult] = useState<{ ok: boolean; message: string } | null>(null);
   const showConflictDialog = useConflictStore((state) => state.showDialog);
 
   useEffect(() => {
@@ -178,30 +219,89 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     setShowRestartConfirm(false);
     setRestarting(true);
     setRestartError(null);
+    // Safety: if still mounted after 2min (e.g. IPC hung), reset state.
+    // Large repos with pending commits can take 60-90s to restart.
+    const safetyTimer = setTimeout(() => {
+      setRestarting(false);
+      setRestartError('Restart timed out — please try again');
+    }, 120_000);
     try {
       await onRestart?.(session.sessionId, session, commitChanges);
+      clearTimeout(safetyTimer);
+      // Always reset — component may not unmount immediately if SESSION_REMOVED
+      // IPC event is delayed, leaving the pill stuck on "Restarting..." forever.
+      setRestarting(false);
     } catch (error) {
+      clearTimeout(safetyTimer);
       setRestartError(error instanceof Error ? error.message : 'Failed to restart session');
       setRestarting(false);
     }
-    // Note: on success, the component will unmount as the session changes, so no need to setRestarting(false)
+  };
+
+  // Poll the ahead-of-upstream count so the Push button label stays fresh.
+  // 15s interval strikes a balance between responsiveness after a `kit_commit`
+  // and not spamming git. Refreshes immediately on session change.
+  useEffect(() => {
+    if (!session.sessionId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const r = await window.api?.git?.getStatus?.(session.sessionId);
+        if (cancelled || !r?.success) return;
+        setUnpushedCount(r.data?.ahead ?? 0);
+      } catch { /* silent — button just shows 0 */ }
+    };
+    refresh();
+    const interval = setInterval(refresh, 15_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [session.sessionId]);
+
+  const handlePush = async () => {
+    if (pushing || unpushedCount === 0) return;
+    setPushing(true);
+    setPushResult(null);
+    try {
+      const r = await window.api?.git?.push?.(session.sessionId);
+      if (r?.success) {
+        setPushResult({ success: true, message: `Pushed ${unpushedCount} commit${unpushedCount === 1 ? '' : 's'}` });
+        setUnpushedCount(0);
+      } else {
+        setPushResult({ success: false, message: r?.error?.message || 'Push failed' });
+      }
+    } catch (err) {
+      setPushResult({ success: false, message: err instanceof Error ? err.message : 'Push failed' });
+    } finally {
+      setPushing(false);
+      setTimeout(() => setPushResult(null), 3000);
+    }
   };
 
   const handleSync = async () => {
     if (syncing) return;
+    const repoPath = session.worktreePath || session.repoPath;
+    const baseBranch = session.baseBranch || 'main';
+    if (!repoPath) {
+      setSyncResult({ success: false, message: 'No repository path configured' });
+      setShowErrorPopup(true);
+      return;
+    }
+    // Ask before rebasing if there's uncommitted work — a rebase on a dirty tree
+    // either fails or silently stashes; committing first keeps the work safe.
+    try {
+      const safety = await window.api?.git?.getWorktreeSafetyInfo?.(repoPath);
+      if (safety?.success && safety.data?.hasUncommittedChanges) {
+        setDirtyRebasePrompt({ count: safety.data.uncommittedFiles?.length ?? 0, repoPath, baseBranch });
+        return;
+      }
+    } catch { /* if the check fails, fall through and let the rebase proceed */ }
+    await doSync(repoPath, baseBranch);
+  };
+
+  const doSync = async (repoPath: string, baseBranch: string) => {
     setSyncing(true);
     setSyncResult(null);
     setShowErrorPopup(false);
     try {
-      const repoPath = session.worktreePath || session.repoPath;
-      const baseBranch = session.baseBranch || 'main';
-
-      if (!repoPath) {
-        setSyncResult({ success: false, message: 'No repository path configured' });
-        setShowErrorPopup(true);
-        return;
-      }
-
       console.log(`[SessionDetail] Syncing ${repoPath} with ${baseBranch}...`);
 
       // First fetch
@@ -272,12 +372,33 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     }
     setLoadingBranches(true);
     try {
+      // List branches from the ROOT repo PATH — never via git.branches(sessionId).
+      // git.branches resolves the worktree from a registry that is only populated
+      // while the session's watcher is running, so it returns nothing for idle or
+      // restored sessions (the bug that left this dropdown showing only "Advanced…").
+      // listBranchesForRepo runs `git for-each-ref refs/heads` against the path, so
+      // it always works and only ever returns local branches (no remotes, no detached).
       const repoPath = session.repoPath || session.worktreePath;
-      if (repoPath) {
-        const result = await window.api?.instance?.validateRepo?.(repoPath);
-        if (result?.success && result.data?.branches) {
-          setBranches(result.data.branches);
-        }
+      const result = repoPath ? await window.api?.git?.listBranchesForRepo?.(repoPath) : undefined;
+      if (result?.success && result.data) {
+        const PRIMARY = ['main', 'master', 'development', 'develop', 'dev'];
+        const isSessionBranch = (name: string) =>
+          name.startsWith('origin/') || name.startsWith('remotes/') ||
+          name.startsWith('(') || // detached HEAD pseudo-entries like "(HEAD"
+          /^(codex|cursor|copilot|aider|warp|cline|session)-session-/.test(name) ||
+          name.startsWith('session/');
+        const all = result.data
+          .map(b => b.name)
+          .filter(b => b && !isSessionBranch(b))
+          // Deduplicate defensively
+          .filter((b, i, arr) => arr.indexOf(b) === i);
+        const primaries = PRIMARY.filter(b => all.includes(b));
+        // Default picker: primary branches only (+ current target if not already in list)
+        const currentBase = (session.baseBranch || 'main').replace(/^origin\//, '');
+        const primaryList = primaries.includes(currentBase)
+          ? primaries : [currentBase, ...primaries];
+        setBranches(primaryList);
+        setAllBranches(all); // full list available for advanced dialog
       }
     } catch (err) {
       console.error('[SessionDetail] Failed to load branches:', err);
@@ -316,6 +437,45 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   return (
     <div className="h-full flex flex-col bg-surface">
       {/* Error/Warning Popup */}
+      {dirtyRebasePrompt && (
+        <div className="fixed inset-0 bg-black/15 backdrop-blur-[2px] flex items-center justify-center z-50">
+          <div className="bg-white border border-[rgba(0,0,0,0.10)] rounded-[18px] shadow-[0_8px_24px_rgba(0,0,0,0.12)] max-w-md w-full mx-4 p-5">
+            <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)]">Before syncing</p>
+            <h3 className="text-base font-semibold text-text-primary mt-1">You have uncommitted local changes</h3>
+            <p className="text-sm text-text-secondary mt-2">
+              This worktree has {dirtyRebasePrompt.count} uncommitted change{dirtyRebasePrompt.count === 1 ? '' : 's'}.
+              Rebasing onto <code className="text-kanvas-blue">{dirtyRebasePrompt.baseBranch}</code> with a dirty tree can
+              fail or stash your work. Commit them first?
+            </p>
+            <div className="flex flex-col gap-2 mt-4">
+              <button
+                onClick={async () => {
+                  const p = dirtyRebasePrompt; setDirtyRebasePrompt(null);
+                  const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+                  await window.api?.git?.commitWorktree?.(p.repoPath, `WIP: pre-sync commit (${stamp})`);
+                  await doSync(p.repoPath, p.baseBranch);
+                }}
+                className="w-full px-4 py-2 bg-black text-white rounded-full font-medium hover:bg-black/90 transition-colors"
+              >
+                Commit &amp; sync
+              </button>
+              <button
+                onClick={() => { const p = dirtyRebasePrompt; setDirtyRebasePrompt(null); void doSync(p.repoPath, p.baseBranch); }}
+                className="w-full px-4 py-2 bg-white border border-[rgba(0,0,0,0.10)] rounded-full font-medium text-text-primary hover:bg-[#FAFAF7] transition-colors"
+              >
+                Sync without committing
+              </button>
+              <button
+                onClick={() => setDirtyRebasePrompt(null)}
+                className="w-full px-4 py-2 text-text-secondary rounded-full hover:bg-[rgba(0,0,0,0.04)] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showErrorPopup && syncResult && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className={`bg-surface border rounded-lg shadow-xl max-w-md w-full mx-4 p-6 ${
@@ -358,7 +518,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                     setShowErrorPopup(false);
                     handleSync();
                   }}
-                  className="px-4 py-2 text-sm font-medium bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                  className="px-4 py-2 text-sm font-medium bg-blue-500 text-white rounded-full hover:bg-blue-600 transition-colors"
                 >
                   Retry
                 </button>
@@ -383,20 +543,77 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
         </div>
       )}
 
+      {/* Stale rebase banner — flagged by AgentInstanceService.detectStaleRebases */}
+      {instance?.staleRebase && (
+        <div className="px-4 py-3 bg-amber-50 border-b border-amber-200 flex items-start gap-3 text-sm text-amber-900">
+          <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-3L13.74 4a2 2 0 00-3.48 0L3.33 16a2 2 0 001.74 3z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium">
+              Stale rebase detected ({instance.staleRebase.kind}, {Math.round(instance.staleRebase.ageMinutes / 60)}h old)
+            </div>
+            <div className="text-xs mt-1 opacity-90">
+              An interrupted rebase is parked in this worktree — HEAD likely points at a historical snapshot, so files may look reverted.
+              Abort &amp; back up to restore the pre-rebase tip. Both HEAD and ORIG_HEAD are saved to <code>backup/*</code> branches before abort.
+            </div>
+            {rebaseRepairResult && (
+              <div className={`text-xs mt-1.5 ${rebaseRepairResult.ok ? 'text-green-700' : 'text-red-700'}`}>
+                {rebaseRepairResult.message}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={async () => {
+              if (!instance?.id || rebaseRepairBusy) return;
+              setRebaseRepairBusy(true);
+              setRebaseRepairResult(null);
+              try {
+                const r = await window.api.instance.repairStaleRebase(instance.id);
+                if (r.success && r.data) {
+                  setRebaseRepairResult({
+                    ok: true,
+                    message: `Aborted. HEAD now at ${r.data.landedAt}. Backups: ${r.data.backupBranches.join(', ') || '(none)'}`,
+                  });
+                  // Refresh instance so banner clears
+                  const list = await window.api.instance.list();
+                  if (list.success && list.data) {
+                    setInstance(list.data.find(i => i.sessionId === session.sessionId) || null);
+                  }
+                } else {
+                  setRebaseRepairResult({ ok: false, message: r.error?.message || 'Repair failed' });
+                }
+              } catch (e) {
+                setRebaseRepairResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+              } finally {
+                setRebaseRepairBusy(false);
+              }
+            }}
+            disabled={rebaseRepairBusy}
+            className="flex-shrink-0 px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-medium hover:bg-amber-700 disabled:opacity-50"
+          >
+            {rebaseRepairBusy ? 'Aborting…' : 'Abort + back up'}
+          </button>
+        </div>
+      )}
+
       {/* Header */}
-      <div className="p-4 border-b border-border">
+      <div className="p-4 border-b border-[rgba(0,0,0,0.10)]">
         <div className="flex items-center gap-3 mb-3">
           <button
             onClick={onBack}
-            className="p-1.5 rounded-lg hover:bg-surface-secondary transition-colors"
+            className="p-1.5 rounded-full hover:bg-surface-secondary transition-colors"
           >
             <svg className="w-5 h-5 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <div className="flex-1">
-            <h1 className="text-lg font-semibold text-text-primary">
-              {session.task || session.branchName || 'Session Details'}
+          <div className="flex-1 min-w-0">
+            <h1
+              className="text-lg font-semibold text-text-primary truncate"
+              title={session.task || session.branchName || ''}
+            >
+              {sessionHeaderTitle(session)}
             </h1>
             <div className="flex items-center gap-3 mt-1 text-sm text-text-secondary">
               <span className={statusColors[session.status] || 'text-gray-400'}>
@@ -424,22 +641,42 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             {/* Base Branch Selector + Sync Button */}
             <div className="flex items-center gap-1">
               {editingBaseBranch ? (
-                <select
-                  value={session.baseBranch || 'main'}
-                  onChange={(e) => handleBaseBranchChange(e.target.value)}
-                  onBlur={() => setEditingBaseBranch(false)}
-                  autoFocus
-                  className="px-2 py-1.5 rounded-lg text-xs font-mono bg-surface-tertiary border border-border text-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
-                >
-                  {branches.map((branch) => (
-                    <option key={branch} value={branch}>{branch}</option>
-                  ))}
-                </select>
+                  <select
+                    value={session.baseBranch || 'main'}
+                    onChange={(e) => {
+                      if (e.target.value === '__advanced__') {
+                        // Open the full-branch dialog and leave inline-edit mode.
+                        // The dialog is rendered OUTSIDE this block (below), so it
+                        // is not torn down when editingBaseBranch flips to false.
+                        setEditingBaseBranch(false);
+                        setShowAdvancedBranches(true);
+                      } else {
+                        handleBaseBranchChange(e.target.value);
+                      }
+                    }}
+                    onBlur={() => {
+                      // Defer the close so a click on an <option> (which fires
+                      // onChange, then blurs the native select) is not swallowed
+                      // by an immediate unmount. Without this, choosing a branch —
+                      // or "Advanced…" — could close the editor before the change
+                      // was applied.
+                      setTimeout(() => setEditingBaseBranch(false), 200);
+                    }}
+                    autoFocus
+                    className="px-2 py-1.5 rounded-full text-xs font-mono bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
+                  >
+                    {branches.map((branch) => (
+                      <option key={branch} value={branch}>{branch}</option>
+                    ))}
+                    <option disabled>──────────</option>
+                    <option value="__advanced__">Advanced…</option>
+                  </select>
+
               ) : (
                 <button
                   onClick={handleEditBaseBranch}
                   disabled={loadingBranches}
-                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-mono text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-mono text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors"
                   title="Target branch — used for rebase (sync) and merge. Click to change."
                 >
                   {loadingBranches ? '...' : (session.baseBranch || 'main')}
@@ -448,10 +685,35 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                   </svg>
                 </button>
               )}
+              {/* Advanced branch dialog — rendered independently of inline-edit
+                  mode so the native <select> blur cannot unmount it before it
+                  appears. Reachable via the "Advanced…" option or the current
+                  branches list; lists ALL local branches, not just primaries. */}
+              {showAdvancedBranches && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={() => setShowAdvancedBranches(false)}>
+                  <div className="bg-white rounded-2xl shadow-xl border border-[rgba(0,0,0,0.10)] p-4 w-72 max-h-96 overflow-y-auto" onClick={e => e.stopPropagation()}>
+                    <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">All branches</p>
+                    {allBranches.length === 0 && (
+                      <p className="text-sm text-text-secondary px-1 py-2">No other local branches found.</p>
+                    )}
+                    {allBranches.map(branch => (
+                      <button
+                        key={branch}
+                        onClick={() => { setShowAdvancedBranches(false); handleBaseBranchChange(branch); }}
+                        className={`w-full text-left px-3 py-2 text-sm font-mono rounded-lg hover:bg-surface-secondary transition-colors ${
+                          branch === (session.baseBranch || 'main') ? 'text-blue-600 font-semibold' : 'text-text-primary'
+                        }`}
+                      >
+                        {branch}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <button
                 onClick={handleSync}
                 disabled={syncing}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors
                   ${syncing
                     ? 'bg-blue-500 text-white cursor-wait'
                     : 'bg-surface-secondary text-text-primary hover:bg-blue-50 hover:text-blue-600'
@@ -464,12 +726,43 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                 </svg>
                 {syncing ? 'Syncing...' : 'Sync (rebase)'}
               </button>
+              {/* v2.7.2 / 2.7.3 — Push button always visible so the feature
+                  is discoverable. Disabled when count is 0 (nothing to push).
+                  Shows count in brackets when there is work to send. */}
+              <button
+                onClick={handlePush}
+                disabled={pushing || unpushedCount === 0}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors
+                  ${pushing
+                    ? 'bg-blue-500 text-white cursor-wait'
+                    : unpushedCount === 0
+                      ? 'bg-surface-secondary text-text-secondary/60 cursor-not-allowed'
+                      : 'bg-surface-secondary text-text-primary hover:bg-blue-50 hover:text-blue-600'
+                  }`}
+                title={
+                  pushing
+                    ? 'Pushing…'
+                    : unpushedCount === 0
+                      ? 'Nothing to push — session branch is up to date with origin'
+                      : `Push ${unpushedCount} commit${unpushedCount === 1 ? '' : 's'} to origin`
+                }
+              >
+                <svg className={`w-4 h-4 ${pushing ? 'animate-pulse' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                </svg>
+                {pushing ? 'Pushing…' : `Push${unpushedCount > 0 ? ` (${unpushedCount})` : ''}`}
+              </button>
+              {pushResult && (
+                <span className={`text-xs max-w-[200px] truncate ${pushResult.success ? 'text-green-600' : 'text-red-500'}`} title={pushResult.message}>
+                  {pushResult.message}
+                </span>
+              )}
             </div>
 
             {onRestart && !showRestartConfirm && !restarting && (
               <button
                 onClick={() => setShowRestartConfirm(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors bg-surface-secondary text-text-primary hover:bg-surface-tertiary"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors bg-surface-secondary text-text-primary hover:bg-surface-tertiary"
                 title="Restart session"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -484,22 +777,22 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                 <span className="text-xs text-text-secondary mr-1">Commit changes?</span>
                 <button
                   onClick={() => handleRestart(true)}
-                  className="px-2 py-1 rounded text-xs font-medium bg-kanvas-blue text-white hover:bg-kanvas-blue/80 transition-colors"
+                  className="px-2 py-1 rounded-full text-xs font-medium bg-kanvas-blue text-white hover:bg-kanvas-blue/80 transition-colors"
                   title="Commit uncommitted changes, then restart"
                 >Yes</button>
                 <button
                   onClick={() => handleRestart(false)}
-                  className="px-2 py-1 rounded text-xs font-medium bg-surface-tertiary text-text-primary hover:bg-red-50 hover:text-red-600 transition-colors"
+                  className="px-2 py-1 rounded-full text-xs font-medium bg-surface-tertiary text-text-primary hover:bg-red-50 hover:text-red-600 transition-colors"
                   title="Discard uncommitted changes and restart"
                 >No</button>
                 <button
                   onClick={() => setShowRestartConfirm(false)}
-                  className="px-2 py-1 rounded text-xs text-text-secondary hover:text-text-primary transition-colors"
+                  className="px-2 py-1 rounded-full text-xs text-text-secondary hover:text-text-primary transition-colors"
                 >✕</button>
               </div>
             )}
             {onRestart && restarting && (
-              <button disabled className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-kanvas-blue text-white cursor-wait">
+              <button disabled className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-kanvas-blue text-white cursor-wait">
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                     d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -510,7 +803,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             {onDelete && (
               <button
                 onClick={handleDelete}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors
                   ${showDeleteConfirm
                     ? 'bg-red-500 text-white'
                     : 'bg-surface-secondary text-text-secondary hover:text-red-500 hover:bg-red-50'
@@ -533,10 +826,10 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors
+              className={`px-3 py-1 text-sm font-medium transition-colors
                 ${activeTab === tab
-                  ? 'bg-kanvas-blue text-white'
-                  : 'bg-surface-secondary text-text-secondary hover:text-text-primary'
+                  ? 'bg-black text-white rounded-full'
+                  : 'text-text-secondary hover:text-black rounded-full hover:bg-[rgba(0,0,0,0.04)]'
                 }`}
             >
               {tab === 'mcp' ? 'MCP' : tab.charAt(0).toUpperCase() + tab.slice(1)}
@@ -612,8 +905,8 @@ function PromptTab({
       <div className="flex gap-2 mb-4">
         <button
           onClick={onCopyPrompt}
-          className="flex items-center gap-2 px-4 py-2 bg-kanvas-blue text-white rounded-lg
-            hover:bg-kanvas-blue/90 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-black text-white rounded-full
+            hover:bg-black/80 transition-colors"
         >
           {copySuccess ? (
             <>
@@ -635,7 +928,7 @@ function PromptTab({
         {instance?.instructions && (
           <button
             onClick={onCopyInstructions}
-            className="flex items-center gap-2 px-4 py-2 bg-surface-secondary text-text-primary rounded-lg
+            className="flex items-center gap-2 px-4 py-2 bg-surface-secondary text-text-primary rounded-full
               hover:bg-surface-tertiary transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -658,7 +951,7 @@ function PromptTab({
       {/* Prompt display */}
       <div className="flex-1 min-h-0">
         <h3 className="text-sm font-medium text-text-secondary mb-2">Prompt for Agent</h3>
-        <div className="h-full bg-surface-secondary rounded-xl border border-border overflow-auto">
+        <div className="h-full bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] overflow-auto">
           <pre className="p-4 text-sm text-text-primary whitespace-pre-wrap font-mono select-text cursor-text">
             {prompt}
           </pre>
@@ -670,7 +963,7 @@ function PromptTab({
 
 function InfoCard({ label, value, mono = false }: { label: string; value: string; mono?: boolean }): React.ReactElement {
   return (
-    <div className="p-3 bg-surface-secondary rounded-lg border border-border">
+    <div className="p-3 bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)]">
       <div className="text-xs text-text-secondary mb-1">{label}</div>
       <div className={`text-sm text-text-primary truncate ${mono ? 'font-mono' : ''}`}>
         {value}
@@ -844,13 +1137,7 @@ function ActivityTab({ sessionId, repoPath, baseBranch, branchName }: { sessionI
   // Legacy: for display calculations
   const allActivity = historicalLogs;
 
-  const formatTime = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  };
+  const formatTime = (timestamp: string): string => formatDateTime(timestamp);
 
   const formatDate = (timestamp: string): string => {
     return new Date(timestamp).toLocaleDateString('en-US', {
@@ -878,9 +1165,9 @@ function ActivityTab({ sessionId, repoPath, baseBranch, branchName }: { sessionI
   return (
     <div className="h-full flex flex-col">
       {/* Header with verbose toggle */}
-      <div className="px-4 py-3 border-b border-border bg-surface flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-[rgba(0,0,0,0.10)] bg-surface flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-medium text-text-primary">Timeline</span>
+          <span className="text-sm font-medium text-text-primary kb-eyebrow">Timeline</span>
           <span className="text-xs px-2 py-0.5 rounded-full bg-surface-tertiary text-text-secondary">
             {filteredTimeline.length} events
           </span>
@@ -1449,13 +1736,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
     }
   };
 
-  const formatTime = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  };
+  const formatTime = (timestamp: string): string => formatDateTime(timestamp);
 
   // Group files by git state
   const uncommittedFiles = gitFiles.filter(f => f.gitState !== 'committed');
@@ -1473,13 +1754,13 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
   return (
     <div className="h-full flex flex-col">
       {/* Header with view toggle, manual commit, and refresh */}
-      <div className="px-4 py-3 border-b border-border bg-surface flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-[rgba(0,0,0,0.10)] bg-surface flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
             onClick={() => setViewMode('git')}
-            className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            className={`px-3 py-1.5 text-sm rounded-full transition-colors ${
               viewMode === 'git'
-                ? 'bg-kanvas-blue text-white'
+                ? 'bg-black text-white'
                 : 'bg-surface-secondary text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -1487,9 +1768,9 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
           </button>
           <button
             onClick={() => setViewMode('recent')}
-            className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            className={`px-3 py-1.5 text-sm rounded-full transition-colors ${
               viewMode === 'recent'
-                ? 'bg-kanvas-blue text-white'
+                ? 'bg-black text-white'
                 : 'bg-surface-secondary text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -1502,7 +1783,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
             <button
               onClick={generateCommitMessage}
               disabled={generatingMessage || committing}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-full transition-colors ${
                 generatingMessage || committing
                   ? 'bg-kanvas-blue/50 text-white cursor-wait'
                   : 'bg-green-600 text-white hover:bg-green-700'
@@ -1531,7 +1812,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
           <button
             onClick={loadChangedFiles}
             disabled={loading}
-            className="p-2 rounded-lg bg-surface-secondary hover:bg-surface-tertiary transition-colors"
+            className="p-2 rounded-full bg-surface-secondary hover:bg-surface-tertiary transition-colors"
             title="Refresh"
           >
             <svg className={`w-4 h-4 text-text-secondary ${loading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1544,7 +1825,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
 
       {/* Commit Message Editor */}
       {commitMessage && (
-        <div className="mx-4 mt-4 p-4 bg-surface-secondary rounded-xl border border-kanvas-blue">
+        <div className="mx-4 mt-4 p-4 bg-surface-secondary rounded-[14px] border border-kanvas-blue">
           <div className="flex items-start gap-3">
             <div className="flex-1">
               <label className="text-xs font-medium text-text-secondary mb-2 block">
@@ -1553,7 +1834,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
               <textarea
                 value={commitMessage}
                 onChange={(e) => setCommitMessage(e.target.value)}
-                className="w-full h-24 px-3 py-2 text-sm font-mono bg-surface border border-border rounded-lg
+                className="w-full h-24 px-3 py-2 text-sm font-mono bg-surface border border-[rgba(0,0,0,0.10)] rounded-[14px]
                   focus:outline-none focus:ring-2 focus:ring-kanvas-blue resize-none text-text-primary"
                 placeholder="Commit message..."
               />
@@ -1564,7 +1845,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setCommitMessage(null)}
-                    className="px-3 py-1.5 text-sm rounded-lg bg-surface-tertiary text-text-secondary
+                    className="px-3 py-1.5 text-sm rounded-full bg-surface-tertiary text-text-secondary
                       hover:bg-surface hover:text-text-primary transition-colors"
                   >
                     Cancel
@@ -1572,7 +1853,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
                   <button
                     onClick={handleCommit}
                     disabled={committing || !commitMessage.trim()}
-                    className={`flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                    className={`flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-full transition-colors ${
                       committing
                         ? 'bg-green-600/50 text-white cursor-wait'
                         : 'bg-green-600 text-white hover:bg-green-700'
@@ -1604,19 +1885,19 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
 
       {/* Error/Success Messages */}
       {commitError && (
-        <div className="mx-4 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+        <div className="mx-4 mt-4 p-3 bg-red-50 border border-red-200 rounded-[14px]">
           <p className="text-sm text-red-700">{commitError}</p>
         </div>
       )}
       {commitSuccess && (
-        <div className="mx-4 mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+        <div className="mx-4 mt-4 p-3 bg-green-50 border border-green-200 rounded-[14px]">
           <p className="text-sm text-green-700">Commit successful!</p>
         </div>
       )}
 
       {/* Error state */}
       {error && viewMode === 'git' && (
-        <div className="mx-4 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+        <div className="mx-4 mt-4 p-3 bg-red-50 border border-red-200 rounded-[14px]">
           <p className="text-sm text-red-700">{error}</p>
         </div>
       )}
@@ -1644,13 +1925,13 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
               {/* Uncommitted Files Section */}
               {uncommittedFiles.length > 0 && (
                 <div>
-                  <h4 className="text-sm font-medium text-text-secondary mb-2 flex items-center gap-2">
+                  <h4 className="text-sm font-medium text-text-secondary mb-2 flex items-center gap-2 kb-eyebrow">
                     <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
                     Uncommitted ({uncommittedFiles.length})
                   </h4>
                   <div className="space-y-2">
                     {uncommittedFiles.map((file) => (
-                      <div key={file.path} className="p-3 bg-surface-secondary rounded-lg border border-border">
+                      <div key={file.path} className="p-3 bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)]">
                         <div className="flex items-center gap-3">
                           <GitStateIcon gitState={file.gitState} />
                           <span className="flex-1 font-mono text-sm text-text-primary truncate">{file.path}</span>
@@ -1668,13 +1949,13 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
               {/* Committed Files Section */}
               {committedFiles.length > 0 && (
                 <div>
-                  <h4 className="text-sm font-medium text-text-secondary mb-2 flex items-center gap-2">
+                  <h4 className="text-sm font-medium text-text-secondary mb-2 flex items-center gap-2 kb-eyebrow">
                     <span className="w-2 h-2 rounded-full bg-green-500"></span>
                     Committed ({committedFiles.length})
                   </h4>
                   <div className="space-y-2">
                     {committedFiles.map((file) => (
-                      <div key={file.path} className="p-3 bg-surface-secondary rounded-lg border border-border">
+                      <div key={file.path} className="p-3 bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)]">
                         <div className="flex items-center gap-3">
                           <GitStateIcon gitState={file.gitState} />
                           <div className="flex-1 min-w-0">
@@ -1723,7 +2004,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
           ) : (
             <div className="space-y-2">
               {recentChanges.map((change, idx) => (
-                <div key={`${change.path}-${idx}`} className="p-3 bg-surface-secondary rounded-lg border border-border">
+                <div key={`${change.path}-${idx}`} className="p-3 bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)]">
                   <div className="flex items-center gap-3">
                     <span className={`text-xs font-medium px-2 py-0.5 rounded ${
                       change.type === 'add' ? 'bg-green-100 text-green-700' :
@@ -1795,6 +2076,10 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
   const setIsGenerating = useContractStore((state) => state.setIsGenerating);
   const generationProgress = useContractStore((state) => state.generationProgress);
   const generationResult = useContractStore((state) => state.generationResult);
+  // Pre-existing bug, surfaced by scripts/typecheck-gate.sh: handleDiscoverFeatures
+  // calls setGenerationResult, which was never selected from the store — so
+  // "Discover features" threw a ReferenceError before it did anything.
+  const setGenerationResult = useContractStore((state) => state.setGenerationResult);
   const activityLogs = useContractStore((state) => state.activityLogs);
   const [showActivityLog, setShowActivityLog] = useState(true);
   const [expandedFeature, setExpandedFeature] = useState<string | null>(null);
@@ -2252,10 +2537,10 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
   return (
     <div className="h-full flex flex-col">
       {/* Header with Generate Contracts Button */}
-      <div className="p-4 border-b border-border bg-surface flex justify-between items-start gap-4">
+      <div className="p-4 border-b border-[rgba(0,0,0,0.10)] bg-surface flex justify-between items-start gap-4">
         <div className="flex-1">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-lg font-semibold text-text-primary">Contracts</h3>
+            <h3 className="text-lg font-semibold text-text-primary kb-eyebrow">Contracts</h3>
             {/* Show warning if no repo path */}
             {!getScanPath() && (
               <span className="text-xs text-orange-600 px-2 py-1 bg-orange-50 rounded">
@@ -2272,7 +2557,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
                     setDiscoveredFeatures([]); // Clear on path change
                   }}
                   disabled={isDiscovering || isGenerating}
-                  className="px-2 py-1.5 rounded-lg text-sm bg-surface-secondary text-text-primary border border-border"
+                  className="px-2 py-1.5 rounded-full text-sm bg-surface-secondary text-text-primary border border-[rgba(0,0,0,0.10)]"
                 >
                   <option value="main">Main Repo</option>
                   <option value="worktree">Worktree</option>
@@ -2281,7 +2566,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
               <button
                 onClick={handleDiscoverFeatures}
                 disabled={isDiscovering || isGenerating}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+                className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors
                   ${isDiscovering
                     ? 'bg-surface-tertiary text-text-secondary cursor-wait'
                     : 'bg-surface-secondary text-text-primary hover:bg-surface-tertiary'
@@ -2302,7 +2587,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
                   <button
                     onClick={() => handleGenerateAll(false)}
                     disabled={isGenerating || !getScanPath()}
-                    className={`px-3 py-1.5 rounded-l-lg text-sm font-medium transition-colors
+                    className={`px-3 py-1.5 rounded-l-full text-sm font-medium transition-colors
                       ${isGenerating
                         ? 'bg-kanvas-blue text-white cursor-wait'
                         : !getScanPath()
@@ -2323,7 +2608,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
                   <button
                     onClick={() => setShowGenerateDropdown(!showGenerateDropdown)}
                     disabled={isGenerating || !getScanPath()}
-                    className={`px-2 py-1.5 rounded-r-lg text-sm font-medium transition-colors border-l border-white/20
+                    className={`px-2 py-1.5 rounded-r-full text-sm font-medium transition-colors border-l border-white/20
                       ${isGenerating
                         ? 'bg-kanvas-blue text-white cursor-wait'
                         : !getScanPath()
@@ -2337,7 +2622,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
                   </button>
                 </div>
                 {showGenerateDropdown && (
-                  <div className="absolute right-0 top-full mt-1 bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[180px]">
+                  <div className="absolute right-0 top-full mt-1 bg-surface border border-[rgba(0,0,0,0.10)] rounded-[14px] shadow-lg z-10 min-w-[180px]">
                     <button
                       onClick={() => { handleGenerateAll(false); setShowGenerateDropdown(false); }}
                       className="w-full px-3 py-2 text-left text-sm hover:bg-surface-secondary flex items-center gap-2 rounded-t-lg"
@@ -2350,7 +2635,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
                     </button>
                     <button
                       onClick={() => { handleGenerateAll(true); setShowGenerateDropdown(false); }}
-                      className="w-full px-3 py-2 text-left text-sm hover:bg-surface-secondary flex items-center gap-2 rounded-b-lg border-t border-border"
+                      className="w-full px-3 py-2 text-left text-sm hover:bg-surface-secondary flex items-center gap-2 rounded-b-lg border-t border-[rgba(0,0,0,0.10)]"
                     >
                       <span className="text-orange-500">🔄</span>
                       <div>
@@ -2370,9 +2655,9 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
               <button
                 key={type}
                 onClick={() => setActiveContractType(type)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5
+                className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors flex items-center gap-1.5
                   ${activeContractType === type
-                    ? 'bg-kanvas-blue text-white'
+                    ? 'bg-black text-white'
                     : 'bg-surface-secondary text-text-secondary hover:text-text-primary hover:bg-surface-tertiary'
                   }`}
               >
@@ -2391,7 +2676,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
 
       {/* Discovery Progress */}
       {isDiscovering && (
-        <div className="mx-4 mt-4 p-3 bg-purple-50 border border-purple-200 rounded-xl">
+        <div className="mx-4 mt-4 p-3 bg-purple-50 border border-purple-200 rounded-[14px]">
           <div className="flex items-center gap-3">
             <span className="animate-spin w-5 h-5 border-2 border-purple-500 border-t-transparent rounded-full" />
             <div className="flex-1">
@@ -2416,7 +2701,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
 
       {/* Generation Progress */}
       {isGenerating && generationProgress && (
-        <div className="mx-4 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-xl">
+        <div className="mx-4 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-[14px]">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <span className="animate-spin w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full" />
@@ -2473,7 +2758,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
 
       {/* Generation Result */}
       {generationResult && (
-        <div className={`mx-4 mt-4 p-3 rounded-xl border ${generationResult.failed > 0 ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'}`}>
+        <div className={`mx-4 mt-4 p-3 rounded-[14px] border ${generationResult.failed > 0 ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'}`}>
           <div className="flex items-center gap-2">
             <span>{generationResult.failed > 0 ? '⚠️' : '✅'}</span>
             <span className="text-sm font-medium">
@@ -2486,7 +2771,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
 
       {/* Discovered Features - Table View */}
       {discoveredFeatures.length > 0 && (
-        <div className="mx-4 mt-4 p-3 bg-surface-secondary rounded-xl border border-border flex flex-col">
+        <div className="mx-4 mt-4 p-3 bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] flex flex-col">
           <div className="flex items-center justify-between flex-shrink-0">
             <button
               onClick={() => setFeaturesCollapsed(!featuresCollapsed)}
@@ -2516,7 +2801,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
           <div className="overflow-auto flex-1 min-h-0 max-h-[350px] mt-3">
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-border text-left text-text-secondary">
+                <tr className="border-b border-[rgba(0,0,0,0.10)] text-left text-text-secondary">
                   <th className="pb-2 pr-4 font-medium">Feature</th>
                   <th className="pb-2 pr-4 font-medium">Location</th>
                   <th className="pb-2 pr-2 font-medium text-center" title="API/Route files">🔌</th>
@@ -2544,7 +2829,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
                   return (
                     <tr
                       key={f.name}
-                      className={`border-b border-border/50 hover:bg-surface transition-colors ${
+                      className={`border-b border-[rgba(0,0,0,0.10)]/50 hover:bg-surface transition-colors ${
                         hasBreaking ? 'bg-red-50/50' : hasChanges ? 'bg-yellow-50/50' : ''
                       }`}
                     >
@@ -2625,7 +2910,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
           </div>
 
           {/* Legend */}
-          <div className="mt-3 pt-2 border-t border-border flex flex-wrap gap-3 text-[10px] text-text-secondary">
+          <div className="mt-3 pt-2 border-t border-[rgba(0,0,0,0.10)] flex flex-wrap gap-3 text-[10px] text-text-secondary">
             <span>🔌 API/Routes</span>
             <span>📐 Schema/Types</span>
             <span>⚡ Config</span>
@@ -2640,7 +2925,7 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
 
       {/* Contract Changes Alert */}
       {contractChanges.length > 0 && (
-        <div className="mx-4 mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-xl">
+        <div className="mx-4 mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-[14px]">
           <div className="flex items-start gap-2">
             <span className="text-yellow-600">⚠️</span>
             <div>
@@ -4278,14 +4563,14 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
     <>
       <div
         className={`
-          bg-surface rounded-xl border transition-all cursor-pointer
-          ${expanded ? 'border-kanvas-blue shadow-kanvas' : 'border-border hover:border-kanvas-blue/30 hover:shadow-card-hover'}
+          bg-surface rounded-[14px] border transition-all cursor-pointer
+          ${expanded ? 'border-kanvas-blue shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'border-[rgba(0,0,0,0.10)] hover:border-kanvas-blue/30 hover:shadow-[0_1px_3px_rgba(0,0,0,0.08)]'}
         `}
         onClick={() => setExpanded(!expanded)}
       >
         <div className="p-4">
           <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-lg bg-surface-secondary flex items-center justify-center flex-shrink-0">
+            <div className="w-10 h-10 rounded-[14px] bg-surface-secondary flex items-center justify-center flex-shrink-0">
               <span className="text-xl">{typeIcons[contract.type]}</span>
             </div>
             <div className="flex-1 min-w-0">
@@ -4359,7 +4644,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
 
         {/* Expanded details */}
         {expanded && (
-          <div className="px-4 pb-4 border-t border-border pt-3 space-y-3">
+          <div className="px-4 pb-4 border-t border-[rgba(0,0,0,0.10)] pt-3 space-y-3">
             {/* Actions row */}
             <div className="flex items-center gap-2">
               {!fileExists ? (
@@ -4367,8 +4652,8 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                   <button
                     onClick={handleGenerate}
                     disabled={generating || !repoPath}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                      bg-kanvas-blue text-white hover:bg-kanvas-blue/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
+                      bg-black text-white hover:bg-black/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {generating ? (
                       <>
@@ -4395,8 +4680,8 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                 <>
                   <button
                     onClick={handleOpenFile}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                      bg-kanvas-blue text-white hover:bg-kanvas-blue/90 transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
+                      bg-black text-white hover:bg-black/80 transition-colors"
                   >
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -4406,7 +4691,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                   </button>
                   <button
                     onClick={handleOpenInEditor}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
                       bg-surface-secondary text-text-primary hover:bg-surface-tertiary transition-colors"
                   >
                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
@@ -4417,7 +4702,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                   <button
                     onClick={handleGenerate}
                     disabled={generating || !repoPath}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
                       bg-surface-secondary text-text-primary hover:bg-surface-tertiary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     title={!repoPath ? "Repository path not available" : "Regenerate this contract"}
                   >
@@ -4542,13 +4827,13 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
           onClick={() => setShowContent(false)}
         >
           <div
-            className="bg-surface border border-border rounded-xl shadow-xl w-full max-w-4xl max-h-[85vh] mx-4 flex flex-col"
+            className="bg-surface border border-[rgba(0,0,0,0.10)] rounded-[14px] shadow-xl w-full max-w-4xl max-h-[85vh] mx-4 flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Modal Header */}
-            <div className="flex items-center justify-between p-4 border-b border-border">
+            <div className="flex items-center justify-between p-4 border-b border-[rgba(0,0,0,0.10)]">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-surface-secondary flex items-center justify-center">
+                <div className="w-8 h-8 rounded-[14px] bg-surface-secondary flex items-center justify-center">
                   <span className="text-lg">{typeIcons[contract.type]}</span>
                 </div>
                 <div>
@@ -4558,7 +4843,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                 {/* Consolidated badge */}
                 {featureContracts.length > 0 && (
                   <div className="ml-4">
-                    <span className="px-3 py-1.5 text-xs rounded-lg border border-border bg-surface-secondary text-text-primary">
+                    <span className="px-3 py-1.5 text-xs rounded-full border border-[rgba(0,0,0,0.10)] bg-surface-secondary text-text-primary">
                       Repo-Level (Consolidated)
                     </span>
                   </div>
@@ -4580,10 +4865,10 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                 <button
                   onClick={handleGenerate}
                   disabled={generating || !repoPath}
-                  className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  className={`flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium transition-colors ${
                     generating || !repoPath
                       ? 'bg-surface-secondary text-text-secondary opacity-50 cursor-not-allowed'
-                      : 'bg-kanvas-blue text-white hover:bg-kanvas-blue/90'
+                      : 'bg-black text-white hover:bg-black/80'
                   }`}
                   title="Regenerate consolidated contract"
                 >
@@ -4599,12 +4884,12 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                   )}
                 </button>
                 {/* View Mode Toggle */}
-                <div className="flex items-center rounded-lg border border-border overflow-hidden">
+                <div className="flex items-center rounded-full border border-[rgba(0,0,0,0.10)] overflow-hidden">
                   <button
                     onClick={() => setViewMode('markdown')}
                     className={`px-2 py-1.5 text-xs font-medium transition-colors ${
                       viewMode === 'markdown'
-                        ? 'bg-kanvas-blue text-white'
+                        ? 'bg-black text-white'
                         : 'bg-surface-secondary text-text-secondary hover:text-text-primary'
                     }`}
                     title="Markdown View"
@@ -4615,7 +4900,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                     onClick={() => setViewMode('json')}
                     className={`px-2 py-1.5 text-xs font-medium transition-colors ${
                       viewMode === 'json'
-                        ? 'bg-kanvas-blue text-white'
+                        ? 'bg-black text-white'
                         : 'bg-surface-secondary text-text-secondary hover:text-text-primary'
                     }`}
                     title="Raw JSON View"
@@ -4625,7 +4910,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                 </div>
                 <button
                   onClick={handleOpenInEditor}
-                  className="p-1.5 rounded-lg hover:bg-surface-secondary transition-colors"
+                  className="p-1.5 rounded-full hover:bg-surface-secondary transition-colors"
                   title="Open in Editor"
                 >
                   <svg className="w-4 h-4 text-text-secondary" viewBox="0 0 24 24" fill="currentColor">
@@ -4634,7 +4919,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                 </button>
                 <button
                   onClick={() => setShowContent(false)}
-                  className="p-1.5 rounded-lg hover:bg-surface-secondary transition-colors"
+                  className="p-1.5 rounded-full hover:bg-surface-secondary transition-colors"
                   title="Close"
                 >
                   <svg className="w-4 h-4 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -4703,7 +4988,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                 <>
                   {/* Truncation warning */}
                   {isTruncated && (
-                    <div className="p-2 bg-yellow-50 border border-yellow-200 text-yellow-700 text-xs rounded-lg mb-3 flex items-center gap-2">
+                    <div className="p-2 bg-yellow-50 border border-yellow-200 text-yellow-700 text-xs rounded-[14px] mb-3 flex items-center gap-2">
                       <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                       </svg>
@@ -4714,8 +4999,8 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                   <div className="prose prose-sm dark:prose-invert max-w-none select-text
                     prose-headings:text-text-primary prose-p:text-text-secondary
                     prose-table:border-collapse prose-table:w-full prose-table:my-4
-                    prose-th:border prose-th:border-border prose-th:bg-surface-secondary prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:text-text-primary prose-th:font-semibold
-                    prose-td:border prose-td:border-border prose-td:px-3 prose-td:py-2 prose-td:text-text-secondary
+                    prose-th:border prose-th:border-[rgba(0,0,0,0.10)] prose-th:bg-surface-secondary prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:text-text-primary prose-th:font-semibold
+                    prose-td:border prose-td:border-[rgba(0,0,0,0.10)] prose-td:px-3 prose-td:py-2 prose-td:text-text-secondary
                     prose-code:bg-surface-secondary prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-kanvas-blue prose-code:font-mono prose-code:text-sm
                     prose-pre:bg-surface-secondary prose-pre:p-4 prose-pre:rounded-lg prose-pre:overflow-auto
                     prose-blockquote:border-l-4 prose-blockquote:border-kanvas-blue prose-blockquote:pl-4 prose-blockquote:italic prose-blockquote:text-text-secondary
@@ -4723,7 +5008,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                     prose-li:text-text-secondary prose-li:my-1
                     prose-a:text-kanvas-blue prose-a:no-underline hover:prose-a:underline
                     prose-strong:text-text-primary prose-em:text-text-secondary
-                    prose-hr:border-border"
+                    prose-hr:border-[rgba(0,0,0,0.10)]"
                     style={{ userSelect: 'text', WebkitUserSelect: 'text' }}>
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
@@ -4738,19 +5023,19 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
                           <tbody>{children}</tbody>
                         ),
                         tr: ({ children }) => (
-                          <tr className="border-b border-border">{children}</tr>
+                          <tr className="border-b border-[rgba(0,0,0,0.10)]">{children}</tr>
                         ),
                         th: ({ children }) => (
-                          <th className="border border-border bg-surface-secondary px-3 py-2 text-left text-text-primary font-semibold">{children}</th>
+                          <th className="border border-[rgba(0,0,0,0.10)] bg-surface-secondary px-3 py-2 text-left text-text-primary font-semibold">{children}</th>
                         ),
                         td: ({ children }) => (
-                          <td className="border border-border px-3 py-2 text-text-secondary">{children}</td>
+                          <td className="border border-[rgba(0,0,0,0.10)] px-3 py-2 text-text-secondary">{children}</td>
                         ),
                         h1: ({ children }) => (
                           <h1 className="text-2xl font-bold text-text-primary mt-6 mb-4">{children}</h1>
                         ),
                         h2: ({ children }) => (
-                          <h2 className="text-xl font-semibold text-text-primary mt-5 mb-3 border-b border-border pb-2">{children}</h2>
+                          <h2 className="text-xl font-semibold text-text-primary mt-5 mb-3 border-b border-[rgba(0,0,0,0.10)] pb-2">{children}</h2>
                         ),
                         h3: ({ children }) => (
                           <h3 className="text-lg font-medium text-text-primary mt-4 mb-2">{children}</h3>
@@ -4789,7 +5074,7 @@ function ContractCard({ contract, repoPath, hasChanges, discoveredFeatures }: {
             </div>
 
             {/* Modal Footer */}
-            <div className="flex items-center justify-between p-4 border-t border-border text-xs text-text-secondary gap-4">
+            <div className="flex items-center justify-between p-4 border-t border-[rgba(0,0,0,0.10)] text-xs text-text-secondary gap-4">
               <span className="truncate flex-1">
                 {contract.filePath}
               </span>
@@ -4856,13 +5141,13 @@ function QuickActionsBar({ worktreePath }: { worktreePath?: string }): React.Rea
   if (!path) return <></>;
 
   return (
-    <div className="px-4 py-2 border-b border-border bg-surface-secondary">
+    <div className="px-4 py-2 border-b border-[rgba(0,0,0,0.10)] bg-surface-secondary">
       <div className="flex items-center gap-2">
         <span className="text-xs text-text-secondary mr-2">Quick Actions:</span>
 
         <button
           onClick={handleOpenTerminal}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
             bg-surface text-text-primary hover:bg-surface-tertiary transition-colors"
           title="Open Terminal"
         >
@@ -4875,7 +5160,7 @@ function QuickActionsBar({ worktreePath }: { worktreePath?: string }): React.Rea
 
         <button
           onClick={handleOpenVSCode}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
             bg-surface text-text-primary hover:bg-surface-tertiary transition-colors"
           title="Open in VS Code"
         >
@@ -4887,7 +5172,7 @@ function QuickActionsBar({ worktreePath }: { worktreePath?: string }): React.Rea
 
         <button
           onClick={handleOpenFinder}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
             bg-surface text-text-primary hover:bg-surface-tertiary transition-colors"
           title="Show in Finder"
         >
@@ -4900,7 +5185,7 @@ function QuickActionsBar({ worktreePath }: { worktreePath?: string }): React.Rea
 
         <button
           onClick={handleCopyPath}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
             bg-surface text-text-primary hover:bg-surface-tertiary transition-colors"
           title="Copy Path"
         >
@@ -5121,8 +5406,8 @@ function TerminalTab({ sessionId }: { sessionId: string }): React.ReactElement {
                   <div className={`flex items-start gap-2 py-1 hover:bg-gray-800 rounded px-1 ${
                     isHistorical ? 'opacity-60' : ''
                   }`}>
-                    <span className="text-gray-500 flex-shrink-0 w-20">
-                      {new Date(log.timestamp).toLocaleTimeString()}
+                    <span className="text-gray-500 flex-shrink-0 w-36">
+                      {formatDateTime(log.timestamp)}
                     </span>
                     <span className={`flex-shrink-0 w-5 h-5 rounded flex items-center justify-center text-xs font-bold ${style.bg} ${style.text}`}>
                       {style.icon}
@@ -5157,7 +5442,7 @@ function TerminalTab({ sessionId }: { sessionId: string }): React.ReactElement {
                       <div className="flex items-center gap-2">
                         <div className="flex-1 h-px bg-kanvas-blue/50" />
                         <span className="text-xs text-kanvas-blue font-medium px-2">
-                          Session resumed {new Date(sessionResumeTime).toLocaleTimeString()}
+                          Session resumed {formatDateTime(sessionResumeTime)}
                         </span>
                         <div className="flex-1 h-px bg-kanvas-blue/50" />
                       </div>
@@ -5186,8 +5471,8 @@ function generateDefaultPrompt(session: SessionReport): string {
     // Explicit worktree path is set and different from repo
     workDir = session.worktreePath;
   } else if (session.branchName && session.repoPath) {
-    // Try to infer worktree path: repoPath/.worktrees/branchName
-    const inferredWorktree = `${session.repoPath}/.worktrees/${session.branchName}`;
+    // Try to infer worktree path: repoPath/local_deploy/branchName
+    const inferredWorktree = `${session.repoPath}/local_deploy/${session.branchName}`;
     workDir = inferredWorktree;
   }
 

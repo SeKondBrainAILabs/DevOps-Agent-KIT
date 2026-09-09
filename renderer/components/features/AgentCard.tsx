@@ -61,10 +61,10 @@ export function AgentCard({ agent, isSelected = false, onClick }: AgentCardProps
     <div
       onClick={onClick}
       className={`
-        relative p-4 rounded-xl border transition-all cursor-pointer
+        relative p-4 rounded-[14px] border transition-all cursor-pointer
         ${isSelected
-          ? 'border-kanvas-blue bg-surface-secondary shadow-kanvas'
-          : 'border-border bg-surface hover:border-kanvas-blue/50 hover:shadow-card-hover'
+          ? 'border-kanvas-blue bg-surface-secondary shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
+          : 'border-[rgba(0,0,0,0.10)] bg-surface hover:border-kanvas-blue/50 hover:shadow-card-hover'
         }
       `}
     >
@@ -151,7 +151,7 @@ function getTimeAgo(date: Date): string {
  */
 export function AgentCardSkeleton(): React.ReactElement {
   return (
-    <div className="p-4 rounded-xl border border-border bg-surface animate-pulse">
+    <div className="p-4 rounded-[14px] border border-[rgba(0,0,0,0.10)] bg-surface animate-pulse">
       <div className="flex items-start gap-3 mb-3">
         <div className="w-10 h-10 rounded-lg bg-surface-tertiary" />
         <div className="flex-1">

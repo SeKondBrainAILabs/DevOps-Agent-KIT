@@ -1,10 +1,10 @@
-# Kanvas for Kit
+# KIT for DevOps
 
 **Desktop dashboard for managing AI coding agents across your repositories**
 
-Kanvas monitors Claude, Cursor, Copilot, Cline, Aider, Warp, and other AI agents working on your codebase. It handles git operations, prevents conflicts, tracks changes, generates contracts, and keeps multiple agents coordinated — all from a single desktop app.
+DevOps Agent monitors Claude, Codex, Cursor, Copilot, Cline, Aider, Warp, and other AI coding agents working on your codebase. It handles git operations, prevents conflicts, tracks changes, generates contracts, and keeps multiple agents coordinated — all from a single desktop app.
 
-Version: **2.3.0**
+Version: **2.6.16**
 
 ---
 
@@ -90,7 +90,12 @@ Deep codebase analysis powered by tree-sitter AST parsing:
 Generate seed data contracts from feature files (migrations, fixtures, configs). Merge per-feature contracts into a unified execution plan with topological sorting. Execute with idempotency (checksum-based skip) and rollback support.
 
 ### MCP Server
-Built-in HTTP-based Model Context Protocol server on localhost for coding agents. Exposes tools for git operations, file locking, activity logging, and repo management. Agents connect via streamable HTTP transport with per-connection state.
+Built-in HTTP-based Model Context Protocol server on localhost for coding agents. Exposes tools for git operations, file locking, activity logging, and repo management. Two transports supported:
+- **`/mcp`** — Streamable HTTP with per-connection session state (Claude Code, Cursor, Cline)
+- **`/rpc`** — Stateless JSON-RPC endpoint for plain `type:"http"` clients (Codex, Windsurf)
+- **`/sse`** — Server-Sent Events for Claude Desktop via `mcp-remote`
+
+Each new session auto-generates `.mcp.json` with both `kit` and `kit-rpc` entries so any agent auto-discovers the right transport.
 
 ### AI Integration
 LLM integration via Groq API (Llama 3.3 70B, Kimi K2, Qwen 3 32B, Llama 3.1 8B). Used for commit message generation, merge conflict resolution, contract generation, and feature discovery. Mode-based YAML prompt configuration at `~/.kanvas/modes/`.
@@ -112,7 +117,7 @@ Recovers orphaned sessions from repository `.S9N_KIT_DevOpsAgent/` directories. 
 
 1. Click **"+ New Session"** in the sidebar
 2. Select your repository (single or multi-repo)
-3. Choose agent type (Claude, Cursor, Copilot, Cline, Aider, Warp)
+3. Choose agent type (Claude, Codex, Cursor, Copilot, Cline, Aider, Warp)
 4. Enter a branch name and task description
 5. Click **Create**
 

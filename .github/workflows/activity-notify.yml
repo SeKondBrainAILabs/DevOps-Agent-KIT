@@ -1,0 +1,21 @@
+name: Notify SoWork on merge / push
+
+# Posts a SoWork chat notification when a PR is merged or a direct push lands
+# on the default branch. Thin caller around the org-shared reusable workflow
+# in Core_Infrastructure — the destination channel is defaulted THERE (#git),
+# so this caller does not set it. Add `with: { channel: <name> }` only to
+# override for this repo.
+
+on:
+  pull_request:
+    types: [closed]
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    if: |
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+      || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'Merge pull request'))
+    uses: SeKondBrainAILabs/Core_Infrastructure/.github/workflows/_shared-sowork-activity-notify.yml@main
+    secrets: inherit

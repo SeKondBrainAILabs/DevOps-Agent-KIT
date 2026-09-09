@@ -9,15 +9,73 @@
  */
 
 @layer base {
-  /* Font imports */
-  @font-face {
-    font-family: 'TT Interphases Pro';
-    src: local('TT Interphases Pro'), local('Inter');
-    font-display: swap;
+  /* ── KIT scale: 14px base so rem units (text-sm = 12.25px, text-base = 14px) align with DS ── */
+  html {
+    font-size: 14px;
   }
 
+  /* ── KIT Design System — SeKondBrain DS v6 ───────────────────── */
   :root {
-    /* SeKondBrain brand colors */
+    /* Brand accents (six-colour palette) */
+    --c-pink:    #E24AF2;
+    --c-purple:  #8B78F5;
+    --c-blue:    #1A8AF6;
+    --c-orange:  #F28B68;
+    --c-yellow:  #E6B800;
+    --c-mint:    #3DD680;
+
+    /* Aurora atmosphere peaks */
+    --a-pink-peak:   #FE93FD;
+    --a-blue-peak:   #5FC4F0;
+    --a-mint-peak:   #40CB68;
+    --a-violet-peak: #D8ABFE;
+    --a-peach-peak:  #F5C9B0;
+
+    /* Neutrals */
+    --c-black:  #000000;
+    --c-white:  #FFFFFF;
+    --c-grey:   #969696;
+    --c-paper:  #FAFAF7;
+    --c-line:   rgba(0,0,0,0.10);
+    --c-line-2: rgba(0,0,0,0.06);
+    --c-muted:  rgba(0,0,0,0.45);
+    --c-lilac:  #A88AF8;
+
+    /* Semantic foreground / background */
+    --fg1: var(--c-black);
+    --fg2: var(--c-muted);
+    --fg3: var(--c-grey);
+    --fg-on-dark: var(--c-white);
+    --bg1: var(--c-white);
+    --bg2: var(--c-paper);
+    --bg-dark: var(--c-black);
+    --border-1: var(--c-line);
+    --border-2: var(--c-line-2);
+
+    /* Status */
+    --c-success: #10B981;
+    --c-warning: #F59E0B;
+    --c-danger:  #EF4444;
+    --c-info:    #3B82F6;
+
+    /* Radii */
+    --r-sm: 6px;
+    --r-md: 10px;
+    --r-lg: 14px;
+    --r-xl: 22px;
+    --r-pill: 999px;
+
+    /* Shadows */
+    --shadow-card: 0 1px 3px 0 rgba(0,0,0,0.08), 0 1px 2px -1px rgba(0,0,0,0.06);
+    --shadow-pop:  0 4px 6px -1px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.06);
+    --shadow-mark: 0 24px 48px rgba(139,120,245,0.18);
+
+    /* Type families */
+    --f-display: "TT Interphases Pro", system-ui, sans-serif;
+    --f-body:    "TT Interphases Pro", system-ui, sans-serif;
+    --f-mono:    "TT Interphases Pro Mono", ui-monospace, "JetBrains Mono", monospace;
+
+    /* Legacy brand tokens (kept for focus rings, active indicators) */
     --sk-blue: #0033FF;
     --sk-blue-light: #1a8af6;
     --sk-magenta: #e24af2;
@@ -30,12 +88,19 @@
     --gradient-accent: linear-gradient(135deg, #e24af2 0%, #8b78f5 100%);
     --gradient-warm: linear-gradient(135deg, #f28b68 0%, #e6b800 100%);
     --gradient-hero: linear-gradient(180deg, rgba(0,51,255,0.05) 0%, transparent 50%);
+
+    /* KIT density defaults (cozy) */
+    --kb-pad: 20px;
+    --kb-card: 22px;
+    --kb-gap: 18px;
+    --kb-row-h: 68px;
   }
 
   body {
     @apply bg-surface text-text-primary font-sans antialiased;
     /* Prevent text selection for app-like feel */
     user-select: none;
+    line-height: 1.5;
     letter-spacing: -0.01em;
   }
 
@@ -74,171 +139,535 @@
 }
 
 @layer components {
-  /* Panel container */
+  /* ── Panel / Card ─────────────────────────────────────────────── */
   .panel {
-    @apply bg-surface border border-border rounded-2xl shadow-card;
+    background: var(--c-white);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-xl);
+    box-shadow: var(--shadow-card);
   }
 
-  /* Card component */
   .card {
-    @apply bg-surface border border-border rounded-xl p-4 transition-shadow;
+    background: var(--c-white);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-lg);
+    padding: 1rem;
+    transition: box-shadow 0.15s ease;
   }
-
   .card:hover {
-    @apply shadow-card-hover;
+    box-shadow: var(--shadow-pop);
   }
 
-  /* Primary button - Kanvas blue with gradient */
+  /* ── KIT KB card primitives ────────────────────────────────────── */
+  .kb-card {
+    background: var(--c-white);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-lg);
+    padding: var(--kb-card, 22px);
+  }
+  .kb-card-quiet {
+    background: transparent;
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-lg);
+    padding: var(--kb-card, 22px);
+  }
+  .kb-card-paper {
+    background: var(--c-paper);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-lg);
+    padding: var(--kb-card, 22px);
+  }
+
+  /* ── Buttons (KIT pill-first) ──────────────────────────────────── */
+
+  /* Primary — black bg, white text, pill */
   .btn-primary {
-    @apply px-5 py-2.5 text-white rounded-xl
-           font-medium transition-all shadow-kanvas hover:shadow-kanvas-lg
-           focus:outline-none focus:ring-2 focus:ring-kanvas-blue/30
-           disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none;
-    background: var(--gradient-primary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 38px;
+    padding: 0 20px;
+    background: var(--c-black);
+    color: var(--c-white);
+    border: 1px solid transparent;
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.15s;
   }
+  .btn-primary:hover { opacity: 0.88; transform: translateY(-1px); }
+  .btn-primary:active { transform: translateY(0); opacity: 0.8; }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(0,0,0,0.15); }
 
-  .btn-primary:hover {
-    background: linear-gradient(135deg, #0022CC 0%, #0033FF 100%);
-    transform: translateY(-1px);
+  /* Primary-blue — brand CTA (Create Instance etc.) */
+  .btn-primary-blue {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 38px;
+    padding: 0 20px;
+    background: var(--c-blue);
+    color: var(--c-white);
+    border: 1px solid transparent;
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.15s;
   }
+  .btn-primary-blue:hover { opacity: 0.9; transform: translateY(-1px); }
+  .btn-primary-blue:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
-  /* Gradient accent button */
-  .btn-gradient {
-    @apply px-5 py-2.5 text-white rounded-xl
-           font-medium transition-all
-           focus:outline-none focus:ring-2 focus:ring-sk-purple/30;
-    background: var(--gradient-accent);
-  }
-
-  .btn-gradient:hover {
-    background: linear-gradient(135deg, #d035e0 0%, #7a65f0 100%);
-    transform: translateY(-1px);
-  }
-
-  /* Secondary button */
+  /* Secondary — white bg, border, pill */
   .btn-secondary {
-    @apply px-5 py-2.5 bg-surface-secondary hover:bg-surface-tertiary text-text-primary
-           rounded-xl font-medium transition-colors border border-border
-           disabled:opacity-50 disabled:cursor-not-allowed;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 38px;
+    padding: 0 20px;
+    background: var(--c-white);
+    color: var(--fg1);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    transition: background 0.15s, box-shadow 0.15s;
   }
+  .btn-secondary:hover { background: var(--c-paper); box-shadow: var(--shadow-card); }
+  .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* KB-btn — alias for secondary */
+  .kb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 34px;
+    padding: 0 16px;
+    background: var(--c-white);
+    color: var(--fg1);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .kb-btn:hover { background: var(--c-paper); }
+  .kb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Primary small — compact table/row variant */
+  .btn-primary-sm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    padding: 0 12px;
+    background: var(--c-black);
+    color: var(--c-white);
+    border: 1px solid transparent;
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    transition: opacity 0.12s, transform 0.12s;
+    white-space: nowrap;
+  }
+  .btn-primary-sm:hover { opacity: 0.85; }
+  .btn-primary-sm:active { opacity: 0.75; }
+  .btn-primary-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* KB-btn small — compact secondary for table rows */
+  .kb-btn-sm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    padding: 0 12px;
+    background: var(--c-white);
+    color: var(--fg1);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.12s;
+    white-space: nowrap;
+  }
+  .kb-btn-sm:hover { background: var(--c-paper); }
+  .kb-btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* AI resolve button — purple accent for "fix with AI" actions */
+  .btn-ai-resolve {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 12px;
+    background: rgba(139,120,245,0.10);
+    color: #8B78F5;
+    border: 1px solid rgba(139,120,245,0.30);
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    white-space: nowrap;
+  }
+  .btn-ai-resolve:hover { background: rgba(139,120,245,0.18); border-color: rgba(139,120,245,0.5); }
+  .btn-ai-resolve:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Ghost button */
   .btn-ghost {
-    @apply px-4 py-2 bg-transparent hover:bg-surface-secondary text-text-primary
-           rounded-xl font-medium transition-colors
-           disabled:opacity-50 disabled:cursor-not-allowed;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 34px;
+    padding: 0 14px;
+    background: transparent;
+    color: var(--fg1);
+    border: none;
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
   }
+  .btn-ghost:hover { background: rgba(0,0,0,0.04); }
+  .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Icon button */
   .btn-icon {
-    @apply p-2.5 bg-transparent hover:bg-surface-secondary text-text-secondary
-           hover:text-text-primary rounded-xl transition-colors
-           disabled:opacity-50 disabled:cursor-not-allowed;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    background: transparent;
+    color: var(--c-muted);
+    border: none;
+    border-radius: var(--r-pill);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .btn-icon:hover { background: rgba(0,0,0,0.04); color: var(--fg1); }
+  .btn-icon:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── KIT nav primitives ────────────────────────────────────────── */
+  .kb-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: none;
+    background: transparent;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--f-body);
+    font-size: 13px;
+    color: var(--fg1);
+    letter-spacing: -0.005em;
+    position: relative;
+    width: 100%;
+    transition: background 0.12s;
+  }
+  .kb-nav-item:hover { background: rgba(0,0,0,0.04); }
+  .kb-nav-item[aria-current="page"],
+  .kb-nav-item.active {
+    background: var(--c-white);
+    font-weight: 500;
+    box-shadow: inset 0 0 0 1px var(--border-1), 0 1px 2px rgba(0,0,0,0.03);
   }
 
-  /* Input field */
+  .kb-nav-section-label {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--c-muted);
+    padding: 14px 10px 6px;
+    font-weight: 600;
+  }
+
+  /* ── KIT type helpers ──────────────────────────────────────────── */
+  .kb-eyebrow {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--c-muted);
+    font-weight: 500;
+  }
+  .kb-h1 {
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: 28px;
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+    color: var(--c-black);
+  }
+  .kb-h2 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: 20px;
+    line-height: 1.2;
+    letter-spacing: -0.025em;
+    color: var(--c-black);
+  }
+  .kb-h3 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: 16px;
+    line-height: 1.25;
+    letter-spacing: -0.02em;
+    color: var(--c-black);
+  }
+  .kb-body {
+    font-family: var(--f-body);
+    font-size: 14px;
+    line-height: 1.5;
+    letter-spacing: -0.01em;
+    color: var(--fg1);
+  }
+  .kb-body-sm {
+    font-family: var(--f-body);
+    font-size: 13px;
+    line-height: 1.45;
+    letter-spacing: -0.005em;
+    color: var(--fg1);
+  }
+  .kb-caption {
+    font-family: var(--f-body);
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--c-muted);
+  }
+  .kb-mono {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-muted);
+  }
+
+  /* ── KIT pill / tag ────────────────────────────────────────────── */
+  .kb-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    padding: 0 12px 0 10px;
+    background: rgba(0,0,0,0.04);
+    border-radius: var(--r-pill);
+    border: 1px solid var(--border-1);
+    font-family: var(--f-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg1);
+    white-space: nowrap;
+  }
+  .kb-pill::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--c-grey);
+    flex-shrink: 0;
+  }
+  .kb-pill.pink::before   { background: var(--c-pink); }
+  .kb-pill.purple::before { background: var(--c-purple); }
+  .kb-pill.blue::before   { background: var(--c-blue); }
+  .kb-pill.orange::before { background: var(--c-orange); }
+  .kb-pill.yellow::before { background: var(--c-yellow); }
+  .kb-pill.mint::before   { background: var(--c-mint); }
+  .kb-pill.success::before { background: var(--c-success); }
+  .kb-pill.danger::before  { background: var(--c-danger); }
+  .kb-pill.warning::before { background: var(--c-warning); }
+
+  /* ── KIT avatar ────────────────────────────────────────────────── */
+  .kb-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #8B78F5, #FE93FD);
+    flex-shrink: 0;
+  }
+
+  /* ── Form controls (KIT-aligned radii) ────────────────────────── */
   .input {
-    @apply w-full px-4 py-3 bg-surface-secondary border border-border
-           rounded-xl text-text-primary placeholder-text-secondary
-           focus:outline-none focus:border-kanvas-blue focus:ring-2 focus:ring-kanvas-blue/10
+    @apply w-full px-4 py-2.5 bg-surface-secondary border
+           text-text-primary placeholder-text-secondary
+           focus:outline-none focus:ring-2 focus:ring-kanvas-blue/10
            transition-all;
+    border-color: var(--border-1);
+    border-radius: var(--r-md);
+    font-size: 13px;
   }
+  .input:focus { border-color: var(--c-blue); }
 
-  /* Select field */
   .select {
-    @apply w-full px-4 py-3 bg-surface-secondary border border-border
-           rounded-xl text-text-primary cursor-pointer
-           focus:outline-none focus:border-kanvas-blue focus:ring-2 focus:ring-kanvas-blue/10
+    @apply w-full px-4 py-2.5 bg-surface-secondary border
+           text-text-primary cursor-pointer
+           focus:outline-none focus:ring-2 focus:ring-kanvas-blue/10
            transition-all;
+    border-color: var(--border-1);
+    border-radius: var(--r-md);
+    font-size: 13px;
   }
+  .select:focus { border-color: var(--c-blue); }
 
-  /* Textarea */
   .textarea {
-    @apply w-full px-4 py-3 bg-surface-secondary border border-border
-           rounded-xl text-text-primary placeholder-text-secondary
-           focus:outline-none focus:border-kanvas-blue focus:ring-2 focus:ring-kanvas-blue/10
+    @apply w-full px-4 py-2.5 bg-surface-secondary border
+           text-text-primary placeholder-text-secondary
+           focus:outline-none focus:ring-2 focus:ring-kanvas-blue/10
            transition-all resize-none;
+    border-color: var(--border-1);
+    border-radius: var(--r-md);
+    font-size: 13px;
   }
+  .textarea:focus { border-color: var(--c-blue); }
 
   /* Label */
   .label {
-    @apply block text-sm font-medium text-text-primary mb-1.5;
+    @apply block font-medium text-text-primary mb-1.5;
+    font-size: 13px;
+    letter-spacing: -0.005em;
   }
 
   /* Helper text */
   .helper-text {
-    @apply text-xs text-text-secondary mt-1;
+    @apply text-text-secondary mt-1;
+    font-size: 12px;
+    line-height: 1.4;
   }
 
-  /* Badge */
+  /* ── Badges (KIT dot-pill pattern) ────────────────────────────── */
   .badge {
-    @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 10px 0 8px;
+    border-radius: var(--r-pill);
+    font-family: var(--f-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    background: rgba(0,0,0,0.05);
+    color: var(--fg1);
+    border: 1px solid var(--border-1);
+  }
+  .badge::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--c-grey);
+    flex-shrink: 0;
   }
 
-  .badge-success {
-    @apply bg-green-100 text-green-700;
-  }
+  .badge-success { background: rgba(16,185,129,0.08); color: #059669; border-color: rgba(16,185,129,0.20); }
+  .badge-success::before { background: var(--c-success); }
 
-  .badge-error {
-    @apply bg-red-100 text-red-700;
-  }
+  .badge-error { background: rgba(239,68,68,0.08); color: #DC2626; border-color: rgba(239,68,68,0.20); }
+  .badge-error::before { background: var(--c-danger); }
 
-  .badge-warning {
-    @apply bg-yellow-100 text-yellow-700;
-  }
+  .badge-warning { background: rgba(245,158,11,0.08); color: #D97706; border-color: rgba(245,158,11,0.20); }
+  .badge-warning::before { background: var(--c-warning); }
 
-  .badge-info {
-    @apply bg-kanvas-blue/10 text-kanvas-blue;
-  }
+  .badge-info { background: rgba(26,138,246,0.08); color: #1A8AF6; border-color: rgba(26,138,246,0.20); }
+  .badge-info::before { background: var(--c-blue); }
 
-  .badge-neutral {
-    @apply bg-surface-tertiary text-text-secondary;
-  }
+  .badge-neutral { background: rgba(0,0,0,0.05); color: var(--c-muted); border-color: var(--border-1); }
 
-  /* Divider */
+  /* ── Divider ───────────────────────────────────────────────────── */
   .divider {
-    @apply h-px bg-border my-4;
+    height: 1px;
+    background: var(--border-1);
+    margin: 1rem 0;
   }
 
-  /* Modal backdrop */
+  /* ── Modal (KIT style) ─────────────────────────────────────────── */
   .modal-backdrop {
-    @apply fixed inset-0 bg-black/20 backdrop-blur-sm z-40;
+    @apply fixed inset-0 z-40;
+    background: rgba(0,0,0,0.15);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
   }
 
-  /* Modal container */
   .modal {
-    @apply fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
-           bg-surface border border-border rounded-2xl shadow-kanvas-lg
-           z-50 animate-slide-up;
+    @apply fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 animate-slide-up;
+    background: var(--c-white);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-xl);
+    box-shadow: var(--shadow-pop);
   }
 
-  /* Tab button */
+  /* ── Tab (KIT pill-tab style) ──────────────────────────────────── */
   .tab {
-    @apply px-4 py-2 text-sm font-medium text-text-secondary
-           border-b-2 border-transparent transition-colors;
+    display: inline-flex;
+    align-items: center;
+    height: 30px;
+    padding: 0 14px;
+    border-radius: var(--r-pill);
+    font-family: var(--f-body);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--c-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all 0.12s;
   }
-
-  .tab:hover {
-    @apply text-text-primary;
-  }
-
+  .tab:hover { color: var(--fg1); background: rgba(0,0,0,0.04); }
   .tab-active {
-    @apply text-kanvas-blue border-kanvas-blue;
+    background: var(--c-black);
+    color: var(--c-white);
+    border-color: transparent;
+    font-weight: 500;
   }
 
-  /* Tooltip */
+  /* ── Tooltip ───────────────────────────────────────────────────── */
   .tooltip {
-    @apply absolute z-50 px-2 py-1 text-xs font-medium text-white bg-text-primary
-           rounded-lg shadow-lg animate-fade-in;
+    @apply absolute z-50 px-2 py-1 text-xs font-medium text-white animate-fade-in;
+    background: var(--c-black);
+    border-radius: var(--r-sm);
+    box-shadow: var(--shadow-pop);
   }
 
-  /* Progress bar */
+  /* ── Progress ──────────────────────────────────────────────────── */
   .progress {
-    @apply h-1.5 bg-surface-tertiary rounded-full overflow-hidden;
+    height: 4px;
+    background: rgba(0,0,0,0.06);
+    border-radius: var(--r-pill);
+    overflow: hidden;
   }
-
   .progress-bar {
-    @apply h-full bg-kanvas-blue rounded-full transition-all duration-300;
+    height: 100%;
+    background: var(--c-blue);
+    border-radius: var(--r-pill);
+    transition: width 0.3s ease;
   }
 
   /* App drag region (for frameless window) */
@@ -271,6 +700,11 @@
   /* Fade animation */
   .animate-fade-in {
     animation: fadeIn 0.2s ease-out;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
   }
 
   @keyframes fadeIn {

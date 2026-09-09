@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { formatDateTime } from '../../../shared/format-datetime';
 
 interface McpCallEntry {
   timestamp: string;
@@ -29,32 +30,86 @@ const TOOL_COLORS: Record<string, string> = {
   kit_request_review: 'text-cyan-400',
 };
 
+const POLL_INTERVAL_MS = 3000;
+
 export function McpTab({ sessionId }: McpTabProps): React.ReactElement {
   const [calls, setCalls] = useState<McpCallEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  // Agent-session policy: the live count against the cap, plus the kill switch.
+  // Lives here rather than only in Settings because this is where the user is
+  // already watching MCP traffic — if agent sessions are what alarmed them,
+  // the control belongs next to the evidence.
+  const [policy, setPolicy] = useState<{
+    active: number;
+    limits: { enabled: boolean; maxConcurrentGlobal: number; maxConcurrentPerRepo: number };
+  } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const knownTimestampsRef = useRef<Set<string>>(new Set());
 
-  // Load historical calls
-  useEffect(() => {
-    setLoading(true);
+  const fetchPolicy = useCallback(() => {
+    window.api?.mcp?.getAgentSessionCount?.()
+      .then((r) => { if (r?.success && r.data) setPolicy(r.data); })
+      .catch(() => { /* panel is informational; a failed poll must not break it */ });
+  }, []);
+
+  const toggleAgentSessions = useCallback((enabled: boolean) => {
+    window.api?.mcp?.setAgentSessionPolicy?.({ enabled })
+      .then((r) => {
+        if (r?.success && r.data) {
+          setPolicy((prev) => (prev ? { ...prev, limits: r.data } : prev));
+        }
+      })
+      .catch(() => { /* leave the toggle showing its previous state */ });
+  }, []);
+
+  const fetchCalls = useCallback((initial = false) => {
+    if (initial) setLoading(true);
     window.api?.mcp?.getCallLog?.(200)
       .then((result) => {
         if (result?.success && result.data) {
           const filtered = (result.data as McpCallEntry[]).filter(
             (c) => c.sessionId === sessionId
           );
-          setCalls(filtered.reverse());
+          const sorted = filtered.reverse(); // newest first
+          if (initial) {
+            knownTimestampsRef.current = new Set(sorted.map(c => c.timestamp));
+            setCalls(sorted);
+          } else {
+            // Only add genuinely new entries to avoid flicker
+            const newEntries = sorted.filter(c => !knownTimestampsRef.current.has(c.timestamp));
+            if (newEntries.length > 0) {
+              newEntries.forEach(c => knownTimestampsRef.current.add(c.timestamp));
+              setCalls((prev) => [...newEntries, ...prev]);
+            }
+          }
         }
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (initial) setLoading(false); });
   }, [sessionId]);
 
-  // Subscribe to live events
+  // Initial load
+  useEffect(() => {
+    knownTimestampsRef.current = new Set();
+    fetchCalls(true);
+    fetchPolicy();
+  }, [fetchCalls, fetchPolicy]);
+
+  // Poll every 3s as the reliable update path
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetchCalls(false);
+      fetchPolicy();
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [fetchCalls, fetchPolicy]);
+
+  // Also subscribe to push events for sub-second updates when they work
   useEffect(() => {
     const unsub = window.api?.mcp?.onToolCalled?.((entry: McpCallEntry) => {
-      if (entry.sessionId === sessionId) {
+      if (entry.sessionId === sessionId && !knownTimestampsRef.current.has(entry.timestamp)) {
+        knownTimestampsRef.current.add(entry.timestamp);
         setCalls((prev) => [entry, ...prev]);
       }
     });
@@ -74,13 +129,7 @@ export function McpTab({ sessionId }: McpTabProps): React.ReactElement {
     }
   }, []);
 
-  const formatTime = (ts: string) => {
-    try {
-      return new Date(ts).toLocaleTimeString();
-    } catch {
-      return ts;
-    }
-  };
+  const formatTime = (ts: string) => formatDateTime(ts);
 
   const formatDuration = (ms: number) => {
     if (ms < 1000) return `${ms}ms`;
@@ -112,11 +161,46 @@ export function McpTab({ sessionId }: McpTabProps): React.ReactElement {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <span className="text-sm text-text-secondary">
-          {calls.length} tool call{calls.length !== 1 ? 's' : ''}
-        </span>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-[rgba(0,0,0,0.10)]">
         <div className="flex items-center gap-3">
+          <span className="text-sm text-text-secondary">
+            {calls.length} tool call{calls.length !== 1 ? 's' : ''}
+          </span>
+          {policy && (
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full border ${
+                policy.active >= policy.limits.maxConcurrentGlobal
+                  ? 'text-red-400 border-red-400/40'
+                  : 'text-text-secondary border-[rgba(0,0,0,0.15)]'
+              }`}
+              title={
+                `${policy.active} of ${policy.limits.maxConcurrentGlobal} agent-created sessions in use ` +
+                `(max ${policy.limits.maxConcurrentPerRepo} per repo).`
+              }
+            >
+              agent sessions {policy.active} / {policy.limits.maxConcurrentGlobal}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {policy && (
+            <label
+              className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer"
+              title={
+                policy.limits.enabled
+                  ? 'Agents may create KIT sessions. Turning this off blocks new ones; closing always works.'
+                  : 'Agents cannot create KIT sessions. Closing existing ones still works.'
+              }
+            >
+              <input
+                type="checkbox"
+                checked={policy.limits.enabled}
+                onChange={(e) => toggleAgentSessions(e.target.checked)}
+                className="accent-accent"
+              />
+              allow agent sessions
+            </label>
+          )}
           {!autoScroll && (
             <button
               onClick={() => {

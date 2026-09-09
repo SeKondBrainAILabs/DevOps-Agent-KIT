@@ -49,7 +49,7 @@ const STEPS: OnboardingStep[] = [
     ),
     items: [
       { icon: '📂', title: 'Create a session', desc: 'Pick a repo, name your branch, and choose an agent type' },
-      { icon: '🔀', title: 'Git worktree', desc: 'Each session works in .worktrees/<branch> — fully isolated from main' },
+      { icon: '🔀', title: 'Git worktree', desc: 'Each session works in local_deploy/<branch> — fully isolated from main' },
       { icon: '👁️', title: 'File watcher', desc: 'Kanvas watches for changes and auto-commits with smart messages' },
       { icon: '📋', title: 'Contracts', desc: 'API, schema, and feature contracts are auto-generated from your code' },
     ],
@@ -121,8 +121,8 @@ export function OnboardingModal({ onClose }: OnboardingModalProps): React.ReactE
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-slide-up">
-      <div className="bg-surface border border-border rounded-2xl shadow-kanvas w-[640px] max-h-[85vh] overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/15 backdrop-blur-[2px] animate-slide-up">
+      <div className="bg-white border border-[rgba(0,0,0,0.10)] rounded-[22px] shadow-[0_4px_6px_rgba(0,0,0,0.08)] w-[640px] max-h-[85vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="px-8 pt-8 pb-4 text-center">
           <div className="flex justify-center mb-4">{current.icon}</div>
@@ -138,7 +138,7 @@ export function OnboardingModal({ onClose }: OnboardingModalProps): React.ReactE
             {current.items.map((item, i) => (
               <div
                 key={i}
-                className="flex items-start gap-3 p-3 rounded-lg bg-surface-secondary/50 border border-border/50 hover:border-kanvas-blue/30 transition-colors"
+                className="flex items-start gap-3 p-3 rounded-[14px] bg-white border border-[rgba(0,0,0,0.10)] shadow-[0_1px_3px_rgba(0,0,0,0.08)] hover:border-kanvas-blue/30 transition-colors"
               >
                 <span className="text-xl flex-shrink-0 mt-0.5">{item.icon}</span>
                 <div>
@@ -151,22 +151,24 @@ export function OnboardingModal({ onClose }: OnboardingModalProps): React.ReactE
         </div>
 
         {/* Footer */}
-        <div className="px-8 py-5 border-t border-border flex items-center justify-between">
+        <div className="px-8 py-5 border-t border-[rgba(0,0,0,0.10)] flex items-center justify-between">
           {/* Step dots */}
           <div className="flex gap-2">
             {STEPS.map((_, i) => (
               <button
                 key={i}
                 onClick={() => setStep(i)}
-                className={`w-2 h-2 rounded-full transition-all ${
+                className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-medium transition-all ${
                   i === step
-                    ? 'bg-kanvas-blue w-6'
+                    ? 'bg-black text-white'
                     : i < step
-                    ? 'bg-kanvas-blue/40'
-                    : 'bg-text-secondary/30'
+                    ? 'bg-[rgba(0,0,0,0.08)] text-black'
+                    : 'bg-[rgba(0,0,0,0.05)] text-[rgba(0,0,0,0.45)]'
                 }`}
                 aria-label={`Go to step ${i + 1}`}
-              />
+              >
+                {i + 1}
+              </button>
             ))}
           </div>
 
@@ -175,21 +177,21 @@ export function OnboardingModal({ onClose }: OnboardingModalProps): React.ReactE
             {step === 0 ? (
               <button
                 onClick={handleComplete}
-                className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+                className="kb-btn"
               >
                 Skip
               </button>
             ) : (
               <button
                 onClick={handleBack}
-                className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+                className="kb-btn"
               >
                 Back
               </button>
             )}
             <button
               onClick={handleNext}
-              className="btn-primary px-6 py-2 text-sm font-medium rounded-lg"
+              className="btn-primary"
             >
               {isLastStep ? 'Get Started' : 'Next'}
             </button>

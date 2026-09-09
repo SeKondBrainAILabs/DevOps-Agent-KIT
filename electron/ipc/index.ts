@@ -7,11 +7,73 @@ import { ipcMain, BrowserWindow, dialog, app } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import type { Services } from '../services';
 import { databaseService } from '../services/DatabaseService';
+import { isActiveInstance } from '../../shared/instance-status';
+
+// Coalesce AI stream deltas before crossing the IPC boundary. The Groq stream
+// yields one delta per token; sending each over webContents.send() individually
+// means a structured-clone serialize (String::WriteUtf8 + Buffer::New) per token
+// — a serialization storm under load. Buffering deltas and flushing on a short
+// timer (or when the buffer gets large) cuts send() calls by 10–50× with no
+// visible latency, and is transparent to the renderer's append-based onChunk.
+const AI_STREAM_FLUSH_MS = 24;     // ~40 fps — below human-perceptible for text
+const AI_STREAM_FLUSH_CHARS = 2048; // hard flush so a fast stream stays bounded
+
+/**
+ * Pump an async iterable of text deltas to the renderer over AI_STREAM_CHUNK,
+ * coalescing deltas, then emit AI_STREAM_END. Errors propagate to the caller.
+ */
+async function pumpAiStream(
+  win: BrowserWindow,
+  chunks: AsyncIterable<string>
+): Promise<void> {
+  let buffer = '';
+  let flushTimer: NodeJS.Timeout | null = null;
+
+  const send = (text: string) => {
+    if (!text) return;
+    if (win.isDestroyed()) return;
+    win.webContents.send(IPC.AI_STREAM_CHUNK, text);
+  };
+  const flush = () => {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (buffer) { send(buffer); buffer = ''; }
+  };
+
+  try {
+    for await (const chunk of chunks) {
+      buffer += chunk;
+      if (buffer.length >= AI_STREAM_FLUSH_CHARS) {
+        flush();
+      } else if (!flushTimer) {
+        flushTimer = setTimeout(flush, AI_STREAM_FLUSH_MS);
+      }
+    }
+    flush(); // drain whatever is left before signalling end
+    if (!win.isDestroyed()) win.webContents.send(IPC.AI_STREAM_END);
+  } finally {
+    if (flushTimer) clearTimeout(flushTimer);
+  }
+}
 
 /**
  * Register all IPC handlers
  * Removes existing handlers first to support HMR during development
  */
+/**
+ * The repo root a session's locks are keyed by.
+ *
+ * Locks are stored per SOURCE REPO, never per worktree — the watcher's
+ * auto-locks always used the repo root, and anything keyed by worktree writes
+ * to a second file nothing reads.
+ */
+function lockRootForSession(services: Services, sessionId: string): string | undefined {
+  const listed = services.agentInstance.listInstances();
+  const inst = listed.success && listed.data
+    ? listed.data.find((i) => i.sessionId === sessionId)
+    : undefined;
+  return inst?.config?.repoPath;
+}
+
 export function registerIpcHandlers(services: Services, mainWindow: BrowserWindow): void {
   console.log('[IPC] Registering IPC handlers...');
   // Remove existing handlers first (for HMR support)
@@ -74,6 +136,18 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.git.detectSubmodules(repoPath);
   });
 
+  ipcMain.handle(IPC.GIT_GET_REPO_STATUS, async (_, repoPath: string) => {
+    return services.git.getRepoStatus(repoPath);
+  });
+
+  ipcMain.handle(IPC.GIT_LIST_BRANCHES_FOR_REPO, async (_, repoPath: string) => {
+    return services.git.listBranchesForRepo(repoPath);
+  });
+
+  ipcMain.handle(IPC.GIT_WORKTREE_SAFETY_INFO, async (_, worktreePath: string) => {
+    return services.git.getWorktreeSafetyInfo(worktreePath);
+  });
+
   // ==========================================================================
   // WATCHER HANDLERS
   // ==========================================================================
@@ -93,12 +167,23 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // LOCK HANDLERS
   // ==========================================================================
   // Legacy lock API (session-based)
-  ipcMain.handle(IPC.LOCK_DECLARE, async (_, sessionId: string, files: string[], operation: string) => {
-    return services.lock.declareFiles(sessionId, files, operation as 'edit' | 'read' | 'delete');
+  // repoPath is now required: declarations live in the same repo-keyed store the
+  // watcher's auto-locks use, so a declaration without one would land nowhere
+  // anything reads. Resolved from the session when the caller omits it.
+  ipcMain.handle(IPC.LOCK_DECLARE, async (_, sessionId: string, files: string[], operation: string, repoPath?: string) => {
+    const root = repoPath ?? lockRootForSession(services, sessionId);
+    if (!root) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No repo for session ${sessionId}` } };
+    }
+    return services.lock.declareFiles(root, sessionId, files, operation as 'edit' | 'read' | 'delete');
   });
 
-  ipcMain.handle(IPC.LOCK_RELEASE, async (_, sessionId: string) => {
-    return services.lock.releaseFiles(sessionId);
+  ipcMain.handle(IPC.LOCK_RELEASE, async (_, sessionId: string, repoPath?: string) => {
+    const root = repoPath ?? lockRootForSession(services, sessionId);
+    if (!root) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No repo for session ${sessionId}` } };
+    }
+    return services.lock.releaseFiles(root, sessionId);
   });
 
   // New auto-lock API (repo/file-based)
@@ -110,7 +195,7 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     if (repoPath) {
       return services.lock.getRepoLocks(repoPath);
     }
-    return services.lock.listDeclarations();
+    return { success: true, data: [] };
   });
 
   ipcMain.handle(IPC.LOCK_FORCE_RELEASE, async (_, repoPath: string, filePath: string) => {
@@ -144,6 +229,43 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.config.hasCredential(key);
   });
 
+  // Per-repo workspace settings (C5 Single-Session Mode)
+  ipcMain.handle(IPC.REPO_GET_WORKTREE_MODE, async (_, repoPath: string) => {
+    return { success: true, data: services.config.getRepoWorktreeMode(repoPath) };
+  });
+
+  ipcMain.handle(IPC.REPO_SET_WORKTREE_MODE, async (_, repoPath: string, mode: 'in-place' | 'worktree') => {
+    services.config.setRepoWorktreeMode(repoPath, mode);
+    return { success: true };
+  });
+
+  ipcMain.handle(IPC.REPO_GET_ACTIVE_SESSION_COUNT, async (_, repoPath: string) => {
+    return services.agentInstance.getActiveSessionCountForRepo(repoPath);
+  });
+
+  ipcMain.handle(IPC.REPO_GET_RUNNING_SESSION_COUNT, async (_, repoPath: string) => {
+    return services.agentInstance.getRunningSessionCountForRepo(repoPath);
+  });
+
+  // Workspaces (Epic A / story A1)
+  ipcMain.handle(IPC.WORKSPACE_LIST, async () => services.workspace.list());
+  ipcMain.handle(IPC.WORKSPACE_GET, async (_, id: string) => services.workspace.get(id));
+  ipcMain.handle(IPC.WORKSPACE_ADD, async (_, input) => services.workspace.add(input));
+  ipcMain.handle(IPC.WORKSPACE_UPDATE, async (_, id: string, patch) => services.workspace.update(id, patch));
+  ipcMain.handle(IPC.WORKSPACE_REMOVE, async (_, id: string) => services.workspace.remove(id));
+  ipcMain.handle(IPC.WORKSPACE_GET_ACTIVE, async () => services.workspace.getActive());
+  ipcMain.handle(IPC.WORKSPACE_SET_ACTIVE, async (_, id: string | null) => services.workspace.setActive(id));
+  ipcMain.handle(IPC.WORKSPACE_SCAN, async (_, id: string) => services.workspace.scan(id));
+  ipcMain.handle(IPC.WORKSPACE_WATCH_START, async (_, id: string) => services.workspace.startWatching(id));
+  ipcMain.handle(IPC.WORKSPACE_WATCH_STOP, async (_, id: string) => services.workspace.stopWatching(id));
+
+  // Project Groups (Epic F / story F1)
+  ipcMain.handle(IPC.PROJECT_GROUP_LIST, async () => services.projectGroup.list());
+  ipcMain.handle(IPC.PROJECT_GROUP_GET, async (_, id: string) => services.projectGroup.get(id));
+  ipcMain.handle(IPC.PROJECT_GROUP_ADD, async (_, input) => services.projectGroup.add(input));
+  ipcMain.handle(IPC.PROJECT_GROUP_UPDATE, async (_, id: string, patch) => services.projectGroup.update(id, patch));
+  ipcMain.handle(IPC.PROJECT_GROUP_REMOVE, async (_, id: string) => services.projectGroup.remove(id));
+
   // ==========================================================================
   // AI HANDLERS (streaming uses on/send pattern)
   // ==========================================================================
@@ -171,6 +293,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return { success: true, data: services.ai.getAvailableModels() };
   });
 
+  ipcMain.handle(IPC.AI_REFINE_SESSION_TASK, async (_, input: { rawTask: string; agentType: string; repoName?: string }) => {
+    return services.ai.refineSessionTask(input);
+  });
+
   ipcMain.handle(IPC.AI_IS_CONFIGURED, async () => {
     return { success: true, data: services.ai.hasApiKey() };
   });
@@ -182,15 +308,14 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.on(IPC.AI_STREAM_START, async (_, messages, modelOverride?: string) => {
     try {
-      for await (const chunk of services.ai.streamChat(messages, modelOverride as any)) {
-        mainWindow.webContents.send(IPC.AI_STREAM_CHUNK, chunk);
-      }
-      mainWindow.webContents.send(IPC.AI_STREAM_END);
+      await pumpAiStream(mainWindow, services.ai.streamChat(messages, modelOverride as any));
     } catch (error) {
-      mainWindow.webContents.send(
-        IPC.AI_STREAM_ERROR,
-        error instanceof Error ? error.message : 'Unknown error'
-      );
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(
+          IPC.AI_STREAM_ERROR,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
     }
   });
 
@@ -205,15 +330,14 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.on(IPC.AI_STREAM_WITH_MODE, async (_, options) => {
     try {
-      for await (const chunk of services.ai.streamWithMode(options)) {
-        mainWindow.webContents.send(IPC.AI_STREAM_CHUNK, chunk);
-      }
-      mainWindow.webContents.send(IPC.AI_STREAM_END);
+      await pumpAiStream(mainWindow, services.ai.streamWithMode(options));
     } catch (error) {
-      mainWindow.webContents.send(
-        IPC.AI_STREAM_ERROR,
-        error instanceof Error ? error.message : 'Unknown error'
-      );
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(
+          IPC.AI_STREAM_ERROR,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
     }
   });
 
@@ -301,17 +425,12 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   // Create and manage agent instances from Kanvas dashboard
   // ==========================================================================
   ipcMain.handle(IPC.INSTANCE_CREATE, async (_, config) => {
-    const result = await services.agentInstance.createInstance(config);
-
-    // Auto-start file watcher for the new session (use worktree if available)
-    if (result.success && result.data?.sessionId) {
-      const watchPath = result.data.worktreePath || config.repoPath;
-      services.watcher.startWithPath(result.data.sessionId, watchPath).catch((err) => {
-        console.warn('[IPC] Failed to start watcher for new session:', err);
-      });
-    }
-
-    return result;
+    // Delegates to SessionOrchestrator, which owns the compose step
+    // (createInstance + start the file watcher). createInstance alone does not
+    // start a watcher, so every caller has to remember to — this used to be
+    // inline here, and the MCP tool layer now shares the same path instead of
+    // duplicating it.
+    return services.sessionOrchestrator.startSession(config);
   });
 
   ipcMain.handle(IPC.INSTANCE_VALIDATE_REPO, async (_, path: string) => {
@@ -338,30 +457,71 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.agentInstance.getInstance(instanceId);
   });
 
+  ipcMain.handle(IPC.INSTANCE_FIND_ACTIVE_SIBLING, async (_, sessionId: string) => {
+    return { success: true, data: services.agentInstance.findActiveSiblingInRepo(sessionId) };
+  });
+
   ipcMain.handle(IPC.INSTANCE_DELETE, async (_, instanceId: string) => {
-    // Stop watcher before deleting
-    await services.watcher.stop(instanceId).catch(() => {});
+    // NOTE: this handler receives an INSTANCE id, but watchers are keyed by
+    // SESSION id and the two id spaces never collide (`inst_…` vs `sess_…`).
+    // The previous `watcher.stop(instanceId)` therefore always matched
+    // nothing, and every session deleted this way leaked its watcher.
+    const sessionId = services.sessionOrchestrator.resolveSessionId(instanceId);
+    if (sessionId) {
+      await services.sessionOrchestrator.teardownSession(sessionId);
+    }
     return await services.agentInstance.deleteInstance(instanceId);
   });
 
   ipcMain.handle(IPC.INSTANCE_DELETE_SESSION, async (_, sessionId: string, repoPath?: string) => {
-    // Stop watcher before deleting
-    await services.watcher.stop(sessionId).catch(() => {});
+    await services.sessionOrchestrator.teardownSession(sessionId);
     return await services.agentInstance.deleteSessionById(sessionId, repoPath);
   });
 
-  ipcMain.handle(IPC.INSTANCE_DELETE_SAFETY_CHECK, async (_, sessionId: string) => {
-    return services.agentInstance.getDeleteSafetyInfo(sessionId);
+  ipcMain.handle(IPC.INSTANCE_DELETE_SAFETY_CHECK, async (
+    _,
+    sessionId: string,
+    hints?: { repoPath?: string; branchName?: string }
+  ) => {
+    return services.agentInstance.getDeleteSafetyInfo(sessionId, hints);
   });
 
-  ipcMain.handle(IPC.INSTANCE_DELETE_WITH_CLEANUP, async (_, sessionId: string, options: {
-    deleteWorktree?: boolean;
-    deleteLocalBranch?: boolean;
-    deleteRemoteBranch?: boolean;
-  }) => {
-    // Stop watcher before deleting
-    await services.watcher.stop(sessionId).catch(() => {});
-    return await services.agentInstance.deleteInstanceWithCleanup(sessionId, options);
+  ipcMain.handle(IPC.INSTANCE_DELETE_WITH_CLEANUP, async (
+    _,
+    sessionId: string,
+    options: {
+      deleteWorktree?: boolean;
+      deleteLocalBranch?: boolean;
+      deleteRemoteBranch?: boolean;
+    },
+    hints?: { repoPath?: string; branchName?: string; worktreePath?: string }
+  ) => {
+    await services.sessionOrchestrator.teardownSession(sessionId);
+    return await services.agentInstance.deleteInstanceWithCleanup(sessionId, options, hints);
+  });
+
+  // R2 — pin a session so the reaper skips it, whatever its age.
+  ipcMain.handle(IPC.INSTANCE_SET_PINNED, async (_e: unknown, sessionId: string, pinned: boolean) => {
+    return services.agentInstance.setSessionPinned(sessionId, pinned);
+  });
+
+  // R2 — run a reaper pass on demand. Dry-run by default so the UI can show
+  // what WOULD happen without doing it; the caller opts into acting.
+  ipcMain.handle(IPC.INSTANCE_REAP_NOW, async (_e: unknown, opts?: { dryRun?: boolean }) => {
+    try {
+      const result = await services.sessionOrchestrator.reapExpiredAgentSessions({
+        dryRun: opts?.dryRun ?? true,
+      });
+      return { success: true, data: result };
+    } catch (err) {
+      return {
+        success: false,
+        error: {
+          code: 'REAP_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
   });
 
   ipcMain.handle(IPC.INSTANCE_RESTART, async (_, sessionId: string, sessionData?: {
@@ -372,22 +532,20 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     agentType?: string;
     task?: string;
   }, commitChanges?: boolean) => {
-    // Stop old watcher
-    await services.watcher.stop(sessionId).catch(() => {});
+    // M5 closed the second compose site. Teardown (without unbinding MCP),
+    // restartInstance, and the watcher start now all live in
+    // SessionOrchestrator.restartSession, so a non-IPC caller — the
+    // kit_restart_session tool — gets a restarted session with a running
+    // watcher rather than one that silently never auto-commits.
+    return services.sessionOrchestrator.restartSession(
+      sessionId,
+      sessionData as Parameters<typeof services.sessionOrchestrator.restartSession>[1],
+      commitChanges
+    );
+  });
 
-    const result = await services.agentInstance.restartInstance(sessionId, sessionData, commitChanges);
-
-    // Start watcher for new session (use worktree path if available)
-    if (result.success && result.data?.sessionId) {
-      const watchPath = result.data.worktreePath || result.data.config?.repoPath;
-      if (watchPath) {
-        services.watcher.startWithPath(result.data.sessionId, watchPath).catch((err) => {
-          console.warn('[IPC] Failed to start watcher for restarted session:', err);
-        });
-      }
-    }
-
-    return result;
+  ipcMain.handle(IPC.INSTANCE_GET_LAST_CHANGE, async (_, sessionId: string) => {
+    return services.agentInstance.getSessionLastChange(sessionId);
   });
 
   ipcMain.handle(IPC.INSTANCE_CLEAR_ALL, async () => {
@@ -396,6 +554,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.handle(IPC.INSTANCE_UPDATE_BASE_BRANCH, async (_, sessionId: string, newBaseBranch: string) => {
     return services.agentInstance.updateBaseBranch(sessionId, newBaseBranch);
+  });
+
+  ipcMain.handle(IPC.INSTANCE_REPAIR_STALE_REBASE, async (_, instanceId: string) => {
+    return services.agentInstance.repairStaleRebase(instanceId);
   });
 
   ipcMain.handle(IPC.RECENT_REPOS_LIST, async () => {
@@ -474,11 +636,35 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.repoCleanup.cleanupKanvasDirectory(repoPath);
   });
 
+  ipcMain.handle(IPC.CLEANUP_GET_STORAGE_METRICS, async (_, repoPaths: string[]) => {
+    return services.repoCleanup.getStorageMetrics(repoPaths);
+  });
+
   // ==========================================================================
   // GIT REBASE HANDLERS
   // ==========================================================================
+  ipcMain.handle(IPC.GIT_COMMIT_WORKTREE, async (_, worktreePath: string, message: string) => {
+    return services.git.commitWorktree(worktreePath, message);
+  });
+
+  ipcMain.handle(IPC.GIT_DETECT_TAG_PREFIXES, async (_, repoPath: string) => {
+    return services.git.detectVersionTagPrefixes(repoPath);
+  });
+
+  ipcMain.handle(IPC.GIT_NEXT_VERSION_TAG, async (_, repoPath: string, prefix: string) => {
+    return services.git.getNextVersionTag(repoPath, prefix);
+  });
+
+  ipcMain.handle(IPC.GIT_CREATE_PUSH_TAG, async (_, repoPath: string, tag: string, ref?: string) => {
+    return services.git.createAndPushTag(repoPath, tag, ref);
+  });
+
   ipcMain.handle(IPC.GIT_FETCH, async (_, repoPath: string, remote?: string) => {
     return services.git.fetchRemote(repoPath, remote);
+  });
+
+  ipcMain.handle(IPC.GIT_STASH_POP, async (_, repoPath: string) => {
+    return services.git.stashPop(repoPath);
   });
 
   ipcMain.handle(IPC.GIT_CHECK_REMOTE, async (_, repoPath: string, branch: string) => {
@@ -540,6 +726,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.handle(IPC.GIT_PRUNE_WORKTREES, async (_, repoPath: string) => {
     return services.git.pruneWorktrees(repoPath);
+  });
+
+  ipcMain.handle(IPC.GIT_REMOVE_WORKTREE_PATH, async (_, repoPath: string, worktreePath: string) => {
+    return services.git.removeWorktreeByPath(repoPath, worktreePath);
   });
 
   ipcMain.handle(IPC.GIT_DELETE_BRANCH, async (_, repoPath: string, branchName: string, deleteRemote?: boolean) => {
@@ -1083,6 +1273,59 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.quickAction.copyPath(pathToCopy);
   });
 
+  // Safe git command execution — allowlisted commands only, sandboxed to repo path
+  ipcMain.handle(IPC.SHELL_EXEC_GIT_SAFE, async (_, repoPath: string, command: string): Promise<{ ok: boolean; stdout: string; stderr: string; exitCode: number }> => {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+
+    // Allowlist: only safe, non-destructive git operations
+    const ALLOWED_PREFIXES = [
+      'git pull',
+      'git fetch',
+      'git push',
+      'git add',
+      'git commit',
+      'git stash',
+      'git checkout',
+      'git switch',
+      'git restore',
+      'git rebase --abort',
+      'git merge --abort',
+      'git clean -fd',
+    ];
+    const BLOCKED_PATTERNS = [
+      /--force(?!-with-lease)/,   // block --force but allow --force-with-lease
+      /reset\s+--hard/,
+      /push\s+.*--force(?!-with-lease)/,
+      /branch\s+-[Dd]/,
+      /remote\s+rm/,
+      /\brf\b/,
+      /&&|;|\||\$\(|`/,           // no chaining
+    ];
+
+    const trimmed = command.trim();
+    const allowed = ALLOWED_PREFIXES.some(p => trimmed.startsWith(p));
+    const blocked = BLOCKED_PATTERNS.some(r => r.test(trimmed));
+
+    if (!allowed || blocked) {
+      return { ok: false, stdout: '', stderr: `Command not permitted: ${trimmed}`, exitCode: 1 };
+    }
+
+    const parts = trimmed.split(/\s+/);
+    try {
+      const { stdout, stderr } = await execFileAsync(parts[0], parts.slice(1), {
+        cwd: repoPath,
+        timeout: 30_000,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      });
+      return { ok: true, stdout: stdout.trim(), stderr: stderr.trim(), exitCode: 0 };
+    } catch (err: unknown) {
+      const e = err as { stdout?: string; stderr?: string; code?: number };
+      return { ok: false, stdout: e.stdout?.trim() ?? '', stderr: e.stderr?.trim() ?? String(err), exitCode: e.code ?? 1 };
+    }
+  });
+
   // ==========================================================================
   // TERMINAL LOG HANDLERS
   // ==========================================================================
@@ -1106,6 +1349,7 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     deleteLocalBranch?: boolean;
     deleteRemoteBranch?: boolean;
     worktreePath?: string;
+    skipCiGate?: boolean;
   }) => {
     return services.merge.executeMerge(repoPath, sourceBranch, targetBranch, options);
   });
@@ -1355,6 +1599,36 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
       : { success: false, error: { code: 'MCP_UNINSTALL_FAILED', message: result.error } };
   });
 
+  // Agent-session policy: kill switch + concurrency caps. Writes live here and
+  // deliberately NOT on the MCP tool surface — an agent must not be able to
+  // raise its own cap or re-enable a switch the user just turned off.
+  ipcMain.handle(IPC.MCP_GET_AGENT_SESSION_POLICY, () => {
+    return { success: true, data: databaseService.getSessionLimits() };
+  });
+
+  ipcMain.handle(IPC.MCP_SET_AGENT_SESSION_POLICY, (_, patch: {
+    enabled?: boolean;
+    maxConcurrentGlobal?: number;
+    maxConcurrentPerRepo?: number;
+  }) => {
+    return { success: true, data: databaseService.setSessionLimits(patch ?? {}) };
+  });
+
+  ipcMain.handle(IPC.MCP_GET_AGENT_SESSION_COUNT, () => {
+    const listed = services.agentInstance.listInstances();
+    const instances = listed.success && listed.data ? listed.data : [];
+    const active = instances.filter(
+      (i: any) => i.config?.createdBy === 'mcp' && isActiveInstance(i)
+    );
+    return {
+      success: true,
+      data: {
+        active: active.length,
+        limits: databaseService.getSessionLimits(),
+      },
+    };
+  });
+
   ipcMain.handle(IPC.MCP_CHECK_CLAUDE_DESKTOP_CONFIG, async () => {
     const data = await services.mcpServer.checkMcpConfig('claude-desktop');
     return { success: true, data };
@@ -1381,17 +1655,58 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 }
 
 /**
- * Start file watchers for all existing sessions and auto-restart active ones
+ * Start file watchers for all existing sessions and auto-restart active ones.
+ *
+ * Safe-boot escape hatch: if a `.safe-boot` file exists in userData, skip the
+ * watcher startup and the auto-restart loop entirely. Sessions still load into
+ * the UI from electron-store; the user can manually start what they want. Use
+ * this when prior state has stale sessions whose initial-scan watcher events
+ * overwhelm the renderer (one session in a million-file repo emits 10k+ adds
+ * before the user can even see the dashboard).
+ *
+ * To activate:  touch ~/Library/Application\ Support/kit-for-devops/.safe-boot
+ * To restore:   rm    ~/Library/Application\ Support/kit-for-devops/.safe-boot
  */
 async function startWatchersForExistingSessions(services: Services): Promise<void> {
+  try {
+    const { existsSync } = await import('fs');
+    const { join } = await import('path');
+    const safeBootMarker = join(app.getPath('userData'), '.safe-boot');
+    if (existsSync(safeBootMarker)) {
+      console.log(`[IPC] Safe boot: ${safeBootMarker} present — skipping watcher startup and auto-restart`);
+      return;
+    }
+  } catch (err) {
+    console.warn('[IPC] Safe-boot check failed (continuing with normal startup):', err);
+  }
+
+  // First, try to repair any instance whose worktree dir went missing — if
+  // the source repo + branch still exist, `git worktree add --force` brings
+  // the worktree back. Then reap whatever still can't be reached so we don't
+  // start watchers / restart agents against a path that no longer exists.
+  await services.agentInstance.repairOrphanWorktrees();
+  services.agentInstance.reapOrphanInstances();
+
   const result = services.agentInstance.listInstances();
   if (result.success && result.data) {
     console.log(`[IPC] Starting watchers for ${result.data.length} existing sessions`);
     const activeSessions: string[] = [];
 
+    const { existsSync: pathExists } = await import('fs');
     for (const instance of result.data) {
+      // Skip instances already marked closed/completed/failed (e.g. by the
+      // orphan reap above). They stay visible in the UI but get no watcher.
+      if (instance.status === 'closed' || instance.status === 'completed' || instance.status === 'failed') continue;
+
       // Use worktree path if available, otherwise fallback to repo path
       const watchPath = instance.worktreePath || instance.config?.repoPath;
+      // Defensive: even after reaping, a multi-repo entry can leave a
+      // dangling primary path. Skip rather than spawning a watcher that
+      // ENOENTs on every git invocation.
+      if (watchPath && !pathExists(watchPath)) {
+        console.warn(`[IPC] Skipping watcher for ${instance.sessionId} — path missing: ${watchPath}`);
+        continue;
+      }
       if (watchPath) {
         // Start file watcher
         services.watcher.startWithPath(instance.sessionId, watchPath).catch((err) => {
@@ -1401,10 +1716,14 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
         // Start rebase watcher for all non-never frequencies
         const rebaseFrequency = instance.config?.rebaseFrequency || 'never';
         if (rebaseFrequency !== 'never' && instance.config?.baseBranch) {
+          const rootRepoPath = instance.config?.repoPath;
+          const wtPath = instance.worktreePath && instance.worktreePath !== rootRepoPath
+            ? instance.worktreePath : undefined;
           services.rebaseWatcher.startWatching({
             sessionId: instance.sessionId,
-            repoPath: watchPath,
-            baseBranch: instance.config.baseBranch,
+            repoPath: rootRepoPath || watchPath,  // always root — for fetch/remote status
+            worktreePath: wtPath,                 // worktree — for actual rebase execution
+            baseBranch: (instance.config.baseBranch || 'main').replace(/^origin\//, ''),
             currentBranch: instance.config.branchName,
             rebaseFrequency: rebaseFrequency as 'on-demand' | 'daily' | 'weekly',
             pollIntervalMs: 60000,
@@ -1413,17 +1732,23 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
           });
         }
 
-        // Track sessions that were active — will auto-restart after watchers settle
-        if (instance.status === 'active') {
+        // Track every still-alive session — they all auto-restart after watchers
+        // settle so no agent is left dormant after an app restart. (Only terminal
+        // states — completed / closed / failed — are skipped.)
+        if (isActiveInstance(instance)) {
           activeSessions.push(instance.sessionId);
         }
       }
     }
 
-    // Auto-restart sessions that were active when the app was last closed
+    // Auto-restart every alive session when the app starts so all agents resume.
     if (activeSessions.length > 0) {
-      console.log(`[IPC] Auto-restarting ${activeSessions.length} previously active session(s)`);
+      console.log(`[IPC] Auto-restarting ${activeSessions.length} session(s) on app launch`);
       setTimeout(async () => {
+        // STAGGER the restarts. Each restartInstance does git + fs + DB work and
+        // re-inits a worktree; firing them all at once on launch spikes CPU and can
+        // make the app unresponsive. Space them out so the load spreads over time.
+        const RESTART_GAP_MS = 2500;
         for (const sessionId of activeSessions) {
           try {
             const restart = await services.agentInstance.restartInstance(sessionId, undefined, true);
@@ -1438,6 +1763,8 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
           } catch (err) {
             console.warn(`[IPC] Auto-restart failed for session ${sessionId}:`, err);
           }
+          // Breathe between sessions so the event loop stays responsive.
+          await new Promise((r) => setTimeout(r, RESTART_GAP_MS));
         }
       }, 2000); // Wait 2s for watchers to initialise before restarting
     }

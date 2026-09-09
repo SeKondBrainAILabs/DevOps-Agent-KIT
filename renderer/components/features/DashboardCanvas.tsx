@@ -56,9 +56,9 @@ export function DashboardCanvas({ agent }: DashboardCanvasProps): React.ReactEle
         </div>
 
         {/* Activity Feed */}
-        <div className="w-80 border-l border-border bg-surface overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-border">
-            <h3 className="font-semibold text-text-primary text-sm">Activity Feed</h3>
+        <div className="w-80 border-l border-[rgba(0,0,0,0.10)] bg-surface overflow-hidden flex flex-col">
+          <div className="p-4 border-b border-[rgba(0,0,0,0.10)]">
+            <h3 className="font-semibold text-text-primary text-sm kb-eyebrow">Activity Feed</h3>
           </div>
           <div className="flex-1 overflow-y-auto">
             <ActivityLog
@@ -76,7 +76,7 @@ export function DashboardCanvas({ agent }: DashboardCanvasProps): React.ReactEle
  */
 function AgentHeader({ agent, sessionsCount }: { agent: RegisteredAgent; sessionsCount: number }): React.ReactElement {
   return (
-    <div className="p-6 bg-surface border-b border-border">
+    <div className="p-6 bg-surface border-b border-[rgba(0,0,0,0.10)]">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           {/* Status indicator */}
@@ -153,7 +153,7 @@ function SessionDetailCard({ session }: { session: SessionReport }): React.React
   const status = statusConfig[session.status] || statusConfig.idle;
 
   return (
-    <div className="p-5 rounded-2xl border border-border bg-surface hover:shadow-card-hover transition-shadow">
+    <div className="p-5 rounded-[22px] border border-[rgba(0,0,0,0.10)] bg-surface hover:shadow-[0_1px_3px_rgba(0,0,0,0.08)] transition-shadow">
       {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1 min-w-0">
@@ -189,7 +189,7 @@ function SessionDetailCard({ session }: { session: SessionReport }): React.React
 
       {/* Last commit */}
       {session.lastCommit && (
-        <div className="p-3 rounded-xl bg-surface-secondary">
+        <div className="p-3 rounded-[14px] bg-surface-secondary">
           <p className="text-xs text-text-secondary mb-1">Last Commit</p>
           <p className="text-sm text-text-primary font-mono truncate">
             {session.lastCommit}
@@ -198,7 +198,7 @@ function SessionDetailCard({ session }: { session: SessionReport }): React.React
       )}
 
       {/* Path */}
-      <div className="mt-3 pt-3 border-t border-border">
+      <div className="mt-3 pt-3 border-t border-[rgba(0,0,0,0.10)]">
         <p className="text-xs text-text-secondary truncate" title={session.worktreePath}>
           {session.worktreePath}
         </p>
@@ -235,12 +235,12 @@ function WelcomeScreen(): React.ReactElement {
     <div className="h-full flex items-center justify-center bg-surface-secondary">
       <div className="text-center max-w-lg px-6">
         {/* Kanvas Logo */}
-        <div className="mx-auto mb-6 shadow-kanvas-lg rounded-2xl overflow-hidden">
+        <div className="mx-auto mb-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] rounded-[22px] overflow-hidden">
           <KanvasLogo size="xl" />
         </div>
 
         <h1 className="text-2xl font-bold text-text-primary mb-2">
-          Welcome to Kanvas for Kit
+          Welcome to KIT for DevOps
         </h1>
         <p className="text-text-secondary mb-8">
           Your multi-agent development dashboard. Start a DevOps Agent session or connect another AI agent to see their activity here.
@@ -276,7 +276,7 @@ function WelcomeScreen(): React.ReactElement {
         {/* Primary CTA */}
         <button
           onClick={() => setShowCreateAgentWizard(true)}
-          className="mt-8 btn-primary px-8 py-3 text-base"
+          className="mt-8 btn-primary rounded-full px-8 py-3 text-base"
         >
           Create Agent Instance
         </button>
@@ -358,8 +358,8 @@ function FeatureCard({
   return (
     <button
       onClick={onClick}
-      className="p-4 rounded-xl bg-surface border border-border text-left
-                 hover:border-kanvas-blue/30 hover:shadow-card-hover hover:bg-surface-secondary
+      className="p-4 rounded-[14px] bg-surface border border-[rgba(0,0,0,0.10)] text-left
+                 hover:border-kanvas-blue/30 hover:shadow-[0_1px_3px_rgba(0,0,0,0.08)] hover:bg-surface-secondary
                  transition-all duration-200 cursor-pointer group"
     >
       <div className="w-10 h-10 rounded-lg bg-kanvas-blue/10 text-kanvas-blue flex items-center justify-center mb-3

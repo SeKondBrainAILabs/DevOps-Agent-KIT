@@ -93,6 +93,18 @@ const AGENT_TYPES: AgentTypeInfo[] = [
     ),
   },
   {
+    type: 'codex',
+    name: 'Codex',
+    description: 'OpenAI autonomous coding agent with MCP',
+    launchMethod: 'CLI',
+    color: 'bg-emerald-600',
+    icon: (
+      <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
     type: 'custom',
     name: 'Custom Agent',
     description: 'Any tool with Kanvas integration',
@@ -109,12 +121,14 @@ const AGENT_TYPES: AgentTypeInfo[] = [
 interface AgentTypeSelectorProps {
   selectedType: AgentType | null;
   onSelect: (type: AgentType) => void;
+  customMcpEnabled?: boolean;
+  onCustomMcpChange?: (enabled: boolean) => void;
 }
 
-export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorProps): React.ReactElement {
+export function AgentTypeSelector({ selectedType, onSelect, customMcpEnabled, onCustomMcpChange }: AgentTypeSelectorProps): React.ReactElement {
   return (
     <div className="space-y-4">
-      <label className="label">Select Agent Type</label>
+      <label className="kb-eyebrow">Select Agent Type</label>
 
       {/* Agent type grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -124,10 +138,10 @@ export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorP
             type="button"
             onClick={() => onSelect(agent.type)}
             className={`
-              relative p-4 rounded-xl border-2 text-left transition-all
+              relative p-4 rounded-[14px] border-2 text-left transition-all
               ${selectedType === agent.type
-                ? 'border-kanvas-blue bg-kanvas-blue/5 shadow-kanvas'
-                : 'border-border bg-surface hover:border-kanvas-blue/50 hover:shadow-card'
+                ? 'bg-white border-black shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
+                : 'bg-surface border-[rgba(0,0,0,0.10)] hover:border-[rgba(0,0,0,0.25)] hover:shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
               }
             `}
           >
@@ -139,7 +153,7 @@ export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorP
             )}
 
             {/* Icon */}
-            <div className={`w-12 h-12 rounded-xl ${agent.color} text-white flex items-center justify-center mb-3`}>
+            <div className={`w-12 h-12 rounded-[10px] ${agent.color} text-white flex items-center justify-center mb-3`}>
               {agent.icon}
             </div>
 
@@ -151,7 +165,7 @@ export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorP
 
             {/* Selected indicator */}
             {selectedType === agent.type && (
-              <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-kanvas-blue flex items-center justify-center">
+              <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-black flex items-center justify-center">
                 <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
@@ -163,9 +177,9 @@ export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorP
 
       {/* Selected agent description */}
       {selectedType && (
-        <div className="p-4 rounded-xl bg-surface-secondary border border-border">
+        <div className="p-4 rounded-[14px] bg-surface-secondary border border-[rgba(0,0,0,0.10)]">
           <div className="flex items-start gap-3">
-            <div className={`w-10 h-10 rounded-lg ${AGENT_TYPES.find(a => a.type === selectedType)?.color} text-white flex items-center justify-center flex-shrink-0`}>
+            <div className={`w-10 h-10 rounded-[10px] ${AGENT_TYPES.find(a => a.type === selectedType)?.color} text-white flex items-center justify-center flex-shrink-0`}>
               {AGENT_TYPES.find(a => a.type === selectedType)?.icon}
             </div>
             <div>
@@ -177,6 +191,40 @@ export function AgentTypeSelector({ selectedType, onSelect }: AgentTypeSelectorP
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* MCP toggle — only shown for custom agents */}
+      {selectedType === 'custom' && onCustomMcpChange && (
+        <div className="p-4 rounded-[14px] bg-surface-secondary border border-[rgba(0,0,0,0.10)]">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-medium text-text-primary text-sm">Does this agent support MCP?</h4>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Enables MCP server URL in the generated instructions for full KIT dashboard integration.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onCustomMcpChange(!customMcpEnabled)}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                customMcpEnabled ? 'bg-kanvas-blue' : 'bg-gray-600'
+              }`}
+              role="switch"
+              aria-checked={customMcpEnabled}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                  customMcpEnabled ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+          {customMcpEnabled && (
+            <p className="mt-2 text-xs text-kanvas-blue">
+              ✓ MCP server URL will be included in the setup instructions.
+            </p>
+          )}
         </div>
       )}
     </div>

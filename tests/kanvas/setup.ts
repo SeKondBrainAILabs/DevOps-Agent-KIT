@@ -46,6 +46,39 @@ const mockApi = {
     getFilesWithStatus: createMockFn({ success: true, data: [] }),
     getDiffSummary: createMockFn({ success: true, data: { files: [] } }),
     detectSubmodules: createMockFn({ success: true, data: [] }),
+    getRepoStatus: createMockFn({
+      success: true,
+      data: {
+        repoPath: '/test/repo',
+        currentBranch: 'main',
+        ahead: 0,
+        behind: 0,
+        modifiedCount: 0,
+        stagedCount: 0,
+        untrackedCount: 0,
+        unmergedCount: 0,
+        stashCount: 0,
+        worktreeCount: 1,
+        fetchedAt: '2026-05-04T00:00:00.000Z',
+      },
+    }),
+    listBranchesForRepo: createMockFn({ success: true, data: [] }),
+    listWorktrees: createMockFn({ success: true, data: [] }),
+    pruneWorktrees: createMockFn({ success: true }),
+    removeWorktreeByPath: createMockFn({ success: true }),
+    getWorktreeSafetyInfo: createMockFn({
+      success: true,
+      data: {
+        worktreePath: '/test/worktree',
+        hasUncommittedChanges: false,
+        uncommittedFiles: [],
+        unmergedCommitCount: 0,
+        mergedIntoBranches: ['main'],
+      },
+    }),
+    analyzeStaleBranches: createMockFn({ success: true, data: [] }),
+    archiveBranch: createMockFn({ success: true, data: { archiveBranchName: 'archive/x' } }),
+    branches: createMockFn({ success: true, data: [] }),
   },
   instance: {
     create: createMockFn({ success: true, data: {} }),
@@ -117,10 +150,107 @@ const mockApi = {
     get: jest.fn() as MockFn,
     set: jest.fn() as MockFn,
   },
+  repoWorkspace: {
+    getWorktreeMode: createMockFn({ success: true, data: 'worktree' }),
+    setWorktreeMode: createMockFn({ success: true }),
+    getActiveSessionCount: createMockFn({ success: true, data: 0 }),
+    // WorkspaceBrowserView's per-repo status effect calls this for the card
+    // badge (see renderer/components/features/WorkspaceBrowserView.tsx). It
+    // MUST be present or the Promise.all in that effect throws, the catch
+    // swallows it, statusByPath never populates, and priority/risk + session
+    // rows silently break.
+    getRunningSessionCount: createMockFn({ success: true, data: 0 }),
+  },
+  cleanup: {
+    analyze: createMockFn({
+      success: true,
+      data: {
+        repoPath: '/test/repo',
+        worktreesToRemove: [],
+        branchesToDelete: [],
+        branchesToMerge: [],
+        estimatedActions: 0,
+      },
+    }),
+    execute: createMockFn({
+      success: true,
+      data: {
+        success: true,
+        worktreesRemoved: 0,
+        branchesDeleted: 0,
+        branchesMerged: 0,
+        errors: [],
+      },
+    }),
+    quick: createMockFn({
+      success: true,
+      data: {
+        worktreesPruned: true,
+        kanvasCleanup: {
+          removedSessionFiles: 0,
+          removedAgentFiles: 0,
+          removedActivityFiles: 0,
+        },
+      },
+    }),
+    kanvas: createMockFn({
+      success: true,
+      data: {
+        removedSessionFiles: 0,
+        removedAgentFiles: 0,
+        removedActivityFiles: 0,
+      },
+    }),
+    getStorageMetrics: createMockFn({
+      success: true,
+      data: {
+        fetchedAt: '2026-05-21T00:00:00.000Z',
+        docker: {
+          available: true,
+          images: { sizeBytes: 0, reclaimableBytes: 0, reclaimablePercent: 0 },
+          localVolumes: { sizeBytes: 0, reclaimableBytes: 0, reclaimablePercent: 0 },
+          buildCache: { sizeBytes: 0, reclaimableBytes: 0, reclaimablePercent: 0 },
+        },
+        local: {
+          scannedRepoCount: 0,
+          nodeModulesTotalBytes: 0,
+          pythonEnvsTotalBytes: 0,
+          nodeModulesByRepo: [],
+          pythonEnvsByRepo: [],
+          abandonedWorktrees: [],
+          reclaimableByRepo: [],
+        },
+      },
+    }),
+    onProgress: (jest.fn() as MockFn).mockReturnValue(() => {}),
+  },
+  workspace: {
+    list: createMockFn({ success: true, data: [] }),
+    get: createMockFn({ success: false, error: { code: 'WORKSPACE_NOT_FOUND', message: 'not found' } }),
+    add: createMockFn({ success: true, data: null }),
+    update: createMockFn({ success: true, data: null }),
+    remove: createMockFn({ success: true }),
+    getActive: createMockFn({ success: true, data: null }),
+    setActive: createMockFn({ success: true }),
+    scan: createMockFn({ success: true, data: { workspaceId: 'ws_x', scannedAt: '', durationMs: 0, repoCount: 0, repos: [] } }),
+    startWatching: createMockFn({ success: true }),
+    stopWatching: createMockFn({ success: true }),
+    onRepoChange: (jest.fn() as MockFn).mockReturnValue(() => {}),
+  },
+  projectGroup: {
+    list: createMockFn({ success: true, data: [] }),
+    get: createMockFn({ success: false, error: { code: 'PROJECT_GROUP_NOT_FOUND', message: 'not found' } }),
+    add: createMockFn({ success: true, data: null }),
+    update: createMockFn({ success: true, data: null }),
+    remove: createMockFn({ success: true }),
+  },
   shell: {
     openExternal: jest.fn() as MockFn,
     openPath: jest.fn() as MockFn,
     openTerminal: jest.fn() as MockFn,
+    openVSCode: jest.fn() as MockFn,
+    openFinder: jest.fn() as MockFn,
+    copyPath: jest.fn() as MockFn,
   },
   dialog: {
     showOpenDialog: createMockFn({ canceled: false, filePaths: ['/test/path'] }),

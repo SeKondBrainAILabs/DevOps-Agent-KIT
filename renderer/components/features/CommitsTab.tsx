@@ -49,38 +49,92 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
         }
       }
 
-      // Try with resolved branch first; if empty results, fall back to no branch filter
+      // Try with resolved branch first; if empty results, fall back to origin/baseBranch
       const result = await window.api.git.getCommitHistory(repoPath, baseBranch, 100, resolvedBranch);
-      if (result.success && result.data) {
-        if (result.data.length > 0) {
-          setCommits(result.data.map(c => ({ ...c, expanded: false })));
+      if (result.success && result.data && result.data.length > 0) {
+        setCommits(result.data.map(c => ({ ...c, expanded: false })));
+        return;
+      }
+
+      if (!result.success && result.error) {
+        // git error — try origin/baseBranch
+        const fallbackResult = await window.api.git.getCommitHistory(repoPath, `origin/${baseBranch}`, 100, resolvedBranch);
+        if (fallbackResult.success && fallbackResult.data && fallbackResult.data.length > 0) {
+          setCommits(fallbackResult.data.map(c => ({ ...c, expanded: false })));
           return;
         }
-        // Empty — might be because baseBranch isn't a local ref; try origin/baseBranch
-        const fallbackResult = await window.api.git.getCommitHistory(repoPath, `origin/${baseBranch}`, 100, resolvedBranch);
-        if (fallbackResult.success && fallbackResult.data) {
-          setCommits(fallbackResult.data.map(c => ({ ...c, expanded: false })));
-        } else {
-          setCommits([]);
-        }
-      } else if (result.error) {
-        // Try origin/baseBranch as fallback
-        const fallbackResult = await window.api.git.getCommitHistory(repoPath, `origin/${baseBranch}`, 100, resolvedBranch);
-        if (fallbackResult.success && fallbackResult.data) {
-          setCommits(fallbackResult.data.map(c => ({ ...c, expanded: false })));
-        } else {
-          setError(result.error.message || 'Failed to load commits');
+        // If that also fails fall through to DB fallback below
+      }
+
+      // Git returned empty (branch merged to base, or origin/base also empty) — fall back
+      // to commits recorded in the database for this session
+      if (window.api?.activity?.getCommits) {
+        const dbResult = await window.api.activity.getCommits(session.sessionId, 100);
+        if (dbResult.success && dbResult.data && dbResult.data.length > 0) {
+          setCommits(dbResult.data.map(c => ({
+            hash: c.hash,
+            shortHash: c.hash.substring(0, 7),
+            message: c.message,
+            author: '',
+            date: c.timestamp,
+            filesChanged: c.filesChanged,
+            additions: c.additions,
+            deletions: c.deletions,
+            expanded: false,
+          })));
+          return;
         }
       }
+
+      setCommits([]);
     } catch (err) {
+      // Git spawn failed (e.g. worktree dir no longer exists) — try DB fallback
+      if (window.api?.activity?.getCommits) {
+        try {
+          const dbResult = await window.api.activity.getCommits(session.sessionId, 100);
+          if (dbResult.success && dbResult.data && dbResult.data.length > 0) {
+            setCommits(dbResult.data.map(c => ({
+              hash: c.hash,
+              shortHash: c.hash.substring(0, 7),
+              message: c.message,
+              author: '',
+              date: c.timestamp,
+              filesChanged: c.filesChanged,
+              additions: c.additions,
+              deletions: c.deletions,
+              expanded: false,
+            })));
+            return;
+          }
+        } catch {
+          // DB also failed — fall through to setError
+        }
+      }
       setError(err instanceof Error ? err.message : 'Failed to load commits');
     } finally {
       setLoading(false);
     }
-  }, [session.worktreePath, session.repoPath, session.baseBranch, session.branchName]);
+  }, [session.sessionId, session.worktreePath, session.repoPath, session.baseBranch, session.branchName]);
 
+  // Initial load
   useEffect(() => {
     loadCommits();
+  }, [loadCommits]);
+
+  // Reload whenever a commit completes in this session (covers kit_commit via MCP)
+  useEffect(() => {
+    const unsub = window.api?.watcher?.onCommitCompleted?.((event: any) => {
+      if (!event?.sessionId || event.sessionId === session.sessionId) {
+        loadCommits();
+      }
+    });
+    return () => { unsub?.(); };
+  }, [session.sessionId, loadCommits]);
+
+  // Poll every 10s as a fallback for commits that arrive without a push event
+  useEffect(() => {
+    const id = setInterval(() => loadCommits(), 10_000);
+    return () => clearInterval(id);
   }, [loadCommits]);
 
   // Load diff detail for a commit
@@ -153,7 +207,7 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
           <div className="h-8 w-20 bg-surface-secondary rounded animate-pulse" />
         </div>
         {[1, 2, 3].map(i => (
-          <div key={i} className="p-4 border border-border rounded-xl">
+          <div key={i} className="p-4 border border-[rgba(0,0,0,0.10)] rounded-[14px]">
             <div className="flex items-center gap-3">
               <div className="h-4 w-16 bg-surface-secondary rounded animate-pulse" />
               <div className="h-4 flex-1 bg-surface-secondary rounded animate-pulse" />
@@ -175,7 +229,7 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
           <h3 className="font-semibold text-text-primary">Commits</h3>
           <button
             onClick={loadCommits}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-kanvas-blue hover:bg-surface-secondary rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-kanvas-blue hover:bg-surface-secondary rounded-full transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -184,7 +238,7 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
             Retry
           </button>
         </div>
-        <div className="p-4 bg-red-50 text-red-700 rounded-xl text-sm">
+        <div className="p-4 bg-red-50 text-red-700 rounded-[14px] text-sm">
           {error}
         </div>
       </div>
@@ -198,7 +252,7 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
           <h3 className="font-semibold text-text-primary">Commits</h3>
           <button
             onClick={loadCommits}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-kanvas-blue hover:bg-surface-secondary rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-kanvas-blue hover:bg-surface-secondary rounded-full transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -233,7 +287,7 @@ export function CommitsTab({ session }: CommitsTabProps): React.ReactElement {
         </div>
         <button
           onClick={loadCommits}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary hover:text-kanvas-blue hover:bg-surface-secondary rounded-lg transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary hover:text-kanvas-blue hover:bg-surface-secondary rounded-full transition-colors"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -271,7 +325,7 @@ function CommitCard({
   formatRelativeTime: (date: string) => string;
 }): React.ReactElement {
   return (
-    <div className="border border-border rounded-xl overflow-hidden bg-surface">
+    <div className="border border-[rgba(0,0,0,0.10)] rounded-[14px] overflow-hidden bg-surface">
       {/* Commit header - always visible */}
       <div
         className="p-4 cursor-pointer hover:bg-surface-secondary transition-colors"
@@ -319,7 +373,7 @@ function CommitCard({
 
       {/* Expanded content - file list and diffs */}
       {commit.expanded && (
-        <div className="border-t border-border bg-surface-secondary">
+        <div className="border-t border-[rgba(0,0,0,0.10)] bg-surface-secondary">
           {commit.loadingDiff ? (
             <div className="p-4 flex items-center justify-center">
               <svg className="w-5 h-5 text-kanvas-blue animate-spin" fill="none" viewBox="0 0 24 24">

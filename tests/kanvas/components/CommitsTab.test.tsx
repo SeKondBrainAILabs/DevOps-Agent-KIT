@@ -160,10 +160,10 @@ describe('CommitsTab', () => {
 
   describe('Error State', () => {
     it('should show error message when API fails', async () => {
-      mockApi.git.getCommitHistory.mockResolvedValue({
-        success: false,
-        error: { message: 'Failed to load commits' },
-      });
+      // The component only surfaces the error state when the git call throws.
+      // A {success:false} return falls through to origin/base + DB fallbacks and
+      // shows the empty state instead, so reject to exercise the real error path.
+      mockApi.git.getCommitHistory.mockRejectedValue(new Error('Failed to load commits'));
 
       render(<CommitsTab session={mockSession} />);
 
@@ -173,10 +173,7 @@ describe('CommitsTab', () => {
     });
 
     it('should show retry button on error', async () => {
-      mockApi.git.getCommitHistory.mockResolvedValue({
-        success: false,
-        error: { message: 'Failed' },
-      });
+      mockApi.git.getCommitHistory.mockRejectedValue(new Error('Failed'));
 
       render(<CommitsTab session={mockSession} />);
 

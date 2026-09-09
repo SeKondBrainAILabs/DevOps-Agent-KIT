@@ -1,6 +1,6 @@
-# Worktrees and session data
-.worktrees/
-.worktrees/**
+# Local deployment and session data
+local_deploy/
+local_deploy/**
 
 # Test files and directories
 test_cases/

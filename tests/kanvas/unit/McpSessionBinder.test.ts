@@ -219,3 +219,121 @@ describe('McpSessionBinder', () => {
     });
   });
 });
+
+/**
+ * Integration with SessionOrchestrator.teardownSession (story KIT-MCP-H2).
+ *
+ * Uses the REAL binder rather than a fake, because the leak being closed is
+ * specifically that `unregisterSession` had no production callers — a test
+ * against a mock would not prove the session actually becomes unresolvable.
+ */
+describe('McpSessionBinder + SessionOrchestrator teardown (H2)', () => {
+  // Deliberately a require() rather than a top-level import: this file is a
+  // binder test first, and the orchestrator is only pulled in for these cases.
+  const {
+    SessionOrchestrator,
+  } = require('../../../electron/services/SessionOrchestrator');
+
+  // Own fixture — the `binder` in the suite above is scoped to that describe.
+  let binder: McpSessionBinder;
+  beforeEach(() => {
+    binder = new McpSessionBinder();
+  });
+
+  const WORKTREE = '/tmp/KIT-DevOps-repo/feat-x';
+
+  /** A live instance restarted twice: sess_old -> sess_mid -> sess_live. */
+  const chainedInstance = {
+    id: 'inst_live',
+    sessionId: 'sess_live',
+    predecessorSessionIds: ['sess_old', 'sess_mid'],
+    worktreePath: WORKTREE,
+    config: { repoPath: '/tmp/repo', branchName: 'feat-x' },
+    status: 'active',
+    createdAt: '2026-08-29T00:00:00.000Z',
+  };
+
+  const orchestratorOver = (realBinder: McpSessionBinder) =>
+    new SessionOrchestrator({
+      agentInstance: {
+        createInstance: async () => ({ success: true }),
+        listInstances: () => ({ success: true, data: [chainedInstance] }),
+      },
+      watcher: {
+        startWithPath: async () => ({ success: true }),
+        stopAll: async () => ({ success: true }),
+      },
+      rebaseWatcher: { stopWatching: async () => ({ success: true }) },
+      binder: realBinder,
+    });
+
+  /** Reproduces how startup registers a restarted session: live id + aliases. */
+  function registerWithAliases(b: McpSessionBinder) {
+    b.registerSession('sess_live', WORKTREE);
+    b.registerSession('sess_mid', WORKTREE);
+    b.registerSession('sess_old', WORKTREE);
+  }
+
+  it('leaves every alias resolvable before teardown', () => {
+    registerWithAliases(binder);
+    expect(binder.getWorktreePath('sess_live')).toBe(WORKTREE);
+    expect(binder.getWorktreePath('sess_mid')).toBe(WORKTREE);
+    expect(binder.getWorktreePath('sess_old')).toBe(WORKTREE);
+  });
+
+  it('makes the session AND all its aliases unresolvable after teardown', async () => {
+    registerWithAliases(binder);
+
+    await orchestratorOver(binder).teardownSession('sess_live');
+
+    // The leak: before H2 all three still resolved, so kit_commit kept working
+    // against a session the user had closed.
+    expect(binder.getWorktreePath('sess_live')).toBeUndefined();
+    expect(binder.getWorktreePath('sess_mid')).toBeUndefined();
+    expect(binder.getWorktreePath('sess_old')).toBeUndefined();
+    expect(binder.listSessions()).toHaveLength(0);
+  });
+
+  it('drops MCP transport bindings that pointed at the closed session', async () => {
+    registerWithAliases(binder);
+    binder.bind('mcp_conn_1', 'sess_live');
+    expect(binder.resolveBinding('mcp_conn_1')).toBe('sess_live');
+
+    await orchestratorOver(binder).teardownSession('sess_live');
+
+    expect(binder.resolveBinding('mcp_conn_1')).toBeUndefined();
+  });
+
+  it('tearing down via a PREDECESSOR id clears the whole chain too', async () => {
+    // An agent launched before a restart still holds the old id.
+    registerWithAliases(binder);
+
+    await orchestratorOver(binder).teardownSession('sess_old');
+
+    expect(binder.getWorktreePath('sess_live')).toBeUndefined();
+    expect(binder.getWorktreePath('sess_old')).toBeUndefined();
+  });
+
+  it('RESTART REGRESSION: unbindMcp:false leaves every alias resolvable', async () => {
+    // Restart re-aliases the old id onto the new worktree immediately after
+    // teardown. If teardown unbound here, an in-flight kit_commit from a
+    // subagent using the old id would fail in that window — permanently if the
+    // create half then failed and the re-alias never ran.
+    registerWithAliases(binder);
+
+    await orchestratorOver(binder).teardownSession('sess_live', { unbindMcp: false });
+
+    expect(binder.getWorktreePath('sess_live')).toBe(WORKTREE);
+    expect(binder.getWorktreePath('sess_mid')).toBe(WORKTREE);
+    expect(binder.getWorktreePath('sess_old')).toBe(WORKTREE);
+  });
+
+  it('does not disturb an unrelated session', async () => {
+    registerWithAliases(binder);
+    binder.registerSession('sess_other', '/tmp/KIT-DevOps-repo/other');
+
+    await orchestratorOver(binder).teardownSession('sess_live');
+
+    expect(binder.getWorktreePath('sess_other')).toBe('/tmp/KIT-DevOps-repo/other');
+  });
+});

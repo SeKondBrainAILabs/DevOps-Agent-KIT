@@ -14,7 +14,7 @@ mode:
 settings:
   temperature: 0.2  # Low temperature for deterministic, accurate resolutions
   max_tokens: 4096  # Need enough tokens for full file content
-  model: kimi-k2  # Default: reasoning model for complex conflicts
+  model: llama-3.3-70b  # Default: reliable general model (kimi-k2 used as override for complex conflicts if available)
 
 # Model routing for cost-optimized conflict resolution
 # Simple conflicts use fast model, complex use reasoning model

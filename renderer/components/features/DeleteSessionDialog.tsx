@@ -19,6 +19,10 @@ interface DeleteSafetyInfo {
 interface DeleteSessionDialogProps {
   sessionId: string;
   sessionName: string;
+  /** Pass repoPath + branchName so deletes survive stale sessionIds (post-restart sessions whose AgentInstance map entry no longer matches the SessionReport sessionId). */
+  repoPath?: string;
+  branchName?: string;
+  worktreePath?: string;
   onClose: () => void;
   onDeleted: () => void;
 }
@@ -26,6 +30,9 @@ interface DeleteSessionDialogProps {
 export function DeleteSessionDialog({
   sessionId,
   sessionName,
+  repoPath,
+  branchName,
+  worktreePath,
   onClose,
   onDeleted,
 }: DeleteSessionDialogProps): React.ReactElement {
@@ -34,15 +41,15 @@ export function DeleteSessionDialog({
   const [error, setError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Cleanup options
-  const [deleteWorktree, setDeleteWorktree] = useState(true);
+  // Cleanup options — default worktree removal to OFF to prevent accidental data loss
+  const [deleteWorktree, setDeleteWorktree] = useState(false);
   const [deleteLocalBranch, setDeleteLocalBranch] = useState(true);
   const [deleteRemoteBranch, setDeleteRemoteBranch] = useState(false);
 
   // Load safety info on mount
   useEffect(() => {
     setLoading(true);
-    window.api?.instance?.deleteSafetyCheck?.(sessionId)
+    window.api?.instance?.deleteSafetyCheck?.(sessionId, { repoPath, branchName })
       .then((result) => {
         if (result?.success && result.data) {
           setSafety(result.data);
@@ -62,11 +69,11 @@ export function DeleteSessionDialog({
     setIsDeleting(true);
     setError(null);
     try {
-      const result = await window.api?.instance?.deleteWithCleanup?.(sessionId, {
-        deleteWorktree,
-        deleteLocalBranch,
-        deleteRemoteBranch,
-      });
+      const result = await window.api?.instance?.deleteWithCleanup?.(
+        sessionId,
+        { deleteWorktree, deleteLocalBranch, deleteRemoteBranch },
+        { repoPath, branchName, worktreePath }
+      );
       if (result?.success) {
         onDeleted();
       } else {
@@ -82,10 +89,10 @@ export function DeleteSessionDialog({
   const hasDanger = safety?.hasUncommittedChanges || (safety?.unpushedCommitCount ?? 0) > 0;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-secondary border border-border rounded-lg w-full max-w-md animate-slide-up">
+    <div className="fixed inset-0 bg-black/15 backdrop-blur-[2px] flex items-center justify-center z-50">
+      <div className="bg-white border border-[rgba(0,0,0,0.10)] rounded-[22px] shadow-[0_4px_6px_rgba(0,0,0,0.08)] w-full max-w-md animate-slide-up">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border">
+        <div className="flex items-center justify-between p-4 border-b border-[rgba(0,0,0,0.10)]">
           <h2 className="text-lg font-semibold text-gray-100">Delete Session</h2>
           <button onClick={onClose} className="btn-icon" disabled={isDeleting}>
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
@@ -98,7 +105,7 @@ export function DeleteSessionDialog({
         {/* Content */}
         <div className="p-4 space-y-4">
           {/* Session info */}
-          <div className="p-3 bg-surface-tertiary rounded-md">
+          <div className="p-3 bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)]">
             <p className="font-medium text-gray-200">{sessionName}</p>
             {safety && (
               <p className="text-sm text-gray-400 mt-1">{safety.branchName}</p>
@@ -201,12 +208,12 @@ export function DeleteSessionDialog({
 
           {/* Actions */}
           <div className="flex gap-2 pt-2">
-            <button onClick={onClose} className="btn-secondary flex-1" disabled={isDeleting}>
+            <button onClick={onClose} className="kb-btn flex-1" disabled={isDeleting}>
               Cancel
             </button>
             <button
               onClick={handleDelete}
-              className="btn-primary flex-1 bg-red-600 hover:bg-red-700"
+              className="flex-1 px-4 py-2 bg-red-500 text-white rounded-full font-medium hover:bg-red-600 transition-colors disabled:opacity-50"
               disabled={isDeleting || loading}
             >
               {isDeleting ? 'Deleting...' : hasDanger ? 'Delete Anyway' : 'Delete Session'}

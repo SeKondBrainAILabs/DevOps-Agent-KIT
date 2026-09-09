@@ -23,6 +23,8 @@ import type { CommitAnalysisService } from './CommitAnalysisService';
 import type { WorkerBridgeService } from './WorkerBridgeService';
 import type { RebaseWatcherService } from './RebaseWatcherService';
 import { databaseService } from './DatabaseService';
+import { resolveRepoRootFromWorktree } from '../../shared/worktree-path';
+import { evaluateAutoCommitGuardForWorktree } from './GitRewriteGuardIO';
 import type { AgentType } from '../../shared/types';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { promises as fs } from 'fs';
@@ -50,6 +52,39 @@ export class WatcherService extends BaseService {
   private agentInstanceService: AgentInstanceService | null = null;
   private lockService: LockService | null = null;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Periodic safety-net snapshot timers (key = compound watcher key).
+  private periodicCommitTimers: Map<string, NodeJS.Timeout> = new Map();
+  private static readonly PERIODIC_COMMIT_MS = 5 * 60 * 1000; // snapshot every 5 min when dirty
+  // Idle-end detection state. When an agent makes a burst of writes and then
+  // goes quiet, that's a natural checkpoint — we log it to the activity feed
+  // and (in the future) can nudge the agent to commit.
+  private writeHistory: Map<string, number[]> = new Map(); // sessionId → recent timestamps
+  private lastIdleEndAt: Map<string, number> = new Map();  // sessionId → last idle-end tick
+  private idleEndTimer: NodeJS.Timeout | null = null;
+  private static readonly IDLE_END_TICK_MS = 60 * 1000;
+  /** 30 min of no writes to ANY tracked file in the session before idle-end
+   *  fires. Was 5 min — easily exhausted by an agent pausing mid-thought,
+   *  which caused auto-checkpoint attempts on files still being iterated on.
+   *  30 min is high enough that "quiet" actually means the agent has moved
+   *  on, low enough that the auto-checkpoint still lands within the hour. */
+  private static readonly IDLE_END_QUIET_MS = 30 * 60 * 1000;
+  /** Burst window widened to match — a "burst" spans 90 min of accumulated
+   *  writes so idle-end after 30 min of quiet still sees the burst it's
+   *  responding to. Was 30 min. */
+  private static readonly IDLE_END_BURST_WINDOW_MS = 90 * 60 * 1000;
+  private static readonly IDLE_END_MIN_WRITES = 3;
+  /** Don't emit two idle-end notifications for the same session within 15 min. */
+  private static readonly IDLE_END_COOLDOWN_MS = 15 * 60 * 1000;
+  /** Auto-commit on idle-end when it's been longer than this since HEAD moved.
+   *  Anything shorter and the agent is probably mid-flow; anything much longer
+   *  and we're accumulating the kind of blob-merge (98 files at once) the
+   *  screenshot showed. */
+  private static readonly AUTO_COMMIT_STALE_HEAD_MS = 3 * 60 * 60 * 1000;
+  /** Minimum gap between two AUTO commits on the same session, so a flurry of
+   *  idle-ends doesn't stack five checkpoint commits in ten minutes. */
+  private static readonly AUTO_COMMIT_COOLDOWN_MS = 60 * 60 * 1000;
+  /** Timestamp of last auto-commit per session (Date.now() ms). */
+  private lastAutoCommitAt: Map<string, number> = new Map();
 
   // Phase 4: Analysis services for incremental analysis
   private astParser: ASTParserService | null = null;
@@ -232,11 +267,12 @@ export class WatcherService extends BaseService {
         return; // Already watching
       }
 
-      // Register the worktree with GitService so commits can work
-      // For worktrees, repoPath is the parent of .worktrees
-      const repoPath = worktreePath.includes('/.worktrees/')
-        ? worktreePath.split('/.worktrees/')[0]
-        : worktreePath;
+      // Register the worktree with GitService so commits can work. The layout
+      // rules (legacy <repo>/local_deploy/<branch> and current
+      // <repo_parent>/KIT-DevOps-<repo_name>/<branch>) live in
+      // shared/worktree-path.ts, which owns both directions of the mapping.
+      // A path that is not a KIT worktree falls back to itself, unchanged.
+      const repoPath = resolveRepoRootFromWorktree(worktreePath)?.root ?? worktreePath;
       this.gitService.registerWorktree(sessionId, repoPath, worktreePath);
       console.log(`[WatcherService] Registered worktree for ${sessionId}: ${worktreePath} (repo: ${repoPath})`);
 
@@ -259,6 +295,8 @@ export class WatcherService extends BaseService {
         };
 
         this.watchers.set(sessionId, instance);
+        this.startPeriodicCommit(instance);
+        this.startIdleEndTimer();
         this.workerBridge.startFileMonitor(sessionId, worktreePath, commitMsgFile, claudeCommitMsgFile);
         console.log(`[WatcherService] Delegated file monitoring to worker for ${sessionId}`);
         this.activityService.log(sessionId, 'success', `File watcher started (worker process) for ${worktreePath}`);
@@ -278,18 +316,36 @@ export class WatcherService extends BaseService {
           }
           // Ignore other dotfiles and common directories
           if (basename.startsWith('.')) return true;
+          // Nested worktree containers (`local_deploy`, `.worktrees`): recursing
+          // into a worktree that holds other sessions' worktrees produces a
+          // phantom-event storm → main-process memory runaway. Check segments
+          // RELATIVE to the watched root (substring would self-ignore the root,
+          // whose path contains '/local_deploy/').
+          const rel = path.relative(worktreePath, filePath);
+          if (rel) {
+            const segs = rel.split(path.sep);
+            if (segs.includes('local_deploy') || segs.includes('.worktrees')) return true;
+          }
           if (filePath.includes('node_modules')) return true;
           if (filePath.includes('.git')) return true;
-          if (filePath.includes('.worktrees')) return true;
           if (filePath.includes('/dist/')) return true;
           if (filePath.includes('/build/')) return true;
           return false;
         },
         persistent: true,
         ignoreInitial: true,
+        // Don't follow symlinks into sibling repos (unbounded cross-repo recursion).
+        followSymlinks: false,
         awaitWriteFinish: {
-          stabilityThreshold: 1000,
-          pollInterval: 500,
+          // 30s of "no writes" before we consider the file settled. Was 1s,
+          // which was short enough that an agent saving a burst of files
+          // could trigger auto-lock / commit-msg-file / idle-end tracking
+          // while a later file in the burst was still mid-write. 30s
+          // eliminates that class of mid-change catch. Adds up to 30s of
+          // latency on the activity feed's "file X changed" line — a fair
+          // trade for correctness.
+          stabilityThreshold: 30_000,
+          pollInterval: 2_000,
         },
       });
 
@@ -314,6 +370,7 @@ export class WatcherService extends BaseService {
       });
 
       this.watchers.set(sessionId, instance);
+      this.startPeriodicCommit(instance);
       console.log(`[WatcherService] Started watching ${worktreePath} for session ${sessionId}`);
       this.activityService.log(sessionId, 'success', `File watcher started for ${worktreePath}`);
       this.terminalLogService?.logSystem(`Watcher started: ${worktreePath}`, sessionId);
@@ -332,11 +389,26 @@ export class WatcherService extends BaseService {
       }
       this.watchers.delete(sessionId);
 
-      // Clear debounce timer
+      // Clear commit debounce timer
       const timer = this.debounceTimers.get(sessionId);
       if (timer) {
         clearTimeout(timer);
         this.debounceTimers.delete(sessionId);
+      }
+
+      // Clear periodic auto-commit timer
+      const periodic = this.periodicCommitTimers.get(sessionId);
+      if (periodic) {
+        clearInterval(periodic);
+        this.periodicCommitTimers.delete(sessionId);
+      }
+
+      // Clear analysis debounce timer — must also clear here (not just dispose())
+      // so that a pending analysis doesn't fire after the session is torn down
+      const analysisTimer = this.analysisDebounceTimers.get(sessionId);
+      if (analysisTimer) {
+        clearTimeout(analysisTimer);
+        this.analysisDebounceTimers.delete(sessionId);
       }
 
       // Release all locks for this session
@@ -405,6 +477,16 @@ export class WatcherService extends BaseService {
     return this.success(this.watchers.has(sessionId));
   }
 
+  /** Live resource counts for diagnostics (watchers + outstanding timers). */
+  debugCounts(): { watchers: number; debounce: number; periodic: number; analysis: number } {
+    return {
+      watchers: this.watchers.size,
+      debounce: this.debounceTimers.size,
+      periodic: this.periodicCommitTimers.size,
+      analysis: this.analysisDebounceTimers.size,
+    };
+  }
+
   private handleFileChange(
     instance: WatcherInstance,
     filePath: string,
@@ -417,6 +499,30 @@ export class WatcherService extends BaseService {
       : instance.sessionId;
     const sessionId = realSessionId;
     const relativePath = path.relative(instance.worktreePath, filePath);
+
+    // Hard guard: drop events under nested worktree containers. A worktree
+    // checkout can contain its own `local_deploy/` (or `.worktrees/`) holding
+    // OTHER sessions' worktrees — and via symlinks/submodules the tree can nest
+    // arbitrarily deep. Processing those produces a phantom-event storm (one
+    // session emitted 6,759 add events) → activity rows + locks + IPC + DB per
+    // event → main-process memory runaway. This is the authoritative filter:
+    // it cannot be bypassed by chokidar's (unreliable) directory pruning.
+    const segments = relativePath.split(path.sep);
+    if (segments.includes('local_deploy') || segments.includes('.worktrees')) {
+      return;
+    }
+
+    // Track for idle-end detection. Only 'change' / 'add' count as real work;
+    // 'unlink' can be part of a burst too so include it. Bounded — we cap at
+    // 100 entries per session and drop anything older than the burst window.
+    if (type === 'change' || type === 'add' || type === 'unlink') {
+      const now = Date.now();
+      const cutoff = now - WatcherService.IDLE_END_BURST_WINDOW_MS;
+      const hist = (this.writeHistory.get(sessionId) || []).filter(t => t > cutoff);
+      hist.push(now);
+      if (hist.length > 100) hist.splice(0, hist.length - 100);
+      this.writeHistory.set(sessionId, hist);
+    }
 
     // Emit file change event
     const event: FileChangeEvent = {
@@ -463,6 +569,278 @@ export class WatcherService extends BaseService {
 
     // Phase 4: Trigger incremental analysis for source files
     this.triggerIncrementalAnalysis(instance, filePath, type);
+  }
+
+  /**
+   * Periodic safety-net snapshot. Replaces the old WIP periodic auto-commit
+   * (which polluted history AND, fatally, let truncated/broken files reach
+   * origin/main — see the Kemory ai_chat_service.py case in 2026-06).
+   *
+   * Every PERIODIC_COMMIT_MS we pin the worktree state (tracked + untracked)
+   * to `refs/kit-autosave/<sessionId>` via `git stash create` + `update-ref`.
+   * HEAD, the index, and `git log` are untouched. The pinned ref is reachable
+   * for crash recovery — `git diff refs/kit-autosave/<sessionId>` shows what
+   * the worktree looked like at last snapshot — without ever creating a
+   * commit, and so without ever bypassing pre-commit hooks or risking a push.
+   *
+   * Real commits stay agent-driven via `kit_commit` (which is gated by the
+   * parser + diff-size checks added alongside this change).
+   */
+  private startPeriodicCommit(instance: WatcherInstance): void {
+    const key = instance.sessionId;
+    const existing = this.periodicCommitTimers.get(key);
+    if (existing) clearInterval(existing);
+    const timer = setInterval(() => {
+      this.triggerPeriodicSnapshot(instance).catch((err) =>
+        console.warn(`[WatcherService] periodic snapshot failed for ${key}:`, err));
+    }, WatcherService.PERIODIC_COMMIT_MS);
+    this.periodicCommitTimers.set(key, timer);
+  }
+
+  /**
+   * Periodic idle-end evaluator. Runs on a single shared timer (not per-session)
+   * so we don't multiply timer overhead by session count. For each active
+   * watcher, checks: was there a burst of writes AND has the agent been quiet
+   * for IDLE_END_QUIET_MS? If yes, and not on cooldown, emit an activity feed
+   * entry AND fire an extra snapshot pinned to `refs/kit-idle-end/<sessionId>`
+   * so the burst-end state is separately recoverable from the rolling
+   * kit-autosave ref (which the next periodic snapshot would overwrite).
+   *
+   * If HEAD hasn't moved in AUTO_COMMIT_STALE_HEAD_MS AND the worktree parses
+   * cleanly (Python/JS syntax check), also lay down an auto-checkpoint commit
+   * so the eventual merge is a series of small chunks rather than the 98-file
+   * blob-merge the screenshot in v2.6.89 was arguing against. Auto-commits are
+   * self-labeled (`[Kanvas] auto-checkpoint after Xh idle`) so squash on merge
+   * is trivial. Never pushed. Falls back to snapshot-only when the parse gate
+   * blocks — a broken worktree never reaches `git log`.
+   */
+  private startIdleEndTimer(): void {
+    if (this.idleEndTimer) return;
+    this.idleEndTimer = setInterval(() => {
+      this.evaluateIdleEnd().catch(err => console.warn('[WatcherService] idle-end eval failed:', err));
+    }, WatcherService.IDLE_END_TICK_MS);
+  }
+
+  private async evaluateIdleEnd(): Promise<void> {
+    const now = Date.now();
+    // Distinct sessionIds first (a session may have multiple compound watchers
+    // in multi-repo mode; we only nudge once per session).
+    const sessionsSeen = new Set<string>();
+    for (const [key, instance] of this.watchers) {
+      const sessionId = key.includes(':') ? key.split(':')[0] : key;
+      if (sessionsSeen.has(sessionId)) continue;
+      sessionsSeen.add(sessionId);
+
+      const hist = this.writeHistory.get(sessionId);
+      if (!hist || hist.length < WatcherService.IDLE_END_MIN_WRITES) continue;
+      const lastWrite = hist[hist.length - 1];
+      if (now - lastWrite < WatcherService.IDLE_END_QUIET_MS) continue; // still active
+      const lastNudge = this.lastIdleEndAt.get(sessionId) || 0;
+      if (now - lastNudge < WatcherService.IDLE_END_COOLDOWN_MS) continue; // cooldown
+
+      // Idle-end confirmed. Pin an extra snapshot to a dedicated ref namespace
+      // so the burst-end state doesn't get overwritten by the next periodic
+      // kit-autosave snapshot.
+      try {
+        const snap = await this.gitService.createSnapshot(instance.worktreePath, `${sessionId}-idle-end`);
+        this.lastIdleEndAt.set(sessionId, now);
+        this.writeHistory.set(sessionId, []); // reset burst so we don't re-fire immediately
+        const nWrites = hist.length;
+        const quietMin = Math.round((now - lastWrite) / 60_000);
+        const refHint = snap.success && snap.data ? snap.data.refName : null;
+
+        // Second stage: consider an auto-commit if HEAD has been stationary long
+        // enough that the agent is racking up blob-merge material.
+        const autoCommitResult = await this.tryIdleEndAutoCommit(instance, sessionId, nWrites, now);
+
+        if (autoCommitResult.committed) {
+          this.activityService.log(
+            sessionId,
+            'commit',
+            `Auto-checkpoint [${autoCommitResult.shortHash}] after ${autoCommitResult.staleHours}h idle (${nWrites} writes). Merge will squash — self-labeled '[Kanvas] auto-checkpoint'.`
+          );
+        } else {
+          this.activityService.log(
+            sessionId,
+            'snapshot',
+            `Idle-end detected — ${nWrites} write(s) in the last burst, quiet ${quietMin} min. ` +
+            (autoCommitResult.skipReason ? `Auto-commit skipped: ${autoCommitResult.skipReason}. ` : '') +
+            (refHint ? `Burst-end snapshot: git checkout ${refHint}. ` : '') +
+            `Consider calling kit_commit to lock in progress.`
+          );
+        }
+      } catch (err) {
+        console.warn(`[WatcherService] idle-end snapshot failed for ${sessionId}:`, err);
+      }
+    }
+  }
+
+  /**
+   * Attempt an auto-checkpoint commit on idle-end. Returns `{ committed: true }`
+   * on success, `{ committed: false, skipReason }` when we deliberately declined
+   * (head recent, cooldown active, parse failure, empty tree). Never pushes.
+   */
+  private async tryIdleEndAutoCommit(
+    instance: WatcherInstance,
+    sessionId: string,
+    nWrites: number,
+    now: number
+  ): Promise<{ committed: true; shortHash: string; staleHours: number } | { committed: false; skipReason?: string }> {
+    // 0. Source-repo guard. If the "worktree" path is the same directory as
+    //    the user's source checkout, an auto-commit would land on whatever
+    //    branch they happen to have checked out there — the opposite of the
+    //    isolation KIT is meant to provide. Refuse the auto-commit; the
+    //    snapshot ref still recovers the work. This can only happen in a
+    //    truly in-place session (useWorktree: false with no sibling worktree
+    //    ever created); v2.6.91 migrates the stale useWorktree drift on
+    //    startup so this branch is essentially dead code — but the guard
+    //    stays as a defense-in-depth line the auto path never crosses.
+    if (instance.worktreePath === instance.repoPath) {
+      return { committed: false, skipReason: 'in-place session — never auto-commit against source-repo HEAD' };
+    }
+
+    // 0.5. History-rewrite guard (from origin/main track, merged at v2.7.0).
+    //      Refuse if a rebase/merge/cherry-pick/bisect is in progress or the
+    //      worktree is on a detached HEAD — a commit landing in any of those
+    //      states can silently orphan the real work git is mid-rewriting.
+    const guard = evaluateAutoCommitGuardForWorktree(instance.worktreePath);
+    if (!guard.allowed) {
+      return { committed: false, skipReason: `${guard.kind}: ${guard.message}` };
+    }
+
+    // 1. Cooldown between auto-commits per session.
+    const lastAuto = this.lastAutoCommitAt.get(sessionId) || 0;
+    if (now - lastAuto < WatcherService.AUTO_COMMIT_COOLDOWN_MS) {
+      return { committed: false }; // silent skip — cooldown, don't clutter feed
+    }
+
+    // 2. HEAD age. If the branch is being committed to at normal cadence the
+    //    agent doesn't need our help.
+    let staleMs = Infinity;
+    try {
+      const commitTs = await this.gitCmd(instance.worktreePath, ['log', '-1', '--format=%ct', 'HEAD']);
+      const secs = parseInt(commitTs.trim(), 10);
+      if (Number.isFinite(secs) && secs > 0) staleMs = now - secs * 1000;
+    } catch { /* no HEAD yet — treat as infinitely stale so first commit lands */ }
+    if (staleMs < WatcherService.AUTO_COMMIT_STALE_HEAD_MS) {
+      return { committed: false }; // recent enough, silent skip
+    }
+
+    // 3. Anything to commit?
+    let dirty = '';
+    try {
+      dirty = await this.gitCmd(instance.worktreePath, ['status', '--porcelain']);
+    } catch {
+      return { committed: false, skipReason: 'git status failed' };
+    }
+    if (!dirty.trim()) return { committed: false }; // clean tree — nothing to do
+
+    // 4. Parse-check any changed source files we understand. Reuses the same
+    //    logic as kit_commit's sanity gate — a broken file never lands as
+    //    an auto-commit. The user still has the snapshot ref for recovery.
+    const parseFailure = await this.parseCheckChangedFiles(instance.worktreePath, dirty);
+    if (parseFailure) {
+      return { committed: false, skipReason: `parse error in ${parseFailure.file} (${parseFailure.error})` };
+    }
+
+    // 5. Do it.
+    const staleHours = Math.max(1, Math.round(staleMs / 3600_000));
+    const baseMsg = `[Kanvas] auto-checkpoint after ${staleHours}h idle (${nWrites} writes)`;
+    const commitMessage = instance.primaryRepoName
+      ? `[Upgrade From ${instance.primaryRepoName}] ${baseMsg}`
+      : baseMsg;
+    const result = await this.gitService.commit(sessionId, commitMessage, instance.repoName);
+    if (!result.success || !result.data) {
+      return { committed: false, skipReason: `git commit failed: ${result.error?.message || 'unknown'}` };
+    }
+    this.lastAutoCommitAt.set(sessionId, now);
+    return { committed: true, shortHash: result.data.shortHash || result.data.hash.substring(0, 7), staleHours };
+  }
+
+  /** Run one raw git command in a worktree, return stdout. Thin wrapper so the
+   *  auto-commit path can reach the same execa the rest of KIT uses without
+   *  going through GitService's IPC-shaped API. */
+  private async gitCmd(cwd: string, args: string[]): Promise<string> {
+    const mod: any = await import('execa');
+    const execa = typeof mod.execa === 'function' ? mod.execa
+      : typeof mod.default === 'function' ? mod.default
+      : mod.default?.execa;
+    const { stdout } = await execa('git', args, { cwd, timeout: 10_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    return stdout;
+  }
+
+  /** Parse-check changed source files. Returns null on success, or the first
+   *  offending file (name + short error) so the caller can log which one
+   *  blocked the auto-commit. Mirrors the syntactic gate in tools.ts —
+   *  Python via `python3 -c ast.parse`, JS/MJS/CJS via `node --check`.
+   *  TS/TSX/JSX skipped (no cheap parser available — kit_commit uses a
+   *  structural check but that's more code than the auto path needs).
+   */
+  private async parseCheckChangedFiles(
+    worktreePath: string,
+    porcelain: string
+  ): Promise<{ file: string; error: string } | null> {
+    for (const line of porcelain.split('\n')) {
+      if (line.length < 4) continue;
+      const xy = line.slice(0, 2);
+      if (xy.includes('D')) continue; // deleted, nothing to parse
+      const rel = line.slice(3).replace(/^"|"$/g, '');
+      const ext = rel.toLowerCase().split('.').pop() || '';
+      let bin = ''; let args: string[] = [];
+      const abs = `${worktreePath}/${rel}`;
+      if (!existsSync(abs)) continue;
+      if (ext === 'py') { bin = 'python3'; args = ['-c', 'import ast,sys\nast.parse(open(sys.argv[1]).read())', abs]; }
+      else if (ext === 'js' || ext === 'mjs' || ext === 'cjs') { bin = 'node'; args = ['--check', abs]; }
+      else continue;
+      try {
+        const mod: any = await import('execa');
+        const execa = typeof mod.execa === 'function' ? mod.execa : typeof mod.default === 'function' ? mod.default : mod.default?.execa;
+        await execa(bin, args, { cwd: worktreePath, timeout: 5_000 });
+      } catch (err: any) {
+        const stderr = (err?.stderr || err?.message || '').toString().split('\n').slice(0, 2).join(' ');
+        return { file: rel, error: stderr.slice(0, 120) };
+      }
+    }
+    return null;
+  }
+
+  private async triggerPeriodicSnapshot(instance: WatcherInstance): Promise<void> {
+    const sessionId = instance.sessionId.includes(':')
+      ? instance.sessionId.split(':')[0]
+      : instance.sessionId;
+
+    // Worktree must still exist.
+    if (!existsSync(instance.worktreePath)) return;
+    // Don't race an agent-triggered commit that's debouncing.
+    if (this.debounceTimers.has(sessionId)) return;
+
+    // SAFETY (from origin/main track): never touch the worktree during a
+    // rebase / merge / cherry-pick / bisect / detached HEAD, or while a
+    // history-rewrite lockfile is held. Even for snapshot-only paths this
+    // avoids racing with `git stash create` against a transient index.
+    const guard = evaluateAutoCommitGuardForWorktree(instance.worktreePath);
+    if (!guard.allowed) {
+      console.warn(
+        `[WatcherService] Periodic snapshot skipped for ${sessionId}: ${guard.kind} — ${guard.message}`
+      );
+      return;
+    }
+
+    // Only snapshot when there's actually uncommitted work.
+    const status = await this.gitService.getStatus(sessionId).catch(() => null);
+    const changed = status?.data?.changes?.length || 0;
+    if (!status?.success || changed === 0) return;
+
+    const snap = await this.gitService.createSnapshot(instance.worktreePath, sessionId);
+    if (!snap.success || !snap.data) return;
+
+    // Info-level activity log so the user can see snapshots happening without
+    // noise — kept quieter than the old 'commit' line.
+    this.activityService.log(
+      sessionId,
+      'snapshot',
+      `Crash-safety snapshot saved (${changed} file${changed === 1 ? '' : 's'}) — recover via git checkout ${snap.data.refName}`
+    );
   }
 
   private async triggerCommit(instance: WatcherInstance, commitMsgFilePath?: string): Promise<void> {
@@ -614,63 +992,23 @@ export class WatcherService extends BaseService {
           }
         }
 
-        // Auto-push (could be configurable)
-        await this.gitService.push(sessionId, instance.repoName);
-
-        // Post-commit rebase: fetch + rebase if behind remote to stay in sync
-        // Try rebase watcher first (for sessions with on-demand rebase), fall back to direct rebase
-        try {
-          let rebased = false;
-          if (this.rebaseWatcher) {
-            try {
-              const rebaseResult = await this.rebaseWatcher.forceCheck(sessionId);
-              if (rebaseResult.success && rebaseResult.data?.hasChanges) {
-                console.log(`[WatcherService] Post-commit rebase: synced with remote (was ${rebaseResult.data.behindCount} commits behind)`);
-                this.terminalLogService?.log('info', `Post-commit rebase: synced with remote`, { sessionId, source: 'Watcher' });
-                rebased = true;
-              } else if (rebaseResult.success) {
-                rebased = true; // Checked successfully, just nothing to rebase
-              }
-            } catch {
-              // Session not in rebase watcher — fall through to direct rebase
-            }
+        // v2.7.5 — Rebase BEFORE push so the commit sits on top of the
+        // latest base, then push (force-with-lease if the rebase rewrote
+        // history). If the rebase fails, the branch is left at pre-rebase
+        // state and push is skipped so we don't publish a stale-base commit.
+        const rebaseInfo = await this.attemptPostCommitRebase(sessionId, instance.repoName);
+        if (rebaseInfo.ok) {
+          try {
+            await this.gitService.push(
+              sessionId,
+              instance.repoName,
+              rebaseInfo.rewrote ? { forceWithLease: true } : undefined,
+            );
+          } catch (err) {
+            this.activityService.log(sessionId, 'warning', `Push failed after commit: ${err instanceof Error ? err.message : String(err)}`);
           }
-
-          // Direct rebase fallback: fetch + rebase onto baseBranch
-          if (!rebased && this.agentInstanceService) {
-            const instResult = this.agentInstanceService.getInstance(sessionId);
-            const inst = instResult?.data;
-            const baseBranch = inst?.config?.baseBranch || 'main';
-            const repoPath = inst?.worktreePath || inst?.config?.repoPath || instance.worktreePath;
-            if (repoPath) {
-              await this.gitService.fetchRemote(repoPath);
-              const checkResult = await this.gitService.checkRemoteChanges(repoPath, baseBranch);
-              if (checkResult.success && checkResult.data && checkResult.data.behind > 0) {
-                console.log(`[WatcherService] Direct post-commit rebase: ${checkResult.data.behind} commits behind ${baseBranch}`);
-                // Use AI rebase through rebaseWatcher so conflicts are auto-resolved
-                const rebaseResult = this.rebaseWatcher
-                  ? await this.rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch)
-                  : await this.gitService.rebase(repoPath, `origin/${baseBranch}`).then(r => ({
-                      success: r.success && !!r.data?.success,
-                      message: r.data?.message || r.error?.message || '',
-                      incomingCommits: r.data?.incomingCommits,
-                    }));
-                if (rebaseResult.success) {
-                  const incoming = (rebaseResult as { incomingCommits?: string[] }).incomingCommits;
-                  const commitDetails = incoming && incoming.length > 0
-                    ? ` | Changes: ${incoming.join('; ')}`
-                    : '';
-                  console.log(`[WatcherService] Direct post-commit rebase: synced with ${baseBranch} (${checkResult.data.behind} commits)${commitDetails}`);
-                  this.terminalLogService?.log('info', `Post-commit rebase: synced with ${baseBranch} (${checkResult.data.behind} commits integrated)${commitDetails}`, { sessionId, source: 'Watcher' });
-                } else {
-                  console.warn(`[WatcherService] Direct post-commit rebase failed:`, rebaseResult.message);
-                }
-              }
-            }
-          }
-        } catch (rebaseError) {
-          // Non-fatal: log and continue
-          console.warn(`[WatcherService] Post-commit rebase check failed:`, rebaseError);
+        } else {
+          this.activityService.log(sessionId, 'warning', `Push skipped — post-commit rebase failed: ${rebaseInfo.message}`);
         }
 
         // Post-commit contract auto-check (non-fatal)
@@ -682,6 +1020,109 @@ export class WatcherService extends BaseService {
     }, 1000);
 
     this.debounceTimers.set(sessionId, timer);
+  }
+
+  /**
+   * Fire the "on-demand" rebase logic after a successful commit. Attempts,
+   * in order:
+   *
+   *   1. `rebaseWatcher.forceCheck(sessionId)` — works when the session is
+   *      registered with the rebase watcher (i.e. rebaseFrequency !== 'never').
+   *      For on-demand sessions this is the intended path.
+   *   2. Direct fallback — resolve the instance's baseBranch, fetch origin,
+   *      and if we're behind, run `performRebaseForPath` (AI-assisted so
+   *      conflicts auto-resolve). Covers sessions with rebaseFrequency:
+   *      'never' or where the watcher wasn't registered on this app run.
+   *
+   * Non-fatal — a rebase failure is logged as a warning and doesn't propagate.
+   * Public so both the debounced .commit-msg-file path AND the MCP kit_commit
+   * handler can call it; before extraction, only the .commit-msg path fired
+   * a post-commit rebase and agent-driven MCP commits silently skipped it.
+   */
+  async attemptPostCommitRebase(sessionId: string, repoName?: string): Promise<{
+    ok: boolean;
+    rewrote: boolean;
+    commitsIntegrated: number;
+    baseBranch?: string;
+    message: string;
+    conflictFiles?: string[];
+  }> {
+    // Best-effort abort helper. Called when the rebase raised or conflicted so
+    // we leave a clean tree behind rather than a half-applied rebase state.
+    // ENOENT and "no rebase in progress" both come back as thrown errors — we
+    // swallow both since they mean the tree is already clean.
+    const abortIfInProgress = async (cwd: string): Promise<void> => {
+      try { await this.gitService.rebase(cwd, `--abort`); } catch { /* clean already */ }
+    };
+
+    let baseBranch: string | undefined;
+    let repoPath: string | undefined;
+
+    try {
+      if (this.agentInstanceService) {
+        const instResult = this.agentInstanceService.getInstance(sessionId);
+        const inst = instResult?.data;
+        baseBranch = inst?.config?.baseBranch || 'main';
+        // Use ROOT repo path — worktrees can vanish, source repo is always present.
+        repoPath = inst?.config?.repoPath;
+      }
+      if (!repoPath || !baseBranch) {
+        return { ok: true, rewrote: false, commitsIntegrated: 0, message: 'Post-commit rebase skipped: session config unresolved' };
+      }
+
+      // 1. Fetch so origin/<base> reflects the current remote.
+      await this.gitService.fetchRemote(repoPath);
+      const checkResult = await this.gitService.checkRemoteChanges(repoPath, baseBranch);
+      const behind = checkResult.success && checkResult.data ? (checkResult.data.behind || 0) : 0;
+
+      if (behind === 0) {
+        // Up-to-date — no rebase needed, no history rewrite, push can go
+        // fast-forward.
+        return { ok: true, rewrote: false, commitsIntegrated: 0, baseBranch, message: `Already up to date with ${baseBranch}` };
+      }
+
+      console.log(`[WatcherService] Post-commit rebase: ${behind} commits behind ${baseBranch}`);
+      const rebaseResult = this.rebaseWatcher
+        ? await this.rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch)
+        : await this.gitService.rebase(repoPath, `origin/${baseBranch}`).then(r => ({
+            success: r.success && !!r.data?.success,
+            message: r.data?.message || r.error?.message || '',
+            incomingCommits: r.data?.incomingCommits,
+          }));
+
+      if (rebaseResult.success) {
+        const incoming = (rebaseResult as { incomingCommits?: string[] }).incomingCommits || [];
+        const commitDetails = incoming.length > 0
+          ? `: ${incoming.slice(0, 3).join('; ')}${incoming.length > 3 ? ` +${incoming.length - 3} more` : ''}`
+          : '';
+        const msg = `Rebased onto ${baseBranch} (${behind} commit${behind !== 1 ? 's' : ''} integrated${commitDetails})`;
+        this.terminalLogService?.log('info', msg, { sessionId, source: 'Watcher' });
+        this.activityService.log(sessionId, 'git', msg);
+        return { ok: true, rewrote: true, commitsIntegrated: behind, baseBranch, message: msg };
+      }
+
+      // Rebase failed. Abort any in-progress state so the tree is clean,
+      // then surface an actionable message. Push should NOT happen after a
+      // failed rebase — otherwise the agent publishes a stale-base commit.
+      await abortIfInProgress(repoPath);
+      const errMsg = `Rebase onto ${baseBranch} failed — session branch left at pre-rebase state. Push skipped. ${rebaseResult.message || 'Resolve conflicts and retry via kit_rebase.'}`;
+      console.warn(`[WatcherService] Post-commit rebase failed:`, rebaseResult.message);
+      this.activityService.log(sessionId, 'warning', errMsg, { detail: rebaseResult.message });
+      return {
+        ok: false,
+        rewrote: false,
+        commitsIntegrated: 0,
+        baseBranch,
+        message: errMsg,
+        conflictFiles: (rebaseResult as { conflictFiles?: string[] }).conflictFiles,
+      };
+    } catch (rebaseError) {
+      if (repoPath) await abortIfInProgress(repoPath);
+      const errMsg = rebaseError instanceof Error ? rebaseError.message : String(rebaseError);
+      console.warn(`[WatcherService] Post-commit rebase threw:`, rebaseError);
+      this.activityService.log(sessionId, 'warning', `Post-commit rebase failed: ${errMsg}. Push skipped.`);
+      return { ok: false, rewrote: false, commitsIntegrated: 0, baseBranch, message: `Post-commit rebase threw: ${errMsg}` };
+    }
   }
 
   private async getWorktreePath(sessionId: string): Promise<string | null> {
@@ -855,5 +1296,11 @@ export class WatcherService extends BaseService {
       clearTimeout(timer);
     }
     this.analysisDebounceTimers.clear();
+
+    // Clear any lingering periodic auto-commit timers
+    for (const timer of this.periodicCommitTimers.values()) {
+      clearInterval(timer);
+    }
+    this.periodicCommitTimers.clear();
   }
 }

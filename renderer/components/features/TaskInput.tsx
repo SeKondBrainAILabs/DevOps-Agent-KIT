@@ -153,7 +153,7 @@ function AdvancedOptions(): React.ReactElement {
   const [commitInterval, setCommitInterval] = useState(30);
 
   return (
-    <div className="border border-border rounded-xl overflow-hidden">
+    <div className="border border-[rgba(0,0,0,0.10)] rounded-[14px] overflow-hidden">
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
@@ -171,7 +171,7 @@ function AdvancedOptions(): React.ReactElement {
       </button>
 
       {isOpen && (
-        <div className="px-4 py-4 space-y-4 border-t border-border bg-surface">
+        <div className="px-4 py-4 space-y-4 border-t border-[rgba(0,0,0,0.10)] bg-white">
           {/* Worktree option */}
           <label className="flex items-start gap-3 cursor-pointer">
             <input

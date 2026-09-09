@@ -1,0 +1,697 @@
+[tsconfig.electron.json] electron/index.ts: error TS2339: Property 'resourcesPath' does not exist on type 'Process'.
+[tsconfig.electron.json] electron/index.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/index.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.electron.json] electron/index.ts: error TS2459: Module '"electron"' declares 'shell' locally, but it is not exported.
+[tsconfig.electron.json] electron/index.ts: error TS2503: Cannot find namespace 'Electron'.
+[tsconfig.electron.json] electron/index.ts: error TS7006: Parameter '_event' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/index.ts: error TS7006: Parameter '_event' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/index.ts: error TS7006: Parameter 'details' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/index.ts: error TS7006: Parameter 'errorCode' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/index.ts: error TS7006: Parameter 'errorDescription' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/index.ts: error TS7031: Binding element 'url' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2305: Module '"electron"' has no exported member 'dialog'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2305: Module '"electron"' has no exported member 'ipcMain'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'afterHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'afterHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'beforeHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'beforeHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'commitsAdded' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'commitsAdded' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'getConfigSources' does not exist on type 'AIConfigRegistry'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2339: Property 'shell' does not exist on type 'typeof import("/Volumes/DataDrive/Repos/sekond/DevOps-Agent-KIT/electron/index")'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof AppConfig'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof AppConfig'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'agentType' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'config' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'config' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'config' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'input' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'input' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'messages' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'messages' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'patch' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'patch' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'plan' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'repo' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'request' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/ipc/index.ts: error TS7006: Parameter 'request' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/preload.ts: error TS2305: Module '"electron"' has no exported member 'IpcRendererEvent'.
+[tsconfig.electron.json] electron/preload.ts: error TS2305: Module '"electron"' has no exported member 'contextBridge'.
+[tsconfig.electron.json] electron/preload.ts: error TS2305: Module '"electron"' has no exported member 'ipcRenderer'.
+[tsconfig.electron.json] electron/services/AIConfigRegistry.ts: error TS2339: Property 'models' does not exist on type 'never'.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2353: Object literal may only specify known properties, and 'reject' does not exist in type '{ cwd?: string | undefined; timeout?: number | undefined; }'.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.electron.json] electron/services/AgentInstanceService.ts: error TS2739: Type '{ repoPath: string; repoName: string; branchName: string; sessionId: string; taskDescription: string; }' is missing the following properties from type 'InstructionVars': systemPrompt, contextPreservation, rebaseFrequency
+[tsconfig.electron.json] electron/services/AgentListenerService.ts: error TS2416: Property 'initialize' in type 'AgentListenerService' is not assignable to the same property in base type 'BaseService'.
+[tsconfig.electron.json] electron/services/AgentListenerService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/AutoUpdateService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/AutoUpdateService.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/AutoUpdateService.ts: error TS2459: Module '"electron"' declares 'shell' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/BaseService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2559: Type '"CommitAnalysisService"' has no properties in common with type 'EventEmitterOptions'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS7006: Parameter 'l' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/services/CommitAnalysisService.ts: error TS7006: Parameter 'l' implicitly has an 'any' type.
+[tsconfig.electron.json] electron/services/DatabaseService.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<DebugLogExport>'.
+[tsconfig.electron.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<LogEntry[]>'.
+[tsconfig.electron.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<LogEntry[]>'.
+[tsconfig.electron.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<void>'.
+[tsconfig.electron.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<{ memoryEntries: number; fileSize: number; rotatedFiles: number; }>'.
+[tsconfig.electron.json] electron/services/DebugLogService.ts: error TS2416: Property 'error' in type 'DebugLogService' is not assignable to the same property in base type 'BaseService'.
+[tsconfig.electron.json] electron/services/DebugLogService.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/GitService.ts: error TS18047: 'execa' is possibly 'null'.
+[tsconfig.electron.json] electron/services/GitService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.electron.json] electron/services/LockService.ts: error TS2339: Property 'scheduleSave' does not exist on type 'LockService'.
+[tsconfig.electron.json] electron/services/LockService.ts: error TS2352: Conversion of type '{ filePath: string; sessionId: string; agentType: AgentType; lockedAt: string; lastModified: string; declared: boolean; operation: "edit" | "read" | "delete"; reason: string | undefined; estimatedDuration: number; }' to type 'AutoFileLock' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+[tsconfig.electron.json] electron/services/MergeConflictService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/MergeConflictService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/MergeConflictService.ts: error TS2352: Conversion of type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+[tsconfig.electron.json] electron/services/MergeConflictService.ts: error TS2352: Conversion of type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+[tsconfig.electron.json] electron/services/MergeService.ts: error TS18047: 'execa' is possibly 'null'.
+[tsconfig.electron.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.electron.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.electron.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.electron.json] electron/services/MergeService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.electron.json] electron/services/QuickActionService.ts: error TS2305: Module '"electron"' has no exported member 'clipboard'.
+[tsconfig.electron.json] electron/services/QuickActionService.ts: error TS2459: Module '"electron"' declares 'shell' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/RebaseWatcherService.ts: error TS2339: Property 'stashPopFailed' does not exist on type '{ success: boolean; message: string; hadChanges?: boolean | undefined; rawError?: string | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; }'.
+[tsconfig.electron.json] electron/services/RepoCleanupService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/SessionRecoveryService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/SessionRecoveryService.ts: error TS2739: Type '{ repoPath: string; agentType: AgentType; branchName: string; baseBranch: string; taskDescription: string; rebaseFrequency: "never"; }' is missing the following properties from type 'AgentInstanceConfig': useWorktree, autoCommit, commitInterval, systemPrompt, contextPreservation
+[tsconfig.electron.json] electron/services/SessionService.ts: error TS2741: Property 'baseBranch' is missing in type '{ id: string; name: string; task: string; agentType: AgentType; status: "idle"; branchName: string; worktreePath: string; repoPath: string; created: string; updated: string; commitCount: number; }' but required in type 'Session'.
+[tsconfig.electron.json] electron/services/TerminalLogService.ts: error TS2416: Property 'error' in type 'TerminalLogService' is not assignable to the same property in base type 'BaseService'.
+[tsconfig.electron.json] electron/services/VersionService.ts: error TS2322: Type 'IpcResult<RepoVersionSettings | undefined>' is not assignable to type 'IpcResult<RepoVersionSettings>'.
+[tsconfig.electron.json] electron/services/WatcherService.ts: error TS2345: Argument of type '"snapshot"' is not assignable to parameter of type 'LogType'.
+[tsconfig.electron.json] electron/services/WatcherService.ts: error TS2345: Argument of type '"snapshot"' is not assignable to parameter of type 'LogType'.
+[tsconfig.electron.json] electron/services/WorkerBridgeService.ts: error TS2305: Module '"electron"' has no exported member 'UtilityProcess'.
+[tsconfig.electron.json] electron/services/WorkerBridgeService.ts: error TS2305: Module '"electron"' has no exported member 'utilityProcess'.
+[tsconfig.electron.json] electron/services/WorkspaceService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.electron.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.electron.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.electron.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.electron.json] electron/services/analysis/ASTParserService.ts: error TS2322: Type 'SupportedLanguage | null' is not assignable to type 'SupportedLanguage'.
+[tsconfig.electron.json] electron/services/analysis/RepositoryAnalysisService.ts: error TS2739: Type '{ api: never[]; schema: never[]; tests: { e2e: never[]; unit: never[]; integration: never[]; }; fixtures: never[]; config: never[]; other: never[]; }' is missing the following properties from type '{ api: string[]; schema: string[]; tests: { e2e: string[]; unit: string[]; integration: string[]; }; fixtures: string[]; config: string[]; css: string[]; prompts: string[]; other: string[]; }': css, prompts
+[tsconfig.electron.json] electron/services/index.ts: error TS2345: Argument of type 'ActivityService' is not assignable to parameter of type '{ log: (sessionId: string, type: string, message: string, details?: Record<string, unknown> | undefined) => void; }'.
+[tsconfig.electron.json] electron/services/index.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.electron.json] electron/services/mcp/tools.ts: error TS2339: Property 'createSnapshot' does not exist on type '{ commit: (sessionId: string, message: string, repoName?: string | undefined) => Promise<any>; push: (sessionId: string, repoName?: string | undefined, options?: { forceWithLease?: boolean | undefined; } | undefined) => Promise<...>; ... 5 more ...; listWorktrees?: ((repoPath: string) => Promise<...>) | undefined; }'.
+[tsconfig.electron.json] electron/services/mcp/tools.ts: error TS2339: Property 'createSnapshot' does not exist on type '{ commit: (sessionId: string, message: string, repoName?: string | undefined) => Promise<any>; push: (sessionId: string, repoName?: string | undefined, options?: { forceWithLease?: boolean | undefined; } | undefined) => Promise<...>; ... 5 more ...; listWorktrees?: ((repoPath: string) => Promise<...>) | undefined; }'.
+[tsconfig.electron.json] electron/worker/monitor-worker.ts: error TS2339: Property 'parentPort' does not exist on type 'Process'.
+[tsconfig.electron.json] electron/worker/monitor-worker.ts: error TS2339: Property 'parentPort' does not exist on type 'Process'.
+[tsconfig.electron.json] electron/worker/monitor-worker.ts: error TS7006: Parameter 'messageEvent' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/index.ts: error TS2339: Property 'resourcesPath' does not exist on type 'Process'.
+[tsconfig.renderer.json] electron/index.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/index.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.renderer.json] electron/index.ts: error TS2459: Module '"electron"' declares 'shell' locally, but it is not exported.
+[tsconfig.renderer.json] electron/index.ts: error TS2503: Cannot find namespace 'Electron'.
+[tsconfig.renderer.json] electron/index.ts: error TS7006: Parameter '_event' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/index.ts: error TS7006: Parameter '_event' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/index.ts: error TS7006: Parameter 'details' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/index.ts: error TS7006: Parameter 'errorCode' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/index.ts: error TS7006: Parameter 'errorDescription' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/index.ts: error TS7031: Binding element 'url' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2305: Module '"electron"' has no exported member 'dialog'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2305: Module '"electron"' has no exported member 'ipcMain'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'afterHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'afterHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'beforeHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'beforeHead' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'commitsAdded' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'commitsAdded' does not exist on type '{ success: boolean; message: string; hadChanges: boolean; stashPopFailed?: boolean | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; resolutions?: ResolutionResult[] | undefined; }'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'getConfigSources' does not exist on type 'AIConfigRegistry'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2339: Property 'shell' does not exist on type 'typeof import("/Volumes/DataDrive/Repos/sekond/DevOps-Agent-KIT/electron/index")'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof AppConfig'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof AppConfig'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2345: Argument of type 'string' is not assignable to parameter of type 'keyof Credentials'.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter '_' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'agentType' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'config' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'config' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'config' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'input' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'input' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'messages' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'messages' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'options' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'patch' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'patch' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'plan' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'repo' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'request' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/ipc/index.ts: error TS7006: Parameter 'request' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/preload.ts: error TS2305: Module '"electron"' has no exported member 'IpcRendererEvent'.
+[tsconfig.renderer.json] electron/preload.ts: error TS2305: Module '"electron"' has no exported member 'contextBridge'.
+[tsconfig.renderer.json] electron/preload.ts: error TS2305: Module '"electron"' has no exported member 'ipcRenderer'.
+[tsconfig.renderer.json] electron/services/AIConfigRegistry.ts: error TS2339: Property 'models' does not exist on type 'never'.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2353: Object literal may only specify known properties, and 'reject' does not exist in type '{ cwd?: string | undefined; timeout?: number | undefined; }'.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.renderer.json] electron/services/AgentInstanceService.ts: error TS2739: Type '{ repoPath: string; repoName: string; branchName: string; sessionId: string; taskDescription: string; }' is missing the following properties from type 'InstructionVars': systemPrompt, contextPreservation, rebaseFrequency
+[tsconfig.renderer.json] electron/services/AgentListenerService.ts: error TS2416: Property 'initialize' in type 'AgentListenerService' is not assignable to the same property in base type 'BaseService'.
+[tsconfig.renderer.json] electron/services/AgentListenerService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/AutoUpdateService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/AutoUpdateService.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/AutoUpdateService.ts: error TS2459: Module '"electron"' declares 'shell' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/BaseService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'content' does not exist on type 'string'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2559: Type '"CommitAnalysisService"' has no properties in common with type 'EventEmitterOptions'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS7006: Parameter 'l' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/services/CommitAnalysisService.ts: error TS7006: Parameter 'l' implicitly has an 'any' type.
+[tsconfig.renderer.json] electron/services/DatabaseService.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<DebugLogExport>'.
+[tsconfig.renderer.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<LogEntry[]>'.
+[tsconfig.renderer.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<LogEntry[]>'.
+[tsconfig.renderer.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<void>'.
+[tsconfig.renderer.json] electron/services/DebugLogService.ts: error TS2322: Type 'void' is not assignable to type 'IpcResult<{ memoryEntries: number; fileSize: number; rotatedFiles: number; }>'.
+[tsconfig.renderer.json] electron/services/DebugLogService.ts: error TS2416: Property 'error' in type 'DebugLogService' is not assignable to the same property in base type 'BaseService'.
+[tsconfig.renderer.json] electron/services/DebugLogService.ts: error TS2459: Module '"electron"' declares 'app' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/GitService.ts: error TS18047: 'execa' is possibly 'null'.
+[tsconfig.renderer.json] electron/services/GitService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.renderer.json] electron/services/LockService.ts: error TS2339: Property 'scheduleSave' does not exist on type 'LockService'.
+[tsconfig.renderer.json] electron/services/LockService.ts: error TS2352: Conversion of type '{ filePath: string; sessionId: string; agentType: AgentType; lockedAt: string; lastModified: string; declared: boolean; operation: "edit" | "read" | "delete"; reason: string | undefined; estimatedDuration: number; }' to type 'AutoFileLock' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+[tsconfig.renderer.json] electron/services/MergeConflictService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/MergeConflictService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/MergeConflictService.ts: error TS2352: Conversion of type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+[tsconfig.renderer.json] electron/services/MergeConflictService.ts: error TS2352: Conversion of type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+[tsconfig.renderer.json] electron/services/MergeService.ts: error TS18047: 'execa' is possibly 'null'.
+[tsconfig.renderer.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.renderer.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChildProcess<....'.
+[tsconfig.renderer.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/MergeService.ts: error TS2339: Property 'execa' does not exist on type '{ default: { (file: string, arguments?: readonly string[] | undefined, options?: Options<string> | undefined): ExecaChildProcess<string>; (file: string, arguments?: readonly string[] | undefined, options?: Options<...> | undefined): ExecaChildProcess<...>; (file: string, options?: Options<...> | undefined): ExecaChi...'.
+[tsconfig.renderer.json] electron/services/MergeService.ts: error TS2721: Cannot invoke an object which is possibly 'null'.
+[tsconfig.renderer.json] electron/services/QuickActionService.ts: error TS2305: Module '"electron"' has no exported member 'clipboard'.
+[tsconfig.renderer.json] electron/services/QuickActionService.ts: error TS2459: Module '"electron"' declares 'shell' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/RebaseWatcherService.ts: error TS2339: Property 'stashPopFailed' does not exist on type '{ success: boolean; message: string; hadChanges?: boolean | undefined; rawError?: string | undefined; conflictsResolved?: number | undefined; conflictsFailed?: number | undefined; }'.
+[tsconfig.renderer.json] electron/services/RepoCleanupService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/SessionRecoveryService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/SessionRecoveryService.ts: error TS2739: Type '{ repoPath: string; agentType: AgentType; branchName: string; baseBranch: string; taskDescription: string; rebaseFrequency: "never"; }' is missing the following properties from type 'AgentInstanceConfig': useWorktree, autoCommit, commitInterval, systemPrompt, contextPreservation
+[tsconfig.renderer.json] electron/services/SessionService.ts: error TS2741: Property 'baseBranch' is missing in type '{ id: string; name: string; task: string; agentType: AgentType; status: "idle"; branchName: string; worktreePath: string; repoPath: string; created: string; updated: string; commitCount: number; }' but required in type 'Session'.
+[tsconfig.renderer.json] electron/services/TerminalLogService.ts: error TS2416: Property 'error' in type 'TerminalLogService' is not assignable to the same property in base type 'BaseService'.
+[tsconfig.renderer.json] electron/services/VersionService.ts: error TS2322: Type 'IpcResult<RepoVersionSettings | undefined>' is not assignable to type 'IpcResult<RepoVersionSettings>'.
+[tsconfig.renderer.json] electron/services/WatcherService.ts: error TS2345: Argument of type '"snapshot"' is not assignable to parameter of type 'LogType'.
+[tsconfig.renderer.json] electron/services/WatcherService.ts: error TS2345: Argument of type '"snapshot"' is not assignable to parameter of type 'LogType'.
+[tsconfig.renderer.json] electron/services/WorkerBridgeService.ts: error TS2305: Module '"electron"' has no exported member 'UtilityProcess'.
+[tsconfig.renderer.json] electron/services/WorkerBridgeService.ts: error TS2305: Module '"electron"' has no exported member 'utilityProcess'.
+[tsconfig.renderer.json] electron/services/WorkspaceService.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.renderer.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.renderer.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.renderer.json] electron/services/analysis/ASTParserService.ts: error TS2307: Cannot find module 'tree-sitter' or its corresponding type declarations.
+[tsconfig.renderer.json] electron/services/analysis/ASTParserService.ts: error TS2322: Type 'SupportedLanguage | null' is not assignable to type 'SupportedLanguage'.
+[tsconfig.renderer.json] electron/services/analysis/RepositoryAnalysisService.ts: error TS2739: Type '{ api: never[]; schema: never[]; tests: { e2e: never[]; unit: never[]; integration: never[]; }; fixtures: never[]; config: never[]; other: never[]; }' is missing the following properties from type '{ api: string[]; schema: string[]; tests: { e2e: string[]; unit: string[]; integration: string[]; }; fixtures: string[]; config: string[]; css: string[]; prompts: string[]; other: string[]; }': css, prompts
+[tsconfig.renderer.json] electron/services/index.ts: error TS2345: Argument of type 'ActivityService' is not assignable to parameter of type '{ log: (sessionId: string, type: string, message: string, details?: Record<string, unknown> | undefined) => void; }'.
+[tsconfig.renderer.json] electron/services/index.ts: error TS2459: Module '"electron"' declares 'BrowserWindow' locally, but it is not exported.
+[tsconfig.renderer.json] electron/services/mcp/tools.ts: error TS2339: Property 'createSnapshot' does not exist on type '{ commit: (sessionId: string, message: string, repoName?: string | undefined) => Promise<any>; push: (sessionId: string, repoName?: string | undefined, options?: { forceWithLease?: boolean | undefined; } | undefined) => Promise<...>; ... 5 more ...; listWorktrees?: ((repoPath: string) => Promise<...>) | undefined; }'.
+[tsconfig.renderer.json] electron/services/mcp/tools.ts: error TS2339: Property 'createSnapshot' does not exist on type '{ commit: (sessionId: string, message: string, repoName?: string | undefined) => Promise<any>; push: (sessionId: string, repoName?: string | undefined, options?: { forceWithLease?: boolean | undefined; } | undefined) => Promise<...>; ... 5 more ...; listWorktrees?: ((repoPath: string) => Promise<...>) | undefined; }'.
+[tsconfig.renderer.json] renderer/App.tsx: error TS2769: No overload matches this call.
+[tsconfig.renderer.json] renderer/components/features/AgentList.tsx: error TS2339: Property 'name' does not exist on type 'SessionReport'.
+[tsconfig.renderer.json] renderer/components/features/ChatPanel.tsx: error TS2345: Argument of type '(callback: () => void) => (() => void)' is not assignable to parameter of type '(callback: (data: unknown) => void) => () => void'.
+[tsconfig.renderer.json] renderer/components/features/CreateAgentWizard.tsx: error TS18048: 'subResult.data.length' is possibly 'undefined'.
+[tsconfig.renderer.json] renderer/components/features/CreateAgentWizard.tsx: error TS2345: Argument of type 'string' is not assignable to parameter of type '"main" | "dev" | "master" | "development" | "develop"'.
+[tsconfig.renderer.json] renderer/components/features/CreateAgentWizard.tsx: error TS2345: Argument of type '{ name: string; path: string; url: string; }[] | undefined' is not assignable to parameter of type 'SetStateAction<{ name: string; path: string; url: string; }[]>'.
+[tsconfig.renderer.json] renderer/components/features/FileCoordinationPanel.tsx: error TS2339: Property 'lockExtended' does not exist on type '{ session: { create: (request: CreateSessionRequest) => Promise<IpcResult<Session>>; list: () => Promise<IpcResult<Session[]>>; ... 6 more ...; onCrossSessionOverlap: (callback: (data: { ...; }) => void) => () => void; }; ... 33 more ...; update: { ...; }; }'.
+[tsconfig.renderer.json] renderer/components/features/FileCoordinationPanel.tsx: error TS2339: Property 'lockExtended' does not exist on type '{ session: { create: (request: CreateSessionRequest) => Promise<IpcResult<Session>>; list: () => Promise<IpcResult<Session[]>>; ... 6 more ...; onCrossSessionOverlap: (callback: (data: { ...; }) => void) => () => void; }; ... 33 more ...; update: { ...; }; }'.
+[tsconfig.renderer.json] renderer/components/features/FileCoordinationPanel.tsx: error TS2339: Property 'lockExtended' does not exist on type '{ session: { create: (request: CreateSessionRequest) => Promise<IpcResult<Session>>; list: () => Promise<IpcResult<Session[]>>; ... 6 more ...; onCrossSessionOverlap: (callback: (data: { ...; }) => void) => () => void; }; ... 33 more ...; update: { ...; }; }'.
+[tsconfig.renderer.json] renderer/components/features/FileCoordinationPanel.tsx: error TS7006: Parameter 'newLocks' implicitly has an 'any' type.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'isConnected' does not exist on type '{ agentId: string; isAlive: boolean; lastHeartbeat: string; }'.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'isConnected' does not exist on type '{ agentId: string; isAlive: boolean; lastHeartbeat: string; }'.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'missedHeartbeats' does not exist on type '{ agentId: string; isAlive: boolean; lastHeartbeat: string; }'.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'sessionId' does not exist on type '{ agentId: string; isAlive: boolean; lastHeartbeat: string; }'.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'sessionId' does not exist on type '{ agentId: string; isAlive: boolean; lastHeartbeat: string; }'.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'sessionId' does not exist on type '{ agentId: string; timestamp: string; }'.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'sessionId' does not exist on type '{ agentId: string; timestamp: string; }'.
+[tsconfig.renderer.json] renderer/components/features/HeartbeatIndicator.tsx: error TS2339: Property 'sessionId' does not exist on type '{ agentId: string; timestamp: string; }'.
+[tsconfig.renderer.json] renderer/components/features/InstructionsModal.tsx: error TS2345: Argument of type '{ sessionId: string; branchName: string; lastActivity: string; } | null | undefined' is not assignable to parameter of type 'SetStateAction<{ sessionId: string; branchName: string; lastActivity: string; } | null>'.
+[tsconfig.renderer.json] renderer/components/features/McpTab.tsx: error TS2345: Argument of type '(prev: { active: number; limits: { enabled: boolean; maxConcurrentGlobal: number; maxConcurrentPerRepo: number; }; } | null) => { limits: { enabled: boolean; maxConcurrentGlobal: number; maxConcurrentPerRepo: number; } | undefined; active: number; } | null' is not assignable to parameter of type 'SetStateAction<{ active: number; limits: { enabled: boolean; maxConcurrentGlobal: number; maxConcurrentPerRepo: number; }; } | null>'.
+[tsconfig.renderer.json] renderer/components/features/MergeWorkflowModal.tsx: error TS2322: Type '(opts?: { skipCiGate?: boolean; }) => Promise<void>' is not assignable to type 'MouseEventHandler<HTMLButtonElement>'.
+[tsconfig.renderer.json] renderer/components/features/MergeWorkflowModal.tsx: error TS2339: Property 'totalConflicts' does not exist on type '{}'.
+[tsconfig.renderer.json] renderer/components/features/MergeWorkflowModal.tsx: error TS2345: Argument of type '{ sourceBranch: string; targetBranch: string; canMerge: boolean; hasConflicts: boolean; conflictingFiles: string[]; filesChanged: { path: string; additions: number; deletions: number; status: string; }[]; ... 5 more ...; crossSessionOverlaps?: { ...; }[] | undefined; }' is not assignable to parameter of type 'SetStateAction<MergePreview | null>'.
+[tsconfig.renderer.json] renderer/components/features/MergeWorkflowModal.tsx: error TS2345: Argument of type '{ sourceBranch: string; targetBranch: string; canMerge: boolean; hasConflicts: boolean; conflictingFiles: string[]; filesChanged: { path: string; additions: number; deletions: number; status: string; }[]; ... 5 more ...; crossSessionOverlaps?: { ...; }[] | undefined; }' is not assignable to parameter of type 'SetStateAction<MergePreview | null>'.
+[tsconfig.renderer.json] renderer/components/features/MergeWorkflowModal.tsx: error TS2345: Argument of type '{ sourceBranch: string; targetBranch: string; canMerge: boolean; hasConflicts: boolean; conflictingFiles: string[]; filesChanged: { path: string; additions: number; deletions: number; status: string; }[]; ... 5 more ...; crossSessionOverlaps?: { ...; }[] | undefined; }' is not assignable to parameter of type 'SetStateAction<MergePreview | null>'.
+[tsconfig.renderer.json] renderer/components/features/MergeWorkflowModal.tsx: error TS2345: Argument of type '{ sourceBranch: string; targetBranch: string; canMerge: boolean; hasConflicts: boolean; conflictingFiles: string[]; filesChanged: { path: string; additions: number; deletions: number; status: string; }[]; ... 5 more ...; crossSessionOverlaps?: { ...; }[] | undefined; }' is not assignable to parameter of type 'SetStateAction<MergePreview | null>'.
+[tsconfig.renderer.json] renderer/components/features/SessionCanvas.tsx: error TS2322: Type '{ sessionId: string; }' is not assignable to type 'IntrinsicAttributes & ActivityLogProps'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS18046: 'feature' is of type 'unknown'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS18046: 'feature' is of type 'unknown'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS18046: 'feature' is of type 'unknown'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS18046: 'feature' is of type 'unknown'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2322: Type 'AgentActivityReport' is not assignable to type 'ActivityLogEntry | { hash: string; message: string; timestamp: string; filesChanged: number; additions: number; deletions: number; }'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2345: Argument of type 'unknown[]' is not assignable to parameter of type 'SetStateAction<{ name: string; description?: string | undefined; basePath: string; files: { api: string[]; schema: string[]; tests: { e2e: string[]; unit: string[]; integration: string[]; }; fixtures: string[]; config: string[]; other: string[]; }; contractPatternMatches: number; }[]>'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2353: Object literal may only specify known properties, and 'preDiscoveredFeatures' does not exist in type '{ includeCodeSamples?: boolean | undefined; maxFilesPerFeature?: number | undefined; skipExisting?: boolean | undefined; features?: string[] | undefined; }'.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2488: Type 'ActivityLogEntry[] | undefined' must have a '[Symbol.iterator]()' method that returns an iterator.
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2551: Property 'getStatus' does not exist on type '{ status: (sessionId: string) => Promise<IpcResult<GitStatus>>; commit: (sessionId: string, message: string) => Promise<IpcResult<GitCommit>>; ... 24 more ...; getWorktreeSafetyInfo: (worktreePath: string) => Promise<...>; }'. Did you mean 'status'?
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS2774: This condition will always return true since this function is always defined. Did you mean to call it instead?
+[tsconfig.renderer.json] renderer/components/features/SessionDetailView.tsx: error TS7053: Element implicitly has an 'any' type because expression of type 'SessionStatus' can't be used to index type '{ active: string; idle: string; error: string; completed: string; }'.
+[tsconfig.renderer.json] renderer/components/features/WorkspaceBrowserView.tsx: error TS2367: This comparison appears to be unintentional because the types '"done"' and '"analyzing"' have no overlap.
+[tsconfig.renderer.json] renderer/components/features/WorkspaceBrowserView.tsx: error TS2739: Type '{ role: "system"; content: string; }' is missing the following properties from type 'ChatMessage': id, timestamp
+[tsconfig.renderer.json] renderer/components/features/WorkspaceBrowserView.tsx: error TS2739: Type '{ role: "user"; content: string; }' is missing the following properties from type 'ChatMessage': id, timestamp
+[tsconfig.renderer.json] renderer/components/layouts/StatusBar.tsx: error TS2345: Argument of type '{ workerAlive: boolean; workerReady: boolean; workerPid: number | null; restartCount: number; activeMonitors: number; uptimeMs: number; workerUptimeSec: number; lastPingLatencyMs: number; restartHistory: { ...; }[]; spawnedAt: string | null; }' is not assignable to parameter of type 'SetStateAction<WorkerStatus | null>'.
+[tsconfig.renderer.json] renderer/components/layouts/StatusBar.tsx: error TS2345: Argument of type '{ workerAlive: boolean; workerReady: boolean; workerPid: number | null; restartCount: number; activeMonitors: number; uptimeMs: number; workerUptimeSec: number; lastPingLatencyMs: number; restartHistory: { ...; }[]; spawnedAt: string | null; }' is not assignable to parameter of type 'SetStateAction<WorkerStatus | null>'.
+[tsconfig.renderer.json] renderer/hooks/useAgentSubscription.ts: error TS2322: Type '"file-editing"' is not assignable to type 'AgentCapability'.
+[tsconfig.renderer.json] renderer/hooks/useAgentSubscription.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.
+[tsconfig.renderer.json] renderer/hooks/useAgentSubscription.ts: error TS2367: This comparison appears to be unintentional because the types 'InstanceStatus' and '"running"' have no overlap.

@@ -117,9 +117,9 @@ export function RepoSelector({ selectedPath, onSelect, error }: RepoSelectorProp
 
       {/* Validation status */}
       {selectedPath && (
-        <div className={`p-4 rounded-xl border ${
+        <div className={`p-4 rounded-[14px] border ${
           isValidating
-            ? 'bg-surface-secondary border-border'
+            ? 'bg-surface-secondary border-[rgba(0,0,0,0.10)]'
             : validation?.isValid
             ? 'bg-green-50 border-green-200'
             : 'bg-red-50 border-red-200'
@@ -172,7 +172,7 @@ export function RepoSelector({ selectedPath, onSelect, error }: RepoSelectorProp
                 key={repo.path}
                 type="button"
                 onClick={() => handleSelectRecent(repo)}
-                className="w-full p-3 rounded-xl border border-border bg-surface hover:bg-surface-secondary
+                className="w-full p-3 rounded-[14px] border border-[rgba(0,0,0,0.10)] bg-surface hover:bg-surface-secondary
                          flex items-center gap-3 text-left transition-colors group"
               >
                 <div className="w-10 h-10 rounded-lg bg-kanvas-blue/10 flex items-center justify-center">
@@ -191,7 +191,7 @@ export function RepoSelector({ selectedPath, onSelect, error }: RepoSelectorProp
                   <button
                     type="button"
                     onClick={(e) => handleRemoveRecent(e, repo.path)}
-                    className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-100 text-text-secondary hover:text-red-600 transition-all"
+                    className="p-1 rounded-full opacity-0 group-hover:opacity-100 hover:bg-red-100 text-text-secondary hover:text-red-600 transition-all"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

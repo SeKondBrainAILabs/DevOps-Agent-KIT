@@ -9,7 +9,7 @@
 
 export type SessionStatus = 'idle' | 'active' | 'watching' | 'paused' | 'error' | 'closed';
 
-export type AgentType = 'claude' | 'cursor' | 'copilot' | 'cline' | 'aider' | 'warp' | 'custom';
+export type AgentType = 'claude' | 'codex' | 'cursor' | 'copilot' | 'cline' | 'aider' | 'warp' | 'custom';
 
 export interface Session {
   id: string;
@@ -236,6 +236,247 @@ export interface AppConfig {
   autoWatch: boolean;
   autoPush: boolean;
   onboardingCompleted: boolean;
+  /**
+   * Telemetry opt-in (Epic O / story O5). Default `false` — the user must
+   * explicitly opt-in. When `false`, no analytics or usage pings are sent.
+   */
+  telemetryOptIn: boolean;
+  /**
+   * Default landing view shown on app launch (Epic L / story L4).
+   * One of 'morning-check' | 'workspace-browser' | 'last-visited'.
+   */
+  defaultLandingView: 'morning-check' | 'workspace-browser' | 'last-visited';
+}
+
+// =============================================================================
+// WORKSPACE (Epic A — multi-workspace, multi-repo discovery)
+// =============================================================================
+
+/**
+ * A user-defined root folder containing one or more repositories
+ * (e.g. `/Users/x/work`). Workspaces can be added, renamed, removed.
+ */
+export interface Workspace {
+  /** Stable ID (UUID-ish). Persisted across renames. */
+  id: string;
+  /** Human-friendly name; defaults to the basename of `path`. */
+  name: string;
+  /** Absolute filesystem path. */
+  path: string;
+  /** Recursive scan depth (default 2). */
+  scanDepth: number;
+  /** Glob patterns to skip during scans (in addition to defaults). */
+  ignoreGlobs: string[];
+  /** ISO timestamp of when the workspace was added. */
+  createdAt: string;
+  /** ISO timestamp of the most-recent successful scan. */
+  lastScannedAt?: string;
+}
+
+export interface WorkspaceCreateInput {
+  path: string;
+  name?: string;
+  scanDepth?: number;
+  ignoreGlobs?: string[];
+}
+
+export interface WorkspaceUpdateInput {
+  name?: string;
+  scanDepth?: number;
+  ignoreGlobs?: string[];
+}
+
+/**
+ * A repository discovered by `WorkspaceService.scanWorkspace` (story A2).
+ * Each row maps to one Git repo found under a workspace folder.
+ */
+export interface DiscoveredRepo {
+  /** Workspace this repo belongs to. */
+  workspaceId: string;
+  /** Absolute path to the repo root (the directory containing `.git`). */
+  path: string;
+  /** Basename of the repo path. */
+  name: string;
+  /** Depth at which this repo was discovered, relative to workspace root. */
+  depth: number;
+  /** ISO timestamp of discovery. */
+  discoveredAt: string;
+}
+
+/**
+ * Event fired by the WorkspaceService filesystem watcher (story A3).
+ * Renderer subscribes via `window.api.workspace.onRepoChange(...)`.
+ */
+export interface WorkspaceRepoChangeEvent {
+  workspaceId: string;
+  kind: 'repo-added' | 'repo-removed';
+  repoPath: string;
+  depth: number;
+  at: string;
+}
+
+/**
+ * Project Group (Epic F / story F1).
+ *
+ * A user-defined logical grouping of repos (e.g. "Core Stack"). Persistent —
+ * lives outside any individual session — so it can power cross-repo views,
+ * branch-sync visualizers, and bulk actions.
+ */
+export interface ProjectGroup {
+  id: string;
+  name: string;
+  /** Member repo paths (absolute). */
+  repoPaths: string[];
+  /** Optional UI accent color (hex string). */
+  color?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectGroupCreateInput {
+  name: string;
+  repoPaths: string[];
+  color?: string;
+}
+
+export interface ProjectGroupUpdateInput {
+  name?: string;
+  repoPaths?: string[];
+  color?: string;
+}
+
+/**
+ * Branch row enriched with C7 hygiene metadata, surfaced by
+ * `GitService.listBranchesForRepo(repoPath)` and consumed by the
+ * BranchManagerPanel.
+ */
+export interface RepoBranchRow {
+  name: string;
+  /** True iff this is the currently checked-out branch. */
+  isCurrent: boolean;
+  /** Most recent commit timestamp on the branch (ms since epoch). */
+  lastCommitMs: number;
+  /** True iff the branch is fully merged into the default branch. */
+  mergedIntoDefault: boolean;
+  /** True iff the local branch's remote tracking ref is gone. */
+  deletedOnRemote: boolean;
+  /** True iff a worktree references this branch. */
+  hasWorktree: boolean;
+}
+
+/**
+ * Status block surfaced by `GitService.getRepoStatus(repoPath)` and
+ * consumed by the RepoStatusCard renderer atom (Day 1.5).
+ */
+export interface RepoStatus {
+  repoPath: string;
+  currentBranch: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  modifiedCount: number;
+  stagedCount: number;
+  untrackedCount: number;
+  unmergedCount: number;
+  stashCount: number;
+  worktreeCount: number;
+  /** Most recent commit info, if a log exists. */
+  lastCommit?: {
+    sha: string;
+    shortSha: string;
+    subject: string;
+    authoredAt: string;
+  };
+  /** ISO timestamp when the snapshot was produced. */
+  fetchedAt: string;
+}
+
+// =============================================================================
+// STORAGE METRICS (Workspace Disk & Docker panel)
+// =============================================================================
+
+export interface DockerUsageBucket {
+  sizeBytes: number;
+  reclaimableBytes: number;
+  /** Percentage (0-100) when available from Docker output, otherwise null. */
+  reclaimablePercent: number | null;
+}
+
+export interface DockerUsageMetrics {
+  available: boolean;
+  error?: string;
+  images: DockerUsageBucket;
+  localVolumes: DockerUsageBucket;
+  buildCache: DockerUsageBucket;
+}
+
+export interface LocalStorageRepoUsage {
+  repoPath: string;
+  bytes: number;
+  /** Concrete directories included in this measurement. */
+  paths: string[];
+}
+export interface AbandonedWorktreeUsage {
+  repoPath: string;
+  worktreePath: string;
+  branch: string;
+  bytes: number;
+  exists: boolean;
+  lastTouchedAt: string | null;
+  daysSinceLastTouched: number | null;
+  reason: 'missing-path' | 'stale-no-session';
+}
+
+export interface ReclaimableRepoUsage {
+  repoPath: string;
+  totalReclaimableBytes: number;
+  nodeModulesBytes: number;
+  pythonEnvsBytes: number;
+  abandonedWorktreeBytes: number;
+  abandonedWorktreeCount: number;
+}
+
+export interface LocalStorageUsageMetrics {
+  scannedRepoCount: number;
+  nodeModulesTotalBytes: number;
+  pythonEnvsTotalBytes: number;
+  nodeModulesByRepo: LocalStorageRepoUsage[];
+  pythonEnvsByRepo: LocalStorageRepoUsage[];
+  abandonedWorktrees: AbandonedWorktreeUsage[];
+  reclaimableByRepo: ReclaimableRepoUsage[];
+}
+
+export interface StorageMetricsOverview {
+  fetchedAt: string;
+  docker: DockerUsageMetrics;
+  local: LocalStorageUsageMetrics;
+}
+
+export interface WorkspaceScanResult {
+  workspaceId: string;
+  scannedAt: string;
+  durationMs: number;
+  repoCount: number;
+  repos: DiscoveredRepo[];
+}
+
+// =============================================================================
+// PER-REPO WORKSPACE SETTINGS
+// =============================================================================
+
+/**
+ * Worktree mode for a repo.
+ * - 'worktree' (default): each session gets an isolated git worktree;
+ *   parallel sessions are allowed.
+ * - 'in-place': agent works on a branch in the main repo (Docker hot-reload friendly);
+ *   only ONE active session is permitted per repo (Single-Session Mode).
+ */
+export type WorktreeMode = 'in-place' | 'worktree';
+
+export interface RepoWorkspaceConfig {
+  repoPath: string;
+  worktreeMode: WorktreeMode;
+  lastUpdated: string;
 }
 
 export interface BranchManagementSettings {
@@ -285,6 +526,38 @@ export interface AppUpdateInfo {
 }
 
 // =============================================================================
+// WORKTREE SAFETY INFO
+// =============================================================================
+
+export interface WorktreeSafetyInfo {
+  worktreePath: string;
+  hasUncommittedChanges: boolean;
+  uncommittedFiles: Array<{ path: string; status: string }>;
+  unmergedCommitCount: number;   // commits in worktree HEAD not in main or development
+  mergedIntoBranches: string[];  // which of ['main','development'] contain the HEAD
+}
+
+/**
+ * A session flagged as stale by the startup scan. A session is stale when its
+ * worktree has been idle >= STALE_WORKTREE_DAYS and is fully committed (no
+ * uncommitted/unstaged changes — those keep it active and visible in the
+ * workspace view instead). `safeToDelete` is true when there are also no
+ * unmerged commits, meaning removal cannot lose work; those are auto-removed.
+ * Sessions with unmerged commits are surfaced to the user for confirmation.
+ */
+export interface StaleSessionInfo {
+  sessionId: string;
+  repoPath: string;
+  repoName: string;
+  branchName: string;
+  worktreePath: string;
+  daysIdle: number;
+  unmergedCommitCount: number;   // committed-but-unmerged work that removal would orphan
+  mergedIntoBranches: string[];  // which of ['main','development'] already contain HEAD
+  safeToDelete: boolean;         // !hasUncommittedChanges && unmergedCommitCount === 0
+}
+
+// =============================================================================
 // IPC RESULT TYPES
 // =============================================================================
 
@@ -306,7 +579,33 @@ export type ExtractData<T> = T extends IpcResult<infer U> ? U : never;
 // For creating new agent instances from Kanvas dashboard
 // =============================================================================
 
-export type InstanceStatus = 'pending' | 'initializing' | 'waiting' | 'active' | 'error';
+/**
+ * An agent instance's lifecycle status.
+ *
+ * The terminal states and 'idle' were being assigned at runtime while absent
+ * from this union — `markSessionClosed` wrote `'closed' as AgentInstance['status']`
+ * and the MCP first-call handler passed `'idle'` through an undeclared shim
+ * method. Both worked, because a cast and a missing declaration both silence
+ * the compiler, and neither is a statement that the value is valid.
+ *
+ * Declared honestly here so status filters and the reaper's terminal-status set
+ * can be checked rather than guessed.
+ */
+export type InstanceStatus =
+  | 'pending'
+  | 'initializing'
+  | 'waiting'
+  /** Connected and working. */
+  | 'active'
+  /** Connected but not currently doing anything. Set on an agent's first MCP call. */
+  | 'idle'
+  | 'error'
+  /** Terminal: closed by a human, an agent, or the reaper. */
+  | 'closed'
+  /** Terminal: the work finished. */
+  | 'completed'
+  /** Terminal: the session failed. */
+  | 'failed';
 
 export type RebaseFrequency = 'never' | 'daily' | 'weekly' | 'on-demand';
 
@@ -316,6 +615,14 @@ export interface AgentInstanceConfig {
   taskDescription: string;
   branchName: string;
   baseBranch: string;
+  /**
+   * @deprecated Derived from `isolation` as of the MCP session-lifecycle epic.
+   * Still required and still written for one release: it is non-optional
+   * today, constructed by the wizard and by restartInstance, and
+   * `migrateUseWorktreeFlag` rewrites drifted rows on every launch. Removing
+   * it in the same change as the isolation work would have meant touching all
+   * of those at once.
+   */
   useWorktree: boolean;
   autoCommit: boolean;
   commitInterval: number;
@@ -325,6 +632,63 @@ export interface AgentInstanceConfig {
   contextPreservation: string;
   // Multi-repo mode (optional, advanced)
   multiRepo?: MultiRepoConfig;
+  // Custom agent: whether the agent supports MCP
+  customMcpEnabled?: boolean;
+  // Optional: fire a GitHub Action when this session is merged (see MergeActionConfig).
+  mergeAction?: MergeActionConfig;
+  /**
+   * Who created this session. Absent means a record written before the field
+   * existed, i.e. a human's — so it is treated as 'ui' everywhere, which keeps
+   * legacy sessions out of the agent concurrency budget and out of reach of an
+   * agent's close permissions.
+   *
+   * (A1 adds the rest of the lineage/isolation fields; this one lands with G1
+   * because the admission guard is its first consumer.)
+   */
+  createdBy?: 'ui' | 'mcp' | 'adopted';
+  /** The session that asked for this one, when an agent spawned it. */
+  parentSessionId?: string;
+  /**
+   * 'observer' sessions own NO worktree — they borrow `observedPath` and every
+   * write tool refuses for them. Absent means 'worktree' (a normal session).
+   */
+  isolation?: 'worktree' | 'observer';
+  /** Observer only: the directory being borrowed. Never a worktree it owns. */
+  observedPath?: string;
+  /** Observer only: the session whose worktree is borrowed, if any. */
+  observerOfSessionId?: string;
+  /**
+   * Adoption only (M5): an EXISTING checkout to take over, at a path KIT did
+   * not create and would not guess — the user's own repo root, or a worktree
+   * they made themselves.
+   *
+   * Without this, adoption falls through to `git worktree add`, which fails
+   * because the branch is already checked out elsewhere. Only paths that
+   * already exist are honoured; a stale one falls back to normal creation.
+   */
+  adoptedWorktreePath?: string;
+  /**
+   * Requested lifetime in minutes, from `kit_start_session(ttl_minutes)`.
+   * Materialised onto the instance as `expiresAt` at creation. The reaper
+   * treats it as a HARD ceiling; the idle TTL applies independently and is
+   * usually what fires first.
+   */
+  ttlMinutes?: number;
+}
+
+/**
+ * Configures a GitHub Action to fire when a session is merged. Currently the
+ * "tag-push" mechanism: KIT creates and pushes a version tag (e.g.
+ * "SDDMini-KH/v3.23.41") whose push triggers the workflow. The version is
+ * auto-incremented (patch) from the latest existing tag with the same prefix.
+ */
+export interface MergeActionConfig {
+  enabled: boolean;
+  type: 'tag-push';
+  /** Tag prefix up to and including the leading "v", e.g. "SDDMini-KH/v". */
+  tagPrefix: string;
+  /** How to bump the version from the latest tag. Patch only for now. */
+  versionBump: 'patch';
 }
 
 export interface AgentInstance {
@@ -335,9 +699,107 @@ export interface AgentInstance {
   instructions?: string;
   prompt?: string; // The comprehensive prompt to copy to the coding agent
   sessionId?: string;
-  worktreePath?: string; // Path to isolated worktree (.worktrees/{branchName})
+  worktreePath?: string; // Path to isolated worktree (local_deploy/{branchName})
   error?: string;
   multiRepoEntries?: RepoEntry[]; // Populated repos with worktree paths (multi-repo mode)
+  /**
+   * Ordered chain of sessionIds this instance has replaced via restart. The
+   * most recent predecessor is the last element; the oldest is first. Used by
+   * `backfillMcpCallsByLineage` to repatriate orphaned `mcp_calls` rows that
+   * would otherwise be invisible after the predecessor records are purged by
+   * `purgeInstancesOnBranch`. Empty/missing for instances created before
+   * v2.6.59 — no recovery is possible for those without lineage data.
+   */
+  predecessorSessionIds?: string[];
+  /**
+   * How this session's worktree was obtained. 'failed' means worktree creation
+   * did not succeed and the session is running directly in the source repo —
+   * previously indistinguishable from a normal session.
+   */
+  worktreeStatus?: 'created' | 'reused' | 'legacy' | 'observer' | 'failed';
+  /**
+   * Non-fatal problems hit while provisioning the worktree (env symlink,
+   * pre-commit hook, KIT directory). Previously swallowed to console.warn and
+   * invisible to any headless caller.
+   */
+  worktreeWarnings?: string[];
+  /**
+   * Set by `detectStaleRebases` startup scan when the worktree's gitdir has a
+   * `rebase-merge` or `rebase-apply` directory older than the stale threshold
+   * (default 6h). Cleared automatically when the gitdir no longer has rebase
+   * state. Renderer surfaces this as a banner with an "Abort + back up" button
+   * wired to the `INSTANCE_REPAIR_STALE_REBASE` IPC handler.
+   */
+  staleRebase?: {
+    detectedAt: string;     // when the scan flagged it
+    startedAt: string;      // mtime of rebase-merge/apply dir
+    kind: 'merge' | 'apply';
+    ageMinutes: number;     // age at detection time
+    gitDir: string;         // absolute path to the rebase-* dir, for repair
+  };
+  /**
+   * When `markSessionClosed` ran. Set for both a safe close (worktree and
+   * branch retained) and the destructive path.
+   *
+   * These two fields were assigned by `markSessionClosed` before they were
+   * declared here, which type-checked as an error the build never surfaced —
+   * electron-vite compiles with esbuild and does not check types. See
+   * `scripts/typecheck-gate.sh`.
+   */
+  closedAt?: string;
+  /** Free text: 'task complete', 'reaped: idle 4h', 'app_quit', ... */
+  closeReason?: string;
+  /**
+   * Hard deadline for the reaper (R1), ISO-8601. Set at creation from
+   * `config.ttlMinutes`. Absent means the idle TTL alone applies.
+   */
+  expiresAt?: string;
+  /**
+   * User has pinned this session: the reaper skips it entirely, whatever its
+   * age or idleness. Set from the session row menu (R2).
+   */
+  pinned?: boolean;
+  /**
+   * Set when the reaper acted on this session, so the expiry dialog can show
+   * what happened and the pass is not repeated. Absent means never reaped.
+   */
+  reapedAt?: string;
+  /**
+   * Set by `kit_request_review` (KIT-PR-P5). Before this existed the tool
+   * wrote `reviewRequested: true` into an activity row that nothing in the
+   * codebase read, so an agent finishing its work announced itself into a
+   * void.
+   */
+  reviewRequest?: {
+    summary: string;
+    requestedAt: string;
+    prUrl?: string;
+    prNumber?: number;
+    /** Why there is no PR link, when there isn't one. */
+    prStatus?: string;
+  };
+}
+
+/**
+ * One line in the agent-session expiry dialog (R2): what the reaper did to a
+ * session whose TTL ran out, and what is still recoverable.
+ */
+export interface ExpiredAgentSessionInfo {
+  sessionId: string;
+  branchName?: string;
+  repoPath?: string;
+  worktreePath?: string;
+  taskDescription?: string;
+  /** Why it expired: idle TTL, hard ceiling, or an explicit expiresAt. */
+  reasonCode: string;
+  /** What was actually done. Only 'delete-clean' removed anything. */
+  action: 'delete-observer' | 'delete-clean' | 'snapshot-and-close' | 'teardown-only';
+  detail: string;
+  idleMinutes: number;
+  /** Set when uncommitted work was pinned to a ref before closing. */
+  snapshotRef?: string;
+  worktreeDeleted: boolean;
+  localBranchDeleted: boolean;
 }
 
 // =============================================================================
@@ -732,6 +1194,10 @@ export interface MergeResult {
   stashRecovered?: boolean;
   /** Files that could not be recovered from stash due to unresolvable conflicts */
   stashConflictFiles?: string[];
+  /** S9N-6394: reason the merge gate blocked the operation, when it did. */
+  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING';
+  /** S9N-6394: raw payload from the gate (failing checks, WIP shas, etc.). */
+  gateDetails?: unknown;
 }
 
 // =============================================================================

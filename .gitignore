@@ -84,8 +84,8 @@ CLI_README.md
 *.local.*
 local-config/
 
-# Worktrees directory (isolated development worktrees)
-.worktrees/
+# Local deployment folder (contains deployment scripts and runtime files)
+local_deploy/
 
 # DevOps session management files
 .devops-commit-*.msg
@@ -118,3 +118,6 @@ release-test*/
 
 # MCP server config (auto-generated per session)
 .mcp.json
+
+# Claude Code project settings (auto-generated per session)
+.claude/settings.json

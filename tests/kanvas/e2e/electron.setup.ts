@@ -34,10 +34,10 @@ export async function launchElectronApp(useRealData = false): Promise<ElectronTe
   // For integration tests, use the real app data by specifying userData path
   // For unit-style E2E tests, use test mode
   if (useRealData) {
-    // Point to the real Kanvas app data directory
+    // Point to the real app data directory
     const realUserDataPath = path.join(
       process.env.HOME || '',
-      'Library/Application Support/sekondbrain-kanvas'
+      'Library/Application Support/kit-for-devops'
     );
     args.push(`--user-data-dir=${realUserDataPath}`);
   } else {

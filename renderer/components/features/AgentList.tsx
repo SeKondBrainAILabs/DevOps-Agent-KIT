@@ -7,7 +7,7 @@
  * Compact rows with columnar session info
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { AgentCardSkeleton } from './AgentCard';
 import { MergeWorkflowModal } from './MergeWorkflowModal';
 import { DeleteSessionDialog } from './DeleteSessionDialog';
@@ -98,10 +98,36 @@ export function AgentList(): React.ReactElement {
   const selectedSessionId = useAgentStore((state) => state.selectedSessionId);
   const setSelectedSession = useAgentStore((state) => state.setSelectedSession);
 
+  // Closed but still holding a worktree. A SAFE close deliberately KEEPS the
+  // worktree and branch, so these are real directories with real work in them.
+  // They are pulled OUT of the tree — leaving them in shows a closed session
+  // sitting among live ones, which at agent fan-out fills the sidebar with
+  // sessions that look alive and are not — and surfaced in their own group.
+  const retainedSessions = useMemo(
+    () =>
+      Array.from(reportedSessions.values()).filter(
+        (session) => session.status === 'closed' && Boolean(session.worktreePath)
+      ),
+    [reportedSessions]
+  );
+
+  // Sessions where an agent has said the work is ready (KIT-PR-P5). Before
+  // this, kit_request_review wrote a flag nothing read — an agent finishing
+  // its work announced itself into a void.
+  const awaitingReview = useMemo(
+    () =>
+      Array.from(reportedSessions.values()).filter(
+        (session) => Boolean(session.reviewRequest) && session.status !== 'closed'
+      ),
+    [reportedSessions]
+  );
+
   // Build tree: Repo → AgentType → Sessions
   const repoGroups = useMemo(() => {
     const repos = new Map<string, RepoGroup>();
-    const sessions = Array.from(reportedSessions.values());
+    const sessions = Array.from(reportedSessions.values()).filter(
+      (session) => session.status !== 'closed'
+    );
 
     for (const session of sessions) {
       const agentType = (session.agentType || 'custom') as AgentType;
@@ -155,7 +181,11 @@ export function AgentList(): React.ReactElement {
 
   const totalSessions = repoGroups.reduce((sum, r) => sum + r.totalSessions, 0);
 
-  if (reportedSessions.size === 0 || repoGroups.length === 0) {
+  if (
+    (reportedSessions.size === 0 || repoGroups.length === 0) &&
+    retainedSessions.length === 0 &&
+    awaitingReview.length === 0
+  ) {
     return (
       <div className="text-center py-10">
         <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-surface-tertiary flex items-center justify-center">
@@ -174,13 +204,62 @@ export function AgentList(): React.ReactElement {
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">
+        <span className="kb-eyebrow text-xs font-medium text-text-secondary uppercase tracking-wider">
           Repositories
         </span>
         <span className="text-xs px-1.5 py-0.5 rounded-full bg-kanvas-blue/10 text-kanvas-blue">
           {totalSessions} sessions
         </span>
       </div>
+
+      {awaitingReview.length > 0 && (
+        <div className="mb-3 rounded-md border border-violet-500/30 bg-violet-500/5">
+          <p className="px-3 pt-2 text-[10px] font-mono uppercase tracking-[0.14em] text-violet-700">
+            {awaitingReview.length} ready for review
+          </p>
+          <div className="px-3 pb-2 pt-1 space-y-1.5">
+            {awaitingReview.map((session) => (
+              <div key={session.sessionId} className="text-xs">
+                <button
+                  onClick={() =>
+                    setSelectedSession(
+                      selectedSessionId === session.sessionId ? null : session.sessionId
+                    )
+                  }
+                  className="w-full text-left hover:underline text-text-primary truncate"
+                  title={session.branchName}
+                >
+                  {session.branchName || session.sessionId}
+                </button>
+                <p className="text-[11px] text-text-secondary leading-snug mt-0.5">
+                  {session.reviewRequest?.summary}
+                </p>
+                {session.reviewRequest?.prUrl ? (
+                  <a
+                    href={session.reviewRequest.prUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-kanvas-blue hover:underline"
+                  >
+                    View pull request
+                    {session.reviewRequest.prNumber ? ` #${session.reviewRequest.prNumber}` : ''}
+                  </a>
+                ) : (
+                  // Say WHY there is no link rather than showing nothing —
+                  // "no GitHub remote" and "gh is logged out" are different
+                  // problems with different fixes.
+                  <p className="text-[11px] text-text-secondary/70">
+                    No pull request
+                    {session.reviewRequest?.prStatus
+                      ? ` (${String(session.reviewRequest.prStatus).replace(/_/g, ' ')})`
+                      : ''}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Repo tree */}
       <div className="space-y-1">
@@ -195,6 +274,40 @@ export function AgentList(): React.ReactElement {
           />
         ))}
       </div>
+
+      {retainedSessions.length > 0 && (
+        <details className="mt-2 rounded-md border border-[rgba(0,0,0,0.10)]">
+          <summary className="px-3 py-2 text-xs text-text-secondary cursor-pointer select-none">
+            {retainedSessions.length} closed &middot; worktree retained
+          </summary>
+          <div className="px-3 pb-2 space-y-1">
+            <p className="text-[11px] text-text-secondary/80 leading-snug">
+              These sessions were closed safely, so their worktree and branch are
+              still on disk. Delete them from the session view when the work is
+              merged or abandoned.
+            </p>
+            {retainedSessions.map((session) => (
+              <button
+                key={session.sessionId}
+                onClick={() =>
+                  setSelectedSession(
+                    selectedSessionId === session.sessionId ? null : session.sessionId
+                  )
+                }
+                className="w-full flex items-center justify-between gap-2 text-xs py-0.5 text-left hover:bg-surface-tertiary rounded px-1"
+                title={session.worktreePath}
+              >
+                <span className="truncate text-text-secondary">
+                  {session.branchName || session.sessionId}
+                </span>
+                <span className="shrink-0 text-[10px] text-text-secondary/70">
+                  {session.agentType ?? 'agent'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -235,7 +348,7 @@ function RepoNode({
       </button>
 
       {expanded && (
-        <div className="ml-4 border-l border-border/50 pl-2 mt-0.5 space-y-0.5">
+        <div className="ml-4 border-l border-[rgba(0,0,0,0.10)] pl-2 mt-0.5 space-y-0.5">
           {repo.agents.length === 1 ? (
             /* Single agent — skip the agent row, show sessions directly */
             <SessionList
@@ -323,7 +436,7 @@ function SessionList({
   onSelectSession: (sessionId: string) => void;
 }): React.ReactElement {
   return (
-    <div className="ml-3 border-l border-border/40 pl-1.5 mt-0.5 space-y-px">
+    <div className="ml-3 border-l border-[rgba(0,0,0,0.10)] pl-1.5 mt-0.5 space-y-px">
       {agent.sessions.map((session, idx) => (
         <SessionRow
           key={session.sessionId}
@@ -365,7 +478,29 @@ function SessionRow({
   const branch = session.branchName || '';
   // Extract trailing suffix like "-mr4c", "-l63a", "-UXUPG" from branch name
   const suffix = branch.match(/-([a-zA-Z0-9]{3,5})$/)?.[1] || branch.slice(-5);
-  const timeAgo = session.updated ? getTimeAgo(new Date(session.updated)) : null;
+
+  // Real "last change" — most recent of last MCP/activity, last commit, or newest
+  // changed file in the worktree. Falls back to session.updated (bookkeeping) until
+  // it loads. Refreshes periodically so the row stays honest.
+  const [lastChangeAt, setLastChangeAt] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchLastChange = () => {
+      // Skip polling while the window is hidden — saves CPU when KIT is in the
+      // background (this runs once per session row).
+      if (typeof document !== 'undefined' && document.hidden) return;
+      window.api?.instance?.getLastChange?.(session.sessionId).then((r) => {
+        if (!cancelled && r?.success && r.data) setLastChangeAt(r.data);
+      }).catch(() => {});
+    };
+    fetchLastChange();
+    // 2 min base interval + per-row jitter so all rows don't fire at once.
+    const id = setInterval(fetchLastChange, 120000 + Math.floor(Math.random() * 15000));
+    return () => { cancelled = true; clearInterval(id); };
+  }, [session.sessionId]);
+
+  const effectiveTime = lastChangeAt || session.updated;
+  const timeAgo = effectiveTime ? getTimeAgo(new Date(effectiveTime)) : null;
   const lastRebaseInfo = useAgentStore((state) => state.lastRebaseTimes.get(session.sessionId));
   const syncedAgo = lastRebaseInfo ? getTimeAgo(new Date(lastRebaseInfo.timestamp)) : null;
   // Color: green < 2h, yellow < 24h, red >= 24h, gray = never
@@ -404,6 +539,18 @@ function SessionRow({
       >
         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusColor}`} />
         <span className="text-xs truncate flex-1">{index}-{suffix}</span>
+        {session.reviewRequest && (
+          <span
+            className="shrink-0 text-[9px] px-1 py-0.5 rounded-full bg-violet-500/15 text-violet-700"
+            title={
+              session.reviewRequest.prUrl
+                ? `Review requested — ${session.reviewRequest.prUrl}`
+                : 'Review requested'
+            }
+          >
+            review
+          </span>
+        )}
         {newCommits > 0 && (
           <span className="text-[10px] font-medium text-green-600 flex-shrink-0">
             +{newCommits}
@@ -412,9 +559,11 @@ function SessionRow({
         {/* Last sync indicator — green/yellow/orange based on staleness */}
         <span
           className={`text-[10px] flex-shrink-0 group-hover:hidden ${syncColor}`}
-          title={lastRebaseInfo
+          title={syncedAgo && lastRebaseInfo
             ? `Last synced: ${new Date(lastRebaseInfo.timestamp).toLocaleString()} — ${lastRebaseInfo.message}`
-            : 'Not yet synced this session'}
+            : effectiveTime
+              ? `Last change: ${new Date(effectiveTime).toLocaleString()} (last MCP activity / commit / file edit)`
+              : 'No activity yet'}
         >
           {syncedAgo ? `↕ ${syncedAgo}` : timeAgo || ''}
         </span>
@@ -449,7 +598,12 @@ function SessionRow({
         targetBranch={session.baseBranch || 'main'}
         worktreePath={session.worktreePath}
         sessionId={session.sessionId}
-        onMergeComplete={() => setShowMergeModal(false)}
+        onMergeComplete={() => {
+          // Intentionally NOT closing the modal here — the success ("complete")
+          // step needs to stay rendered so the user can interact with the
+          // GitHub Action / tag-push panel. Closing happens via onClose when
+          // they explicitly dismiss.
+        }}
         onDeleteSession={() => {
           removeReportedSession(session.sessionId);
         }}
@@ -459,6 +613,9 @@ function SessionRow({
         <DeleteSessionDialog
           sessionId={session.sessionId}
           sessionName={session.name || session.branchName || session.sessionId}
+          repoPath={session.repoPath}
+          branchName={session.branchName}
+          worktreePath={session.worktreePath}
           onClose={() => setShowDeleteDialog(false)}
           onDeleted={() => {
             removeReportedSession(session.sessionId);
@@ -520,10 +677,10 @@ export function AgentListCompact(): React.ReactElement {
             selectedAgentType === agentType ? null : agentType
           )}
           className={`
-            flex items-center gap-2 px-3 py-1.5 rounded-lg
+            flex items-center gap-2 px-3 py-1.5 rounded-full
             text-sm transition-colors
             ${selectedAgentType === agentType
-              ? 'bg-kanvas-blue text-white'
+              ? 'bg-black text-white'
               : 'bg-surface-tertiary text-text-primary hover:bg-surface-secondary'
             }
           `}

@@ -257,10 +257,12 @@ describe('McpServerService', () => {
       expect(transportCtorMock).toHaveBeenCalledTimes(1);
     });
 
-    it('should return 400 for requests with unknown session-id', async () => {
+    it('should return 404 for requests with unknown session-id', async () => {
       await service.initialize();
       const result = await simulateRequest('GET', 'nonexistent-session');
-      expect(result.status).toBe(400);
+      // Unknown/expired sessions return 404 + a JSON-RPC error telling the client
+      // to reinitialize (see handleRequest), which is more correct than 400.
+      expect(result.status).toBe(404);
     });
   });
 

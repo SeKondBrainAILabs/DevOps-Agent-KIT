@@ -9,6 +9,8 @@ import { GitService } from './GitService';
 import { WatcherService } from './WatcherService';
 import { LockService } from './LockService';
 import { ConfigService } from './ConfigService';
+import { WorkspaceService } from './WorkspaceService';
+import { ProjectGroupService } from './ProjectGroupService';
 import { AIService } from './AIService';
 import { ActivityService } from './ActivityService';
 import { AgentListenerService } from './AgentListenerService';
@@ -31,6 +33,9 @@ import { AutoUpdateService } from './AutoUpdateService';
 import { WorkerBridgeService } from './WorkerBridgeService';
 import { McpServerService } from './McpServerService';
 import { SeedDataExecutionService } from './SeedDataExecutionService';
+import { SessionOrchestrator } from './SessionOrchestrator';
+import { ensurePullRequest } from './GitHubService';
+import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from './DatabaseService';
 import {
   initializeAnalysisServices,
@@ -50,10 +55,13 @@ export interface Services {
   watcher: WatcherService;
   lock: LockService;
   config: ConfigService;
+  workspace: WorkspaceService;
+  projectGroup: ProjectGroupService;
   ai: AIService;
   activity: ActivityService;
   agentListener: AgentListenerService;
   agentInstance: AgentInstanceService;
+  sessionOrchestrator: SessionOrchestrator;
   sessionRecovery: SessionRecoveryService;
   repoCleanup: RepoCleanupService;
   contractDetection: ContractDetectionService;
@@ -101,6 +109,12 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Initialize config service (other services may depend on it)
   const config = new ConfigService();
   await config.initialize();
+
+  // Workspaces (Epic A — multi-workspace, multi-repo discovery)
+  const workspace = new WorkspaceService();
+
+  // Project Groups (Epic F — persistent cross-repo bundles)
+  const projectGroup = new ProjectGroupService();
 
   // Initialize activity service (used by other services for logging)
   const activity = new ActivityService();
@@ -167,6 +181,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Connect rebaseWatcher to watcher for post-commit rebase
   watcher.setRebaseWatcher(rebaseWatcher);
 
+
   // Connect terminalLog to watcher for terminal view logging
   watcher.setTerminalLogService(terminalLog);
 
@@ -175,6 +190,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
 
   // Connect terminalLog to agentInstance for restart logging
   agentInstance.setTerminalLogService(terminalLog);
+
+  // Connect ConfigService for per-repo worktree-mode lookups (C5 Single-Session Mode)
+  agentInstance.setConfigService(config);
 
   // Connect agentInstance to watcher for commit tracking (crash recovery)
   watcher.setAgentInstanceService(agentInstance);
@@ -197,9 +215,19 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   merge.setRebaseWatcher(rebaseWatcher);
   merge.setAgentInstanceService(agentInstance);
   merge.setLockService(lock);
+  merge.setDebugLog(debugLog);
+  // Audit all worktree removals to the persistent debug log (with caller stack)
+  git.setDebugLog(debugLog);
 
   // Wire mergeConflict into rebaseWatcher so AI resolution is actually used
   rebaseWatcher.setMergeConflictService(mergeConflict);
+
+  // Wire activityService into rebaseWatcher so rebase events appear in session timeline
+  rebaseWatcher.setActivityService(activity);
+
+  // Same for MergeService — merge start/success/failure events show up in the
+  // session activity feed instead of only the debug log.
+  merge.setActivityService(activity);
 
   // Initialize Heartbeat service
   // For monitoring agent connection status
@@ -220,6 +248,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   const autoUpdate = new AutoUpdateService();
   autoUpdate.setMainWindow(mainWindow);
   autoUpdate.initialize();
+  autoUpdate.setDebugLog(debugLog);
 
   // Initialize Worker Bridge service
   // Spawns a utility process for file monitoring, rebase polling, heartbeat tracking
@@ -271,9 +300,43 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   mcpServer.setActivityService(activity);
   mcpServer.setLockService(lock);
   mcpServer.setAgentInstanceService(agentInstance);
-  mcpServer.setDatabaseService(databaseService);
+  // Deliberately a narrowed façade rather than the service itself. Passing
+  // `databaseService` wholesale would keep `setSetting` and `setSessionLimits`
+  // reachable at runtime from the MCP tool layer — the type would forbid it,
+  // but a cast would not, and an agent that can write settings can raise its
+  // own concurrency cap or switch the kill switch back on. This makes the
+  // read-only boundary real rather than advisory.
+  mcpServer.setDatabaseService({
+    recordCommit: (hash, sessionId, message, timestamp, stats) =>
+      databaseService.recordCommit(hash, sessionId, message, timestamp, stats),
+    recordSessionEvent: (sessionId, type, details, commitHash) =>
+      databaseService.recordSessionEvent(sessionId, type as any, details, commitHash),
+    getSetting: (key, defaultValue) => databaseService.getSetting(key, defaultValue),
+    getSessionLimits: () => databaseService.getSessionLimits(),
+  });
   mcpServer.setMcpCallDb(databaseService);
+  mcpServer.setDebugLogDep(debugLog);
+  // v2.5 additions — expose workspace / config / project-group services to MCP
+  // so agents can call kit_workspace_* / kit_get_repo_worktree_mode / etc.
+  mcpServer.setConfigServiceForMcp(config);
+  mcpServer.setWorkspaceServiceForMcp(workspace);
+  mcpServer.setProjectGroupServiceForMcp(projectGroup);
   await mcpServer.initialize();
+  mcpServer.wireCommitEmitter();
+  // Every kit_commit / kit_commit_all should get the on-demand rebase that
+  // WatcherService's .commit-msg-file path already fires. Without this hook
+  // MCP-driven agent commits silently skip the post-commit remote sync.
+  mcpServer.setPostCommitRebase((sessionId, repoName) => watcher.attemptPostCommitRebase(sessionId, repoName));
+  // v2.6.95 — expose kit_merge / kit_rebase to agents.
+  mcpServer.setMergeService({
+    executeMerge: (repoPath, sourceBranch, targetBranch, options) =>
+      merge.executeMerge(repoPath, sourceBranch, targetBranch, options),
+  });
+  mcpServer.setRebaseWatcherService({
+    performRebaseForPath: (sessionId, repoPath, baseBranch) =>
+      rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch),
+  });
+  mcpServer.setDebugLog(debugLog);
   console.log('[Services] MCP server initialized on port', mcpServer.getPort());
 
   // Initialize Seed Data Execution service
@@ -282,8 +345,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   seedDataExecution.setMainWindow(mainWindow);
   console.log('[Services] Seed data execution service initialized');
 
-  // Pass MCP URL to AgentInstanceService for .mcp.json generation
+  // Pass MCP URLs to AgentInstanceService for .mcp.json generation
   agentInstance.setMcpServerUrl(mcpServer.getUrl());
+  agentInstance.setRpcServerUrl(mcpServer.getRpcUrl());
 
   // Wire session callbacks: register sessions with MCP session binder
   agentInstance.onSessionCreated = (sessionId, worktreePath) => {
@@ -294,6 +358,46 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     mcpServer.sessionBinder.registerMultiRepoSession(sessionId, repos);
     console.log(`[Services] Multi-repo session ${sessionId} registered with MCP binder (${repos.length} repos)`);
   };
+
+  // Repair inconsistent config: useWorktree=false while worktreePath actually
+  // points to a distinct sibling. Legacy of restartInstance's cold path — see
+  // AgentInstanceService.migrateUseWorktreeFlag. Cheap, idempotent, safe.
+  agentInstance.migrateUseWorktreeFlag();
+
+  // One-time migration for sessions still living at <repo>/local_deploy/<branch>.
+  // Moves them to <repo_parent>/KIT-DevOps-<repo_name>/<branch> via `git worktree
+  // move`, regenerates each prompt so the user's "Copy Prompt" shows the new
+  // path. Idempotent — sessions already on the new layout are skipped.
+  await agentInstance.migrateLegacyWorktrees();
+
+  // Try to revive any instance whose worktree dir is missing — if the source
+  // repo + branch are still around, `git worktree add --force` brings it back.
+  // MUST run before registerExistingSessionsWithBinder, which internally reaps
+  // anything still missing as 'closed'. Otherwise a repairable session gets
+  // marked closed at startup and never restored.
+  await agentInstance.repairOrphanWorktrees();
+
+  // Catch the "branch-gone orphan" state: the worktree dir survived an
+  // external `.git` wipe but its registry entry is gone AND the source branch
+  // has been deleted (typically post-merge). Without this, Sync (rebase) and
+  // every other git op fails with `fatal: not a git repository` and the
+  // session is stuck in the UI. Marks those instances `completed`.
+  await agentInstance.reapBrokenLinks();
+
+  // Detect interrupted rebases (rebase-merge or rebase-apply dir older than
+  // 6h) and flag the instance so the UI can surface "Abort + back up" before
+  // the agent walks in confused by a parked HEAD. Idempotent; clears the
+  // flag when the rebase state is gone.
+  await agentInstance.detectStaleRebases();
+
+  // Prune crash-safety snapshot refs (refs/kit-autosave/*) older than 7d.
+  // Snapshots are pure recovery aids and accumulate unboundedly without GC.
+  await agentInstance.gcOldSnapshots();
+
+  // Repatriate any `mcp_calls` stranded under previous-restart sessionIds. A
+  // builds-before-v2.6.58 transferSessionData omitted mcp_calls, so the MCP
+  // tab went blank after the first auto-restart. Idempotent.
+  agentInstance.backfillMcpCallsByLineage();
 
   // Re-register existing sessions loaded from electron-store (binder is in-memory only)
   agentInstance.registerExistingSessionsWithBinder();
@@ -323,16 +427,80 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Connect contract services to watcher for post-commit contract auto-checks
   watcher.setContractServices(contractDetection, contractGeneration);
 
+  // Single funnel for session lifecycle. Both the IPC layer and the MCP tool
+  // layer go through this so neither reimplements the compose step —
+  // createInstance() does not start the file watcher, and the delete paths
+  // each tore down a different subset of a session's background resources.
+  //
+  // Constructed HERE, immediately before the services object, because it
+  // composes several services created at different points above (watcher,
+  // rebaseWatcher, mcpServer's binder). Keep it last so adding a dependency
+  // does not mean moving it again.
+  const sessionOrchestrator = new SessionOrchestrator({
+    agentInstance,
+    watcher,
+    rebaseWatcher,
+    binder: mcpServer.sessionBinder,
+    // R1. Narrow function refs rather than the services themselves, so the
+    // reaper cannot reach anything else on them — it is the one code path that
+    // deletes worktrees unattended.
+    reap: {
+      getLastActivityAt: async (sessionIds) => databaseService.getLastActivityAt(sessionIds),
+      getReapSafetyInfo: (worktreePath, baseBranch) =>
+        git.getReapSafetyInfo(worktreePath, baseBranch),
+      createSnapshot: (worktreePath, sessionId) =>
+        git.createSnapshot(worktreePath, sessionId),
+    },
+  });
+
+  // Give the MCP tool layer the same lifecycle funnel the IPC layer uses.
+  mcpServer.setMcpUrlProvider(() => mcpServer.getUrl());
+  // KIT-PR-P4 — pull request creation. The gh runner, push and git reads are
+  // bound here so the tool layer holds one narrow function, not the services.
+  mcpServer.setGitHubService({
+    ensurePullRequest: (session) =>
+      ensurePullRequest(
+        {
+          gh: createGhRunner(),
+          push: (sessionId) => git.push(sessionId),
+          getRemoteUrl: (worktreePath) => git.getRemoteUrl(worktreePath),
+          getCommits: (worktreePath, baseBranch, branchName) =>
+            git.getCommitsAhead(worktreePath, baseBranch, branchName),
+        },
+        session
+      ),
+  });
+
+  mcpServer.setSessionOrchestrator({
+    startSession: (config) => sessionOrchestrator.startSession(config),
+    listSessions: () => sessionOrchestrator.listSessions(),
+    expandSessionAliases: (sessionId) => sessionOrchestrator.expandSessionAliases(sessionId),
+    teardownSession: (sessionId, opts) => sessionOrchestrator.teardownSession(sessionId, opts),
+    resolveSessionId: (id) => sessionOrchestrator.resolveSessionId(id),
+    closeSession: (sessionId, opts) => sessionOrchestrator.closeSession(sessionId, opts),
+    descendantSessionIds: (id) => sessionOrchestrator.descendantSessionIds(id),
+    closeSessions: (sel, opts) => sessionOrchestrator.closeSessions(sel, opts),
+    directChildSessionIds: (id) => sessionOrchestrator.directChildSessionIds(id),
+    restartSession: (sessionId, sessionData, commitChanges) =>
+      sessionOrchestrator.restartSession(sessionId, sessionData, commitChanges),
+    adoptSession: (input) => sessionOrchestrator.adoptSession(input),
+    updateSession: (sessionId, patch) => sessionOrchestrator.updateSession(sessionId, patch),
+    extendSession: (sessionId, opts) => sessionOrchestrator.extendSession(sessionId, opts),
+  });
+
   services = {
     session,
     git,
     watcher,
     lock,
     config,
+    workspace,
+    projectGroup,
     ai,
     activity,
     agentListener,
     agentInstance,
+    sessionOrchestrator,
     sessionRecovery,
     repoCleanup,
     contractDetection,
@@ -437,6 +605,7 @@ export { AutoUpdateService } from './AutoUpdateService';
 export { WorkerBridgeService } from './WorkerBridgeService';
 export { McpServerService } from './McpServerService';
 export { SeedDataExecutionService } from './SeedDataExecutionService';
+export { SessionOrchestrator } from './SessionOrchestrator';
 export { databaseService } from './DatabaseService';
 // Analysis services (Phase 1 + Phase 2 + Phase 3)
 export {

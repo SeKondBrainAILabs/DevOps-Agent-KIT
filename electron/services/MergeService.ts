@@ -4,9 +4,38 @@
  */
 
 import { BaseService } from './BaseService';
+import { createGhRunner, classifyGhFailure, describeGhFailure } from '../../shared/github-cli';
 import type { IpcResult, MergePreview, MergeResult } from '../../shared/types';
 import { promises as fs } from 'fs';
 import path from 'path';
+import {
+  acquireHistoryRewriteLock,
+  evaluateAutoCommitGuardForWorktree,
+  releaseHistoryRewriteLock,
+} from './GitRewriteGuardIO';
+import { evaluateRebaseTipGuard } from '../../shared/rebase-tip-guard';
+
+// Parse the porcelain output of `git worktree list --porcelain` and return
+// the worktree path that currently has `branch` checked out, or null if no
+// worktree holds it. The porcelain format is blank-line-separated records of:
+//   worktree /path/to/dir
+//   HEAD <sha>
+//   branch refs/heads/<branch-name>
+// (Some records have `detached` or `bare` instead of branch.)
+function parseWorktreeHoldingBranch(porcelain: string, branch: string): string | null {
+  const records = porcelain.split('\n\n');
+  for (const record of records) {
+    const lines = record.split('\n');
+    let worktree: string | null = null;
+    let onBranch: string | null = null;
+    for (const line of lines) {
+      if (line.startsWith('worktree ')) worktree = line.slice('worktree '.length).trim();
+      else if (line.startsWith('branch ')) onBranch = line.slice('branch '.length).trim();
+    }
+    if (worktree && onBranch === `refs/heads/${branch}`) return worktree;
+  }
+  return null;
+}
 
 // Dynamic import helper for execa (ESM-only module)
 // Handles various bundling scenarios with fallback patterns
@@ -35,6 +64,12 @@ export class MergeService extends BaseService {
   private rebaseWatcher: any = null;
   private agentInstanceService: any = null;
   private lockService: any = null;
+  private activityService: any = null;
+  private debugLog: { warn: (source: string, message: string, details?: unknown) => void } | null = null;
+
+  setDebugLog(debugLog: { warn: (source: string, message: string, details?: unknown) => void }): void {
+    this.debugLog = debugLog;
+  }
 
   setMergeConflictService(service: any): void {
     this.mergeConflictService = service;
@@ -48,6 +83,63 @@ export class MergeService extends BaseService {
     this.agentInstanceService = service;
   }
 
+  setActivityService(service: any): void {
+    this.activityService = service;
+  }
+
+  /**
+   * Look up the live AgentInstance whose config matches (repoPath, sourceBranch),
+   * so we can attribute merge activity to its sessionId. Returns the matching
+   * sessionId if found, otherwise `undefined` — the caller should skip logging
+   * rather than logging to an unknown session.
+   */
+  private findSourceSessionId(repoPath: string, sourceBranch: string): string | undefined {
+    if (!this.agentInstanceService) return undefined;
+    try {
+      const result = this.agentInstanceService.listInstances();
+      if (!result?.success || !Array.isArray(result.data)) return undefined;
+      for (const inst of result.data) {
+        const cfg = inst?.config;
+        if (
+          cfg?.repoPath === repoPath &&
+          cfg?.branchName === sourceBranch &&
+          inst.status !== 'completed' &&
+          inst.status !== 'failed' &&
+          inst.status !== 'closed' &&
+          inst.sessionId
+        ) {
+          return inst.sessionId as string;
+        }
+      }
+    } catch {
+      // Non-fatal — skip attribution.
+    }
+    return undefined;
+  }
+
+  /**
+   * Convenience: write a merge-related entry to the activity feed if we can
+   * figure out which session owns the source branch. No-op if we can't (e.g.
+   * merge initiated from the workspace browser with no live agent on that
+   * branch).
+   */
+  private logActivity(
+    repoPath: string,
+    sourceBranch: string,
+    type: string,
+    message: string,
+    details?: unknown
+  ): void {
+    if (!this.activityService) return;
+    const sid = this.findSourceSessionId(repoPath, sourceBranch);
+    if (!sid) return;
+    try {
+      this.activityService.log(sid, type, message, details);
+    } catch {
+      // Non-fatal.
+    }
+  }
+
   setLockService(service: any): void {
     this.lockService = service;
   }
@@ -55,6 +147,305 @@ export class MergeService extends BaseService {
   /**
    * Execute a git command (uses dynamic import for ESM-only execa)
    */
+  /**
+   * Replace KIT-bookkeeping files on the source branch with target's versions
+   * before the merge runs, so they can never produce conflicts. Only touches
+   * files whose blob actually differs between target and source — no-op
+   * commit when the files are already in sync. Uses `git fetch` + `git
+   * checkout origin/<target> -- <file>` (or local target ref if no remote).
+   *
+   * Safe by construction: only modifies KIT_BOOKKEEPING_FILES, which carry
+   * per-worktree identifiers that have no business propagating into shared
+   * branches. If any file in the list isn't tracked, it's silently skipped.
+   */
+  /**
+   * S9N-6394 pre-merge gate for protected targets (main/master/production/
+   * release). Blocks the merge when either:
+   *
+   *   (a) `gh pr checks` on the source branch reports any FAILURE / PENDING /
+   *       ERROR / CANCELLED / TIMED_OUT check — or the tool is unavailable.
+   *       Uses --required so informational-only workflows don't false-fail;
+   *       falls back to `gh run list --branch --limit 5` when the branch has
+   *       no PR (still catches broken workflow runs).
+   *   (b) The source-branch commits contain a WIP:/[Kanvas]/[Kanvas Restart]
+   *       auto-checkpoint tip. These were the exact class of commit
+   *       (a mid-write file, "WIP: pre-sync commit") that broke Core_Kora_
+   *       ChromeExt main in the incident that spawned the ticket.
+   *
+   * Both are recoverable via options.skipCiGate=true, which the UI surfaces
+   * as an explicit "Merge without CI check" affordance. The default path
+   * refuses so agent-driven merges cannot ship a red or mid-write state.
+   */
+  private async checkMergeGate(
+    worktreePath: string,
+    sourceBranch: string,
+    targetBranch: string
+  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING'; details?: unknown }> {
+    // (b) — cheap, no subprocess: scan commit messages between source and
+    // target. Do this first so a WIP tip fails fast before we spend the
+    // gh-CLI round-trip.
+    try {
+      const range = `origin/${targetBranch}..${sourceBranch}`;
+      const { stdout: log } = await this.git(['log', range, '--format=%H%x09%s'], worktreePath);
+      const wipHits: Array<{ sha: string; subject: string }> = [];
+      for (const line of log.split('\n')) {
+        if (!line) continue;
+        const [sha, ...rest] = line.split('\t');
+        const subject = rest.join('\t');
+        if (/^WIP:/.test(subject) ||
+            /^\[Kanvas\]/.test(subject) ||
+            /^\[Kanvas Restart\]/.test(subject) ||
+            /pre-sync commit/i.test(subject)) {
+          wipHits.push({ sha: sha.slice(0, 8), subject });
+        }
+      }
+      if (wipHits.length > 0) {
+        const list = wipHits.slice(0, 4).map(h => `  ${h.sha} ${h.subject}`).join('\n');
+        const more = wipHits.length > 4 ? `\n  ...and ${wipHits.length - 4} more` : '';
+        return {
+          ok: false,
+          reason: 'WIP_COMMITS',
+          message:
+            `Refused merge into '${targetBranch}': source '${sourceBranch}' has ${wipHits.length} ` +
+            `WIP / Kanvas auto-checkpoint commit${wipHits.length > 1 ? 's' : ''} that must not reach a protected branch.\n\n` +
+            `${list}${more}\n\n` +
+            `Interactive-rebase to squash them (\`git rebase -i origin/${targetBranch}\`), or ` +
+            `use "Merge without CI check" if you're sure the tips are safe.`,
+          details: { wipCommits: wipHits },
+        };
+      }
+    } catch {
+      // Non-fatal — if we can't inspect the range (branch not pushed, etc.)
+      // fall through to the CI check.
+    }
+
+    // (a) — gh CLI. Missing gh isn't a hard fail, but we still refuse the
+    // merge with a clear message so the user installs it or overrides.
+    // Shared runner (KIT-PR-P1). Same 30s timeout and reject:false as the
+    // inline version this replaces.
+    const gh = createGhRunner();
+    const runGh = (args: string[]) => gh(args, worktreePath);
+
+    // Prefer PR-level checks (matches how the team gates in GitHub).
+    // KIT-PR-P6 — is there actually a pull request to gate on?
+    //
+    // This gate has always asked GitHub about a PR (`gh pr checks` below) while
+    // nothing in KIT ever created one. With no PR it silently fell through to a
+    // branch-level workflow check, which is a weaker thing wearing the same
+    // name: it verifies that some workflow ran green, never that a human looked
+    // at the change.
+    //
+    // Refuse instead, and point at the tool that opens one. A MERGED or CLOSED
+    // PR counts as no PR — the change under review has to be reviewable now.
+    const prState = await runGh(['pr', 'view', sourceBranch, '--json', 'state,url']);
+    const prFailure = classifyGhFailure(prState);
+    if (prFailure === 'not_installed' || prFailure === 'not_authenticated') {
+      return {
+        ok: false,
+        reason: 'GH_UNAVAILABLE',
+        message:
+          `Refused merge into '${targetBranch}': ${describeGhFailure(prFailure)} ` +
+          `KIT needs it to verify the change has been reviewed. Override with ` +
+          `"Merge without CI check" if you've verified manually.`,
+      };
+    }
+    if (prFailure !== 'not_github') {
+      let openPr = false;
+      if (prState.ok && prState.stdout.trim()) {
+        try {
+          openPr = String(JSON.parse(prState.stdout)?.state).toUpperCase() === 'OPEN';
+        } catch {
+          openPr = false;
+        }
+      }
+      if (!openPr) {
+        return {
+          ok: false,
+          reason: 'PR_MISSING',
+          message:
+            `Refused merge into '${targetBranch}': no open pull request for '${sourceBranch}'.\n\n` +
+            `Call kit_request_review to open one so the change can be reviewed, then merge. ` +
+            `Or override with "Merge without CI check" if this is deliberate.`,
+        };
+      }
+    }
+
+    const prChecks = await runGh(['pr', 'checks', sourceBranch, '--required', '--json', 'name,state,bucket']);
+    // Classified in one place (KIT-PR-P1) rather than by regex here. The old
+    // check only recognised a missing binary; a logged-out gh and a non-GitHub
+    // remote both fell through to the branch-level fallback and then to
+    // CI_UNKNOWN, which told the user nothing about the actual cause.
+    const ghFailure = classifyGhFailure(prChecks);
+    if (ghFailure === 'not_installed' || ghFailure === 'not_authenticated') {
+      return {
+        ok: false,
+        reason: 'GH_UNAVAILABLE',
+        message:
+          `Refused merge into '${targetBranch}': ${describeGhFailure(ghFailure)} ` +
+          `KIT needs it to verify CI is green. Override with "Merge without CI check" ` +
+          `if you've verified manually.`,
+      };
+    }
+    if (prChecks.ok && prChecks.stdout.trim()) {
+      try {
+        const checks = JSON.parse(prChecks.stdout) as Array<{ name: string; state: string; bucket?: string }>;
+        const bad = checks.filter(c => {
+          const state = (c.state || '').toUpperCase();
+          const bucket = (c.bucket || '').toLowerCase();
+          return state === 'FAILURE' || state === 'ERROR' || state === 'CANCELLED' || state === 'TIMED_OUT'
+            || bucket === 'fail' || bucket === 'cancel';
+        });
+        const pending = checks.filter(c => {
+          const state = (c.state || '').toUpperCase();
+          const bucket = (c.bucket || '').toLowerCase();
+          return state === 'PENDING' || state === 'IN_PROGRESS' || state === 'QUEUED'
+            || bucket === 'pending';
+        });
+        if (bad.length > 0) {
+          const list = bad.slice(0, 5).map(c => `  ${c.name}: ${c.state}`).join('\n');
+          return {
+            ok: false,
+            reason: 'CI_RED',
+            message:
+              `Refused merge into '${targetBranch}': ${bad.length} required CI check${bad.length > 1 ? 's are' : ' is'} failing on '${sourceBranch}'.\n\n${list}\n\n` +
+              `Fix the failing check${bad.length > 1 ? 's' : ''} and rerun, or override with "Merge without CI check" if this is expected.`,
+            details: { failing: bad },
+          };
+        }
+        if (pending.length > 0) {
+          const list = pending.slice(0, 5).map(c => `  ${c.name}: ${c.state}`).join('\n');
+          return {
+            ok: false,
+            reason: 'CI_PENDING',
+            message:
+              `Refused merge into '${targetBranch}': ${pending.length} required CI check${pending.length > 1 ? 's are' : ' is'} still running on '${sourceBranch}'.\n\n${list}\n\n` +
+              `Wait for green — or override with "Merge without CI check" if you must.`,
+            details: { pending },
+          };
+        }
+        return { ok: true };
+      } catch {
+        // Fall through to branch-level check
+      }
+    }
+
+    // Fallback: no PR (or gh pr checks returned nothing) → check latest run on the branch.
+    const runList = await runGh(['run', 'list', '--branch', sourceBranch, '--limit', '5', '--json', 'status,conclusion,name,url']);
+    if (runList.ok && runList.stdout.trim()) {
+      try {
+        const runs = JSON.parse(runList.stdout) as Array<{ status: string; conclusion: string | null; name: string; url: string }>;
+        if (runs.length === 0) {
+          return {
+            ok: false,
+            reason: 'CI_UNKNOWN',
+            message:
+              `Refused merge into '${targetBranch}': no CI workflow runs found for '${sourceBranch}'. ` +
+              `Push a commit to trigger CI, open a PR, or override with "Merge without CI check".`,
+          };
+        }
+        const bad = runs.filter(r => r.conclusion && !['success', 'skipped', 'neutral'].includes(r.conclusion.toLowerCase()));
+        const running = runs.filter(r => (r.status || '').toLowerCase() !== 'completed');
+        if (bad.length > 0) {
+          const list = bad.slice(0, 5).map(r => `  ${r.name}: ${r.conclusion}`).join('\n');
+          return {
+            ok: false,
+            reason: 'CI_RED',
+            message:
+              `Refused merge into '${targetBranch}': ${bad.length} workflow run${bad.length > 1 ? 's' : ''} not green on '${sourceBranch}'.\n\n${list}\n\n` +
+              `Fix and retrigger, or override with "Merge without CI check".`,
+            details: { failing: bad },
+          };
+        }
+        if (running.length > 0) {
+          return {
+            ok: false,
+            reason: 'CI_PENDING',
+            message:
+              `Refused merge into '${targetBranch}': ${running.length} CI run${running.length > 1 ? 's are' : ' is'} still in progress on '${sourceBranch}'. Wait for completion or override.`,
+            details: { running },
+          };
+        }
+        return { ok: true };
+      } catch { /* fall through */ }
+    }
+
+    // If we got here we couldn't determine CI status at all. Fail closed —
+    // safer to refuse and prompt the user than silently ship.
+    return {
+      ok: false,
+      reason: 'CI_UNKNOWN',
+      message:
+        `Refused merge into '${targetBranch}': unable to determine CI status for '${sourceBranch}'. ` +
+        `gh CLI is available but returned no usable data. Verify with \`gh pr checks ${sourceBranch}\` or ` +
+        `override with "Merge without CI check".`,
+    };
+  }
+
+  private async sanitizeKitBookkeepingForMerge(worktreePath: string, targetBranch: string): Promise<void> {
+    const KIT_BOOKKEEPING_FILES = [
+      '.S9N_KIT_DevOpsAgent/config.json',
+      '.vscode/settings.json',
+    ];
+    try {
+      // Make sure we have an up-to-date target ref to compare against. Best-
+      // effort — if fetch fails (offline, missing remote), fall back to the
+      // local target ref below.
+      await this.git(['fetch', 'origin', targetBranch], worktreePath).catch(() => {});
+
+      // Try origin/<target> first (most up-to-date), then local <target>.
+      let refToUse = `origin/${targetBranch}`;
+      const verifyRemote = await this.git(['rev-parse', '--verify', refToUse], worktreePath);
+      if (verifyRemote.exitCode !== 0) {
+        refToUse = targetBranch;
+        const verifyLocal = await this.git(['rev-parse', '--verify', refToUse], worktreePath);
+        if (verifyLocal.exitCode !== 0) return; // can't find target — bail out
+      }
+
+      const filesToReset: string[] = [];
+      for (const file of KIT_BOOKKEEPING_FILES) {
+        // Skip if the source branch doesn't track this file.
+        const lsSrc = await this.git(['ls-files', '--error-unmatch', file], worktreePath);
+        if (lsSrc.exitCode !== 0) continue;
+        // Skip if it's identical between source HEAD and target ref.
+        // `git diff --quiet` exits 0 if there's no diff, 1 if there is.
+        const diff = await this.git(['diff', '--quiet', refToUse, 'HEAD', '--', file], worktreePath);
+        if (diff.exitCode === 0) continue;
+        // Reset this file to target's version.
+        const checkout = await this.git(['checkout', refToUse, '--', file], worktreePath);
+        if (checkout.exitCode === 0) filesToReset.push(file);
+      }
+
+      if (filesToReset.length === 0) return;
+
+      // Commit on the source branch.
+      const addResult = await this.git(['add', '--', ...filesToReset], worktreePath);
+      if (addResult.exitCode !== 0) return;
+      await this.git(
+        [
+          'commit',
+          '-m',
+          `[KIT] reset session bookkeeping to ${targetBranch} before merge\n\n` +
+            `Files: ${filesToReset.join(', ')}`,
+          '--',
+          ...filesToReset,
+        ],
+        worktreePath
+      );
+
+      // Push the cleanup commit so the merge sees it on origin too. Best-effort.
+      const currentBranch = (await this.git(['branch', '--show-current'], worktreePath)).stdout.trim();
+      if (currentBranch) {
+        await this.git(['push', 'origin', currentBranch], worktreePath).catch(() => {});
+      }
+
+      console.log(
+        `[MergeService] Sanitized ${filesToReset.length} KIT bookkeeping file(s) on source before merge: ${filesToReset.join(', ')}`
+      );
+    } catch (err) {
+      console.warn('[MergeService] sanitizeKitBookkeepingForMerge non-fatal failure:', err);
+    }
+  }
+
   private async git(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     try {
       const execa = await getExeca();
@@ -309,8 +700,27 @@ export class MergeService extends BaseService {
     targetBranch: string
   ): Promise<IpcResult<MergePreview>> {
     return this.wrap(async () => {
+      // Strip 'origin/' prefix — branch names may be stored as 'origin/main'
+      // from the branch picker dropdown which lists remote tracking branches.
+      targetBranch = targetBranch.replace(/^origin\//, '');
+
       // Fetch latest from remote
       await this.git(['fetch', 'origin'], repoPath);
+
+      // Verify target branch exists on remote — gives a clear error instead of
+      // cryptic rev-list failures when the repo uses a different default branch name.
+      const { exitCode: lsExit, stdout: remoteRefs } = await this.git(
+        ['ls-remote', '--heads', 'origin', targetBranch],
+        repoPath
+      );
+      if (lsExit !== 0 || !remoteRefs.trim()) {
+        const { stdout: remoteHead } = await this.git(['ls-remote', '--symref', 'origin', 'HEAD'], repoPath);
+        const defaultBranchMatch = remoteHead.match(/ref: refs\/heads\/(\S+)\s+HEAD/);
+        const hint = defaultBranchMatch
+          ? ` The remote default branch is '${defaultBranchMatch[1]}'. Update the session's base branch setting.`
+          : '';
+        throw new Error(`Remote branch 'origin/${targetBranch}' does not exist.${hint}`);
+      }
 
       // Get current branch
       const { stdout: currentBranch } = await this.git(['branch', '--show-current'], repoPath);
@@ -456,14 +866,109 @@ export class MergeService extends BaseService {
       deleteLocalBranch?: boolean;
       deleteRemoteBranch?: boolean;
       worktreePath?: string;
+      /** S9N-6394 override — allow merging a protected target (main/master/
+       *  production/release) even when CI is red/pending OR the source branch
+       *  carries WIP/[Kanvas] auto-checkpoint commits. Surfaced in the UI as
+       *  an explicit "Merge without CI check" secondary button. */
+      skipCiGate?: boolean;
     } = {}
   ): Promise<IpcResult<MergeResult>> {
     return this.wrap(async () => {
+      // Strip 'origin/' prefix — branch names may be stored as 'origin/main'
+      // from the branch picker dropdown which lists remote tracking branches.
+      targetBranch = targetBranch.replace(/^origin\//, '');
+      const normalizedSource = sourceBranch.replace(/^origin\//, '');
+
+      // Guard: source and target are the same branch. This happens when a session
+      // worktree is sitting on the target branch itself (e.g. checked out on
+      // `main`) rather than its own session branch — the branch auto-resolve then
+      // reports the target as the "active" branch. A branch can't be merged into
+      // itself, and in a worktree setup all worktrees share the same refs, so the
+      // commits already live on `main`. Fail fast with a clear message instead of
+      // attempting a checkout git will reject ("'main' is already used by worktree…").
+      if (normalizedSource === targetBranch) {
+        return {
+          success: false,
+          message:
+            `Source and target are the same branch ('${targetBranch}'). This session's ` +
+            `worktree is checked out on '${targetBranch}' rather than its own session branch, ` +
+            `so its commits are already on '${targetBranch}' — there is nothing to merge. ` +
+            `If you intended to keep this work separate, switch the worktree to a session branch first.`,
+        };
+      }
+
+      // S9N-6394 gate: refuse to advance a protected target unless CI is
+      // green AND the source doesn't carry WIP/auto-checkpoint tips.
+      // Only applies to main/master/production — feature-branch merges are
+      // unaffected. Users can override by passing options.skipCiGate=true,
+      // which the UI surfaces as an explicit "merge without CI check" button.
+      const isProtectedTarget = ['main', 'master', 'production', 'release'].includes(targetBranch);
+      if (isProtectedTarget && !options.skipCiGate) {
+        const gateResult = await this.checkMergeGate(
+          options.worktreePath || repoPath,
+          normalizedSource,
+          targetBranch
+        );
+        if (!gateResult.ok) {
+          return {
+            success: false,
+            message: gateResult.message,
+            gateReason: gateResult.reason,
+            gateDetails: gateResult.details,
+          } as MergeResult;
+        }
+      }
+
       let didStash = false;
+
+      // Activity feed: announce the merge so the session timeline reflects it.
+      this.logActivity(repoPath, normalizedSource, 'git', `Merging ${normalizedSource} → ${targetBranch}`, {
+        sourceBranch: normalizedSource,
+        targetBranch,
+      });
 
       // Ensure .S9N_KIT_DevOpsAgent/ is in .gitignore of the target repo
       // This prevents agent artifacts from blocking merges
       await this.ensureAgentArtifactsIgnored(repoPath);
+
+      // Preemptively replace KIT-bookkeeping files on the source branch with
+      // the target's versions so they can't conflict during the merge. These
+      // files (.S9N_KIT_DevOpsAgent/config.json and .vscode/settings.json)
+      // carry per-worktree values — repoPath, init timestamp, window-title
+      // session number — and the right answer when merging into main is
+      // always "main's version wins". v2.6.64's MergeConflictService
+      // resolver only helped after the user clicked "Auto-Fix with AI" on
+      // the failure dialog; this runs BEFORE the merge attempt so the dialog
+      // never appears.
+      if (options.worktreePath) {
+        await this.sanitizeKitBookkeepingForMerge(options.worktreePath, targetBranch);
+      }
+
+      // If the target branch is checked out in another worktree, route the
+      // merge there instead of trying to `git checkout` it in the main repo
+      // (git refuses with "fatal: '<branch>' is already used by worktree at …").
+      // The holding worktree is already on the target branch — we just need to
+      // pull + merge there. All subsequent target-branch git ops use
+      // `mergeWorkdir`; main-repo housekeeping (worktree pruning, branch
+      // deletion) still uses `repoPath`.
+      let mergeWorkdir = repoPath;
+      try {
+        const { stdout: worktreeList } = await this.git(
+          ['worktree', 'list', '--porcelain'],
+          repoPath
+        );
+        const holdingWorktree = parseWorktreeHoldingBranch(worktreeList, targetBranch);
+        if (holdingWorktree && holdingWorktree !== repoPath) {
+          console.log(
+            `[MergeService] Target '${targetBranch}' is held by worktree ${holdingWorktree}; routing merge there`
+          );
+          mergeWorkdir = holdingWorktree;
+        }
+      } catch (err) {
+        // Non-fatal: fall through to the in-repo checkout path, which already
+        // surfaces a clear error if the branch is held elsewhere.
+        console.warn('[MergeService] worktree list failed; using main repo as merge workdir:', err);
+      }
 
       // CRITICAL: If worktreePath provided, commit any uncommitted changes first!
       // This prevents data loss when user has uncommitted changes in the worktree.
@@ -481,6 +986,20 @@ export class MergeService extends BaseService {
               throw new Error(`git add -A failed (exit ${addResult.exitCode}): ${addResult.stderr}`);
             }
 
+            // Unstage known Kanvas session/runtime files that should never land on main.
+            // These may be tracked from a previous commit (gitignore only blocks untracked files).
+            const sessionPatterns = [
+              '.claude-session-*.md',
+              '.codex-session-*.md',
+              '.devops-commit-*.msg',
+              '.mcp.json',
+              '.claude/settings.json',
+              '.S9N_KIT_DevOpsAgent/config.json',
+            ];
+            await this.git(['restore', '--staged', ...sessionPatterns], options.worktreePath).catch(() => {
+              // restore --staged is a no-op if files aren't staged — ignore errors
+            });
+
             // Verify everything was staged — nothing should remain unstaged
             const { stdout: postAddStatus } = await this.git(['status', '--porcelain'], options.worktreePath);
             const unstaged = postAddStatus.trim().split('\n').filter((line) => {
@@ -494,6 +1013,17 @@ export class MergeService extends BaseService {
               console.error(`[MergeService] Files failed to stage after git add -A:\n${unstaged.join('\n')}`);
               throw new Error(
                 `${unstaged.length} file(s) could not be staged. Aborting merge to prevent data loss.`
+              );
+            }
+
+            // SAFETY: refuse to auto-commit if the worktree is mid-rebase /
+            // mid-merge / detached. Committing then is what caused the
+            // KIT auto-commit + rebase-race incident (silently orphaned
+            // ~15 real commits).
+            const preCommitGuard = evaluateAutoCommitGuardForWorktree(options.worktreePath);
+            if (!preCommitGuard.allowed) {
+              throw new Error(
+                `Pre-merge auto-commit refused: ${preCommitGuard.message}`
               );
             }
 
@@ -539,42 +1069,105 @@ export class MergeService extends BaseService {
         }
       }
 
-      // Clean up any stale merge state from a previous interrupted attempt
-      const { stdout: mergeHead } = await this.git(['rev-parse', '--verify', 'MERGE_HEAD'], repoPath);
+      // Clean up any stale merge state from a previous interrupted attempt.
+      // This runs inside mergeWorkdir because merge state (MERGE_HEAD) is
+      // per-worktree, not shared across worktrees.
+      const { stdout: mergeHead } = await this.git(['rev-parse', '--verify', 'MERGE_HEAD'], mergeWorkdir);
       if (mergeHead) {
         console.log(`[MergeService] Cleaning up stale merge-in-progress before starting new merge`);
-        await this.git(['merge', '--abort'], repoPath);
+        await this.git(['merge', '--abort'], mergeWorkdir);
       }
 
-      // Get current branch
-      const { stdout: currentBranch } = await this.git(['branch', '--show-current'], repoPath);
+      // Get current branch (in the workdir we'll merge in)
+      const { stdout: currentBranch } = await this.git(['branch', '--show-current'], mergeWorkdir);
 
-      // Checkout target branch if needed
+      // Verify target branch exists on remote before checking out.
+      // Repos may use 'master', 'development', or another name instead of 'main'.
+      const { exitCode: lsRemoteExit } = await this.git(
+        ['ls-remote', '--exit-code', '--heads', 'origin', targetBranch],
+        repoPath
+      );
+      if (lsRemoteExit !== 0) {
+        // Try to find the actual default branch from the remote
+        const { stdout: remoteHead } = await this.git(
+          ['ls-remote', '--symref', 'origin', 'HEAD'],
+          repoPath
+        );
+        const defaultBranchMatch = remoteHead.match(/ref: refs\/heads\/(\S+)\s+HEAD/);
+        const suggestion = defaultBranchMatch
+          ? ` The remote default branch appears to be '${defaultBranchMatch[1]}'. Update the session's base branch setting.`
+          : ` Check that '${targetBranch}' exists on the remote.`;
+        return {
+          success: false,
+          message: `Cannot merge: remote branch 'origin/${targetBranch}' does not exist.${suggestion}`,
+        };
+      }
+
+      // Checkout target branch if needed. We only need to checkout when the
+      // workdir isn't already on the target branch — and when mergeWorkdir was
+      // routed to a holding worktree above, it's already on targetBranch, so
+      // currentBranch === targetBranch and this whole block is a no-op.
       if (currentBranch !== targetBranch) {
-        const { exitCode } = await this.git(['checkout', targetBranch], repoPath);
-        if (exitCode !== 0) {
-          throw new Error(`Failed to checkout ${targetBranch}`);
+        const checkoutResult = await this.git(['checkout', targetBranch], mergeWorkdir);
+        if (checkoutResult.exitCode !== 0) {
+          const stderr = checkoutResult.stderr || '';
+          // A branch can only be checked out in one worktree at a time. If the
+          // target is held by a session worktree we couldn't locate above (e.g.
+          // worktree list was unreadable), surface the actionable fallback.
+          const heldBy = stderr.match(/already used by worktree at '?([^'\n]+)'?/i);
+          if (heldBy) {
+            return {
+              success: false,
+              message:
+                `Cannot merge into '${targetBranch}': it is currently checked out in another ` +
+                `worktree (${heldBy[1].trim()}). Switch that session off '${targetBranch}' ` +
+                `(or close it) so the branch is free, then retry the merge.`,
+            };
+          }
+          throw new Error(`Failed to checkout ${targetBranch}: ${stderr}`);
         }
       }
 
-      // Pull latest changes — check result to avoid merging on a dirty state
-      const pullResult = await this.git(['pull', 'origin', targetBranch], repoPath);
-      if (pullResult.exitCode !== 0) {
-        console.error(`[MergeService] Pull failed:`, pullResult.stderr);
-        await this.git(['merge', '--abort'], repoPath);
+      // Sync target with origin via fetch + fast-forward-only.
+      // Plain `git pull` inherits the user's pull.rebase/pull.ff config — if
+      // unset, git 2.27+ refuses with a "Need to specify how to reconcile
+      // divergent branches" wall of text. Worse, with pull.rebase=true it
+      // would silently rebase the user's local target onto origin, which can
+      // lose unpushed work. fetch + --ff-only is the safe path: it advances
+      // the target when behind, no-ops when up-to-date, fails cleanly with
+      // an actionable message when truly diverged.
+      const fetchResult = await this.git(['fetch', 'origin', targetBranch], mergeWorkdir);
+      if (fetchResult.exitCode !== 0) {
+        console.error(`[MergeService] Fetch failed:`, fetchResult.stderr);
         if (currentBranch !== targetBranch) {
-          await this.git(['checkout', currentBranch], repoPath);
+          await this.git(['checkout', currentBranch], mergeWorkdir);
         }
         return {
           success: false,
-          message: `Failed to pull latest ${targetBranch}: ${pullResult.stderr || 'unknown error'}. Please try again.`,
+          message: `Failed to fetch latest ${targetBranch}: ${fetchResult.stderr || 'unknown error'}. Please try again.`,
+        };
+      }
+      const ffResult = await this.git(['merge', '--ff-only', `origin/${targetBranch}`], mergeWorkdir);
+      if (ffResult.exitCode !== 0) {
+        const isDiverged =
+          /not possible to fast-forward/i.test(ffResult.stderr) ||
+          /diverged|divergent/i.test(ffResult.stderr);
+        console.error(`[MergeService] Fast-forward failed:`, ffResult.stderr);
+        if (currentBranch !== targetBranch) {
+          await this.git(['checkout', currentBranch], mergeWorkdir);
+        }
+        return {
+          success: false,
+          message: isDiverged
+            ? `Local '${targetBranch}' has diverged from origin/${targetBranch} — local commits exist that aren't on the remote. Resolve manually (rebase your local '${targetBranch}' onto origin/${targetBranch}, or reset it if the local commits aren't needed) before retrying the merge.`
+            : `Failed to update ${targetBranch} from origin: ${ffResult.stderr || 'unknown error'}. Please try again.`,
         };
       }
 
       // Perform the merge
       let mergeResult = await this.git(
         ['merge', sourceBranch, '-m', `Merge branch '${sourceBranch}' into ${targetBranch}`],
-        repoPath
+        mergeWorkdir
       );
 
       // Handle untracked files blocking the merge - stash and retry
@@ -583,7 +1176,7 @@ export class MergeService extends BaseService {
         if (blockingFiles && blockingFiles.length > 0) {
           console.log(`[MergeService] Untracked files blocking merge, stashing: ${blockingFiles.join(', ')}`);
 
-          const cleanResult = await this.cleanUntrackedBlockingFiles(repoPath, blockingFiles);
+          const cleanResult = await this.cleanUntrackedBlockingFiles(mergeWorkdir, blockingFiles);
           if (cleanResult.success && cleanResult.data && cleanResult.data.failed.length === 0) {
             didStash = true;
             console.log(`[MergeService] Stashed ${cleanResult.data.stashed.length} blocking files (${cleanResult.data.stashRef}), retrying merge...`);
@@ -591,7 +1184,7 @@ export class MergeService extends BaseService {
             // Retry the merge after stashing
             mergeResult = await this.git(
               ['merge', sourceBranch, '-m', `Merge branch '${sourceBranch}' into ${targetBranch}`],
-              repoPath
+              mergeWorkdir
             );
           } else {
             // Could not stash all blocking files
@@ -613,12 +1206,12 @@ export class MergeService extends BaseService {
         if (trackedBlockers && trackedBlockers.length > 0) {
           console.log(`[MergeService] Tracked dirty files blocking merge, stashing: ${trackedBlockers.join(', ')}`);
 
-          const stashResult = await this.stashTrackedDirtyFiles(repoPath, trackedBlockers);
+          const stashResult = await this.stashTrackedDirtyFiles(mergeWorkdir, trackedBlockers);
           if (stashResult) {
             didStash = true;
             mergeResult = await this.git(
               ['merge', sourceBranch, '-m', `Merge branch '${sourceBranch}' into ${targetBranch}`],
-              repoPath
+              mergeWorkdir
             );
           } else {
             return {
@@ -631,45 +1224,193 @@ export class MergeService extends BaseService {
       }
 
       if (mergeResult.exitCode !== 0) {
-        // Get conflicting files
-        const { stdout: conflictOutput } = await this.git(['diff', '--name-only', '--diff-filter=U'], repoPath);
+        // Capture conflict file list before aborting the merge
+        const { stdout: conflictOutput } = await this.git(['diff', '--name-only', '--diff-filter=U'], mergeWorkdir);
         const conflictingFiles = conflictOutput.split('\n').filter(Boolean);
 
-        // Abort the merge
-        await this.git(['merge', '--abort'], repoPath);
+        // Abort the failed merge — working tree must be clean before we try rebase
+        await this.git(['merge', '--abort'], mergeWorkdir);
+        console.log(`[MergeService] Merge had conflicts (${conflictingFiles.length} file(s)) — trying rebase strategy`);
 
-        // Switch back to original branch so repo isn't left on targetBranch
-        if (currentBranch !== targetBranch) {
-          await this.git(['checkout', currentBranch], repoPath);
+        // ── Rebase fallback ──────────────────────────────────────────────────
+        // Switch to the source branch (agent's session branch) and rebase it
+        // onto the target (main/development). If the rebase succeeds cleanly,
+        // the branches are now linearly related and the subsequent merge will
+        // be a clean fast-forward with no conflict.
+        let rebasedSuccessfully = false;
+        let rebaseConflictFiles: string[] = [];
+        const worktreePath = options.worktreePath;
+
+        // SAFETY: acquire per-worktree history-rewrite lock so the KIT
+        // periodic auto-saver + Kanvas auto-commit skip while this
+        // rebase is running (fix for the KIT rebase-race incident that
+        // orphaned ~15 real commits).
+        const rebaseWorkdir = worktreePath || repoPath;
+        await acquireHistoryRewriteLock(
+          rebaseWorkdir,
+          `rebase ${sourceBranch} onto origin/${targetBranch}`
+        );
+
+        // Capture pre-rebase commit count so we can detect tip inversion
+        // (the signature of the rebase-race bug).
+        let preRebaseCount = 0;
+        try {
+          const { stdout } = await this.git(['rev-list', '--count', 'HEAD'], rebaseWorkdir);
+          preRebaseCount = Number(stdout.trim()) || 0;
+        } catch {
+          preRebaseCount = 0;
         }
 
-        return {
-          success: false,
-          message: 'Merge failed due to conflicts',
-          conflictingFiles,
-        };
+        try {
+          // Checkout the source branch in the worktree (or main repo)
+          const checkoutSrc = await this.git(['checkout', sourceBranch], rebaseWorkdir);
+          if (checkoutSrc.exitCode !== 0) {
+            throw new Error(`Could not checkout source branch for rebase: ${checkoutSrc.stderr}`);
+          }
+
+          // Fetch latest target branch so we rebase onto the freshest state
+          await this.git(['fetch', 'origin', targetBranch], rebaseWorkdir).catch(() => {});
+
+          // Rebase source branch onto origin/targetBranch
+          const rebaseResult = await this.git(['rebase', `origin/${targetBranch}`], rebaseWorkdir);
+
+          if (rebaseResult.exitCode === 0) {
+            // TIP-COUNT SAFETY: verify we didn't drop commits. If the
+            // post-rebase tip is behind the pre-rebase tip, treat as fatal
+            // and reset --hard ORIG_HEAD to recover.
+            let postRebaseCount = preRebaseCount;
+            try {
+              const { stdout } = await this.git(['rev-list', '--count', 'HEAD'], rebaseWorkdir);
+              postRebaseCount = Number(stdout.trim()) || 0;
+            } catch {
+              // Non-fatal — fall through to permissive.
+            }
+            const tipGuard = evaluateRebaseTipGuard({
+              preRebaseCommitCount: preRebaseCount,
+              postRebaseCommitCount: postRebaseCount,
+              branchName: sourceBranch,
+            });
+            if (!tipGuard.safe) {
+              console.error(`[MergeService] ${tipGuard.message}`);
+              await this.git(['reset', '--hard', 'ORIG_HEAD'], rebaseWorkdir).catch(() => {});
+              throw new Error(tipGuard.message);
+            }
+
+            rebasedSuccessfully = true;
+            console.log(`[MergeService] Rebase fallback succeeded — source branch is now linear with ${targetBranch}`);
+
+            // Push the rebased source branch so targetBranch can be merged via fast-forward
+            await this.git(['push', 'origin', sourceBranch, '--force-with-lease'], rebaseWorkdir).catch(() => {
+              // Non-fatal — we can still proceed with the local ff-merge
+            });
+          } else {
+            // Rebase also conflicted — abort it and collect conflict files
+            const { stdout: rebaseConflicts } = await this.git(
+              ['diff', '--name-only', '--diff-filter=U'],
+              rebaseWorkdir
+            ).catch(() => ({ stdout: '' }));
+            rebaseConflictFiles = rebaseConflicts.split('\n').filter(Boolean);
+            await this.git(['rebase', '--abort'], rebaseWorkdir).catch(() => {});
+            console.log(`[MergeService] Rebase fallback also conflicted (${rebaseConflictFiles.length} file(s))`);
+          }
+        } catch (rebaseErr) {
+          const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+          console.warn(`[MergeService] Rebase fallback threw:`, msg);
+          // Make sure we leave the source branch in a clean state
+          await this.git(['rebase', '--abort'], rebaseWorkdir).catch(() => {});
+        } finally {
+          // Always release the lock, even if the rebase threw / conflicted.
+          await releaseHistoryRewriteLock(rebaseWorkdir);
+        }
+
+        if (rebasedSuccessfully) {
+          // Now do the merge on the target branch — should be conflict-free.
+          // If mergeWorkdir is the holding worktree, it's already on target;
+          // only the main-repo path needs the explicit checkout.
+          if (mergeWorkdir === repoPath) {
+            const checkoutTarget = await this.git(['checkout', targetBranch], mergeWorkdir);
+            if (checkoutTarget.exitCode !== 0) {
+              return {
+                success: false,
+                message: `Rebase succeeded but could not re-checkout ${targetBranch}: ${checkoutTarget.stderr}`,
+                conflictingFiles,
+              };
+            }
+          }
+
+          // Pull to pick up any remote changes that happened in the interim
+          await this.git(['pull', 'origin', targetBranch], mergeWorkdir).catch(() => {});
+
+          mergeResult = await this.git(
+            ['merge', sourceBranch, '--ff-only', '-m', `Merge branch '${sourceBranch}' into ${targetBranch} (via rebase)`],
+            mergeWorkdir
+          );
+
+          if (mergeResult.exitCode !== 0) {
+            // ff-only failed — fall back to regular merge (should be rare after a clean rebase)
+            mergeResult = await this.git(
+              ['merge', sourceBranch, '-m', `Merge branch '${sourceBranch}' into ${targetBranch} (via rebase)`],
+              mergeWorkdir
+            );
+          }
+
+          if (mergeResult.exitCode !== 0) {
+            // Still failing — give up and restore original branch
+            await this.git(['merge', '--abort'], mergeWorkdir).catch(() => {});
+            if (currentBranch !== targetBranch) {
+              await this.git(['checkout', currentBranch], mergeWorkdir).catch(() => {});
+            }
+            return {
+              success: false,
+              message: 'Merge failed even after rebase — manual resolution required',
+              conflictingFiles,
+            };
+          }
+        } else {
+          // Both merge and rebase failed — give up
+          // Switch back to original branch so repo isn't left on targetBranch
+          if (currentBranch !== targetBranch) {
+            await this.git(['checkout', currentBranch], mergeWorkdir).catch(() => {});
+          }
+
+          const allConflictFiles = [
+            ...new Set([...conflictingFiles, ...rebaseConflictFiles]),
+          ];
+          this.logActivity(
+            repoPath,
+            normalizedSource,
+            'warning',
+            `Merge ${normalizedSource} → ${targetBranch} failed (${allConflictFiles.length} conflict${allConflictFiles.length === 1 ? '' : 's'})`,
+            { conflictingFiles: allConflictFiles }
+          );
+          return {
+            success: false,
+            message: 'Merge failed due to conflicts (rebase fallback also conflicted)',
+            conflictingFiles: allConflictFiles,
+          };
+        }
       }
 
       // Get merge commit hash
-      const { stdout: mergeCommitHash } = await this.git(['rev-parse', 'HEAD'], repoPath);
+      const { stdout: mergeCommitHash } = await this.git(['rev-parse', 'HEAD'], mergeWorkdir);
 
       // Get files changed count
       const { stdout: diffStatOutput } = await this.git(
         ['diff', '--stat', `${targetBranch}@{1}..HEAD`],
-        repoPath
+        mergeWorkdir
       );
       const filesChangedMatch = diffStatOutput.match(/(\d+) files? changed/);
       const filesChanged = filesChangedMatch ? parseInt(filesChangedMatch[1], 10) : 0;
 
       // Push merged changes
-      await this.git(['push', 'origin', targetBranch], repoPath);
+      await this.git(['push', 'origin', targetBranch], mergeWorkdir);
 
       // Auto-pop stash if we stashed files before merge
       let stashRecovered: boolean | undefined;
       let stashConflictFiles: string[] | undefined;
       if (didStash) {
         try {
-          const stashResult = await this.popStashAfterMerge(repoPath);
+          const stashResult = await this.popStashAfterMerge(mergeWorkdir);
           stashRecovered = stashResult.stashRecovered;
           stashConflictFiles = stashResult.stashConflictFiles;
         } catch (err) {
@@ -709,6 +1450,9 @@ export class MergeService extends BaseService {
 
       // Cleanup: Delete worktree if requested
       if (options.deleteWorktree && options.worktreePath) {
+        const stack = (new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' <- ');
+        console.warn(`[MergeService] WORKTREE REMOVE (post-merge cleanup): ${options.worktreePath}\n  caller: ${stack}`);
+        this.debugLog?.warn?.('MergeService', 'Worktree removed (post-merge deleteWorktree)', { worktreePath: options.worktreePath, repoPath, caller: stack });
         await this.git(['worktree', 'remove', options.worktreePath, '--force'], repoPath);
         await this.git(['worktree', 'prune'], repoPath);
       }
@@ -723,6 +1467,15 @@ export class MergeService extends BaseService {
         await this.git(['push', 'origin', '--delete', sourceBranch], repoPath);
       }
 
+      // Activity feed: announce the successful merge.
+      this.logActivity(
+        repoPath,
+        normalizedSource,
+        'success',
+        `Merged ${normalizedSource} → ${targetBranch}${filesChanged ? ` (${filesChanged} file${filesChanged === 1 ? '' : 's'} changed)` : ''}`,
+        { mergeCommitHash, filesChanged, stashRecovered }
+      );
+
       return {
         success: true,
         message: `Successfully merged ${sourceBranch} into ${targetBranch}`,
@@ -735,12 +1488,22 @@ export class MergeService extends BaseService {
   }
 
   /**
-   * Ensure agent artifacts (.S9N_KIT_DevOpsAgent/) are in the repo's .gitignore.
-   * This prevents untracked agent files from blocking git merge/checkout operations.
+   * Ensure Kanvas session artifacts are in the repo's .gitignore.
+   * This prevents agent runtime files from being committed or blocking merges.
    */
   private async ensureAgentArtifactsIgnored(repoPath: string): Promise<void> {
     const gitignorePath = path.join(repoPath, '.gitignore');
-    const agentDir = '.S9N_KIT_DevOpsAgent';
+
+    // Patterns to ensure are gitignored (checked by substring presence)
+    const patternsToAdd: Array<{ check: string; line: string }> = [
+      { check: '.S9N_KIT_DevOpsAgent', line: '.S9N_KIT_DevOpsAgent/' },
+      { check: '.claude-session-', line: '.claude-session-*.md' },
+      { check: '.codex-session-', line: '.codex-session-*.md' },
+      { check: '.devops-commit-', line: '.devops-commit-*.msg' },
+      { check: '.mcp.json', line: '.mcp.json' },
+      { check: '.claude/settings.json', line: '.claude/settings.json' },
+      { check: '.file-coordination/', line: '.file-coordination/' },
+    ];
 
     try {
       let content = '';
@@ -750,10 +1513,12 @@ export class MergeService extends BaseService {
         // .gitignore doesn't exist yet
       }
 
-      if (!content.includes(agentDir)) {
-        content += `\n# DevOps Agent Kit (local runtime data - do not commit)\n${agentDir}/\n`;
+      const missing = patternsToAdd.filter(p => !content.includes(p.check));
+      if (missing.length > 0) {
+        content += `\n# KIT DevOps Agent — session/runtime files (do not commit)\n`;
+        content += missing.map(p => p.line).join('\n') + '\n';
         await fs.writeFile(gitignorePath, content, 'utf-8');
-        console.log(`[MergeService] Added ${agentDir}/ to .gitignore in ${repoPath}`);
+        console.log(`[MergeService] Added ${missing.length} KIT pattern(s) to .gitignore in ${repoPath}`);
       }
     } catch (err) {
       console.warn(`[MergeService] Could not update .gitignore: ${err}`);

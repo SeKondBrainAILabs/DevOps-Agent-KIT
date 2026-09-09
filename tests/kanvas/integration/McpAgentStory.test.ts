@@ -53,9 +53,18 @@ function createTempGitRepo(): string {
   return dir;
 }
 
+// Shared binder so callTool can default cwd to the session's registered worktree
+// (models a well-behaved agent that's in the right place). Assigned in beforeEach.
+let activeBinder: McpSessionBinder | undefined;
+
 function callTool(name: string, args: Record<string, any>) {
   const tool = registeredTools.get(name);
   if (!tool) throw new Error(`Tool ${name} not registered`);
+  // Mutating tools now require `cwd`; default it to the registered worktree.
+  if (args.cwd === undefined && args.session_id && activeBinder) {
+    const wt = activeBinder.getWorktreePathForRepo(args.session_id, args.repo);
+    if (wt) args = { ...args, cwd: wt };
+  }
   return tool.handler(args);
 }
 
@@ -96,6 +105,7 @@ describe('MCP Agent Story - Integration', () => {
     dbCommits = [];
 
     binder = new McpSessionBinder();
+    activeBinder = binder;
     binder.registerSession(SESSION_ID, tempDir);
 
     deps = {
@@ -109,6 +119,8 @@ describe('MCP Agent Story - Integration', () => {
           };
         }),
         push: (jest.fn() as any).mockResolvedValue({ success: true }),
+        // Worktree-divergence guard: report the worktree is on the session branch.
+        getCurrentBranchName: (jest.fn() as any).mockResolvedValue('feat/mcp-test'),
         getCommitHistory: (jest.fn() as any).mockImplementation(async () => ({
           success: true,
           data: commitCalls.map((c, i) => ({

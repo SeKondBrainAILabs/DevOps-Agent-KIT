@@ -33,12 +33,26 @@ const SESSION_LOCK_DIR = path.join(os.homedir(), '.devops-agent', 'session-locks
 // Stale session lock TTL: 1 hour (for crashed sessions)
 const STALE_SESSION_LOCK_TTL_MS = 60 * 60 * 1000;
 
+// Debounce window for the locks.json write. Auto-locking is triggered by every
+// chokidar event, and a worktree-wide initial scan can fire thousands of events
+// per second. Without debouncing, we re-stringify and re-write the entire map
+// per event, exhausting the heap (RangeError: Array buffer allocation failed).
+const SAVE_DEBOUNCE_MS = 500;
+
+// Hard ceiling on locks tracked per repo. Beyond this, autoLockFile silently
+// no-ops — the map is already too large to serialize cheaply and the locks are
+// almost certainly stale-event noise rather than real edits.
+const MAX_LOCKS_PER_REPO = 5000;
+
 export class LockService extends BaseService {
   // In-memory cache of locks: repoPath -> filePath -> lock
   private locksByRepo: Map<string, Map<string, AutoFileLock>> = new Map();
 
+  // Pending debounced writes: repoPath -> setTimeout handle
+  private pendingSaves: Map<string, NodeJS.Timeout> = new Map();
+  private hasWarnedOverflow: Set<string> = new Set();
+
   // Legacy session-based locks (for backwards compatibility)
-  private sessionLocks: Map<string, FileLock> = new Map();
 
   async initialize(): Promise<void> {
     // Clean up stale session lock files from crashed sessions
@@ -158,6 +172,22 @@ export class LockService extends BaseService {
 
       // Skip lock files and system files
       if (this.shouldSkipFile(relativePath)) {
+        return null;
+      }
+
+      // Cap the per-repo lock map. Beyond the ceiling, autoLockFile silently
+      // no-ops — a runaway map almost always means we're tracking initial-scan
+      // noise rather than real agent edits, and we'd rather drop locks than
+      // exhaust the heap. The cleanupExpired path still trims the map as locks
+      // age out, so this is a soft ceiling that rebalances on its own.
+      const existing = this.locksByRepo.get(normalizedRepo);
+      if (existing && existing.size >= MAX_LOCKS_PER_REPO && !existing.has(relativePath)) {
+        if (!this.hasWarnedOverflow.has(normalizedRepo)) {
+          this.hasWarnedOverflow.add(normalizedRepo);
+          console.warn(
+            `[LockService] Repo at ${normalizedRepo} hit MAX_LOCKS_PER_REPO=${MAX_LOCKS_PER_REPO}; dropping new auto-locks until cleanup`
+          );
+        }
         return null;
       }
 
@@ -428,7 +458,25 @@ export class LockService extends BaseService {
 
   // ==================== Legacy API (backwards compatibility) ====================
 
+  /**
+   * Declare an intent to edit files, so other sessions see the conflict.
+   *
+   * THIS USED TO DO NOTHING OBSERVABLE (story KIT-MCP-H6). It wrote a FileLock
+   * into an in-memory `sessionLocks` map that `checkConflicts` never read —
+   * `checkConflicts` reads `locksByRepo`, loaded from
+   * `<repo>/.S9N_KIT_DevOpsAgent/locks.json`. The two stores never intersected,
+   * so cross-session locking was a complete no-op: `kit_lock_file` always
+   * reported "no conflicts" no matter who else held the file.
+   *
+   * It now writes into the same repo-keyed, persisted store the watcher's
+   * auto-locks use, which is the only store anything reads.
+   *
+   * `repoPath` must be the SOURCE REPO ROOT, not a worktree. The watcher keys
+   * its auto-locks by repo root, so a worktree-keyed declaration would land in
+   * a second file that nothing consults — the same class of bug this fixes.
+   */
   async declareFiles(
+    repoPath: string,
     sessionId: string,
     files: string[],
     operation: 'edit' | 'read' | 'delete',
@@ -437,27 +485,58 @@ export class LockService extends BaseService {
     reason?: string
   ): Promise<IpcResult<void>> {
     return this.wrap(async () => {
-      const lock: FileLock = {
-        sessionId,
-        agentType,
-        files,
-        operation,
-        declaredAt: new Date().toISOString(),
-        estimatedDuration,
-        reason,
-      };
-      this.sessionLocks.set(sessionId, lock);
+      const normalizedRepo = path.resolve(repoPath);
+      await this.loadLocks(normalizedRepo);
+
+      let repoLocks = this.locksByRepo.get(normalizedRepo);
+      if (!repoLocks) {
+        repoLocks = new Map();
+        this.locksByRepo.set(normalizedRepo, repoLocks);
+      }
+
+      const now = new Date().toISOString();
+      for (const file of files) {
+        const relativePath = path.isAbsolute(file)
+          ? path.relative(normalizedRepo, file)
+          : file;
+        repoLocks.set(relativePath, {
+          filePath: relativePath,
+          sessionId,
+          agentType,
+          lockedAt: now,
+          lastModified: now,
+          declared: true,
+          operation,
+          reason,
+          estimatedDuration,
+        } as AutoFileLock);
+      }
+
+      this.scheduleSave(normalizedRepo);
     }, 'LOCK_DECLARE_FAILED');
   }
 
-  async releaseFiles(sessionId: string): Promise<IpcResult<void>> {
+  /**
+   * Release every lock a session holds in a repo.
+   *
+   * Takes a repoPath for the same reason declareFiles does. Callers that have
+   * only a sessionId should go through `releaseSessionLocks`.
+   */
+  async releaseFiles(repoPath: string, sessionId: string): Promise<IpcResult<void>> {
     return this.wrap(async () => {
-      this.sessionLocks.delete(sessionId);
+      const result = await this.releaseSessionLocks(path.resolve(repoPath), sessionId);
+      void result;
     }, 'LOCK_RELEASE_FAILED');
   }
 
-  async listDeclarations(): Promise<IpcResult<FileLock[]>> {
-    return this.success(Array.from(this.sessionLocks.values()));
+  /** Every declared (non-auto) lock currently held in a repo. */
+  async listDeclarations(repoPath: string): Promise<IpcResult<AutoFileLock[]>> {
+    const normalizedRepo = path.resolve(repoPath);
+    await this.loadLocks(normalizedRepo);
+    const repoLocks = this.locksByRepo.get(normalizedRepo) || new Map();
+    return this.success(
+      Array.from(repoLocks.values()).filter((l: any) => l.declared === true)
+    );
   }
 
   // ==================== Private helpers ====================
@@ -498,7 +577,37 @@ export class LockService extends BaseService {
     }
   }
 
+  /**
+   * Schedule a write of repo locks to disk. Coalesces bursts of calls into a
+   * single write per repo per SAVE_DEBOUNCE_MS window. Callers may still
+   * `await` for backwards compatibility, but the actual disk write happens
+   * asynchronously on the timer.
+   */
   private async saveLocks(repoPath: string): Promise<void> {
+    const existing = this.pendingSaves.get(repoPath);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.pendingSaves.delete(repoPath);
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises
+      this.saveLocksNow(repoPath);
+    }, SAVE_DEBOUNCE_MS);
+    this.pendingSaves.set(repoPath, timer);
+  }
+
+  /**
+   * Synchronously flush every pending debounced save. Used on shutdown.
+   */
+  private async flushPendingSaves(): Promise<void> {
+    const pending = Array.from(this.pendingSaves.keys());
+    for (const repoPath of pending) {
+      const timer = this.pendingSaves.get(repoPath);
+      if (timer) clearTimeout(timer);
+      this.pendingSaves.delete(repoPath);
+      await this.saveLocksNow(repoPath);
+    }
+  }
+
+  private async saveLocksNow(repoPath: string): Promise<void> {
     const repoLocks = this.locksByRepo.get(repoPath);
     if (!repoLocks) return;
 
@@ -542,11 +651,13 @@ export class LockService extends BaseService {
   }
 
   async dispose(): Promise<void> {
-    // Save all locks on shutdown
+    // Flush any in-flight debounced writes, then write each repo synchronously
+    // one last time so nothing in-memory is lost on shutdown.
+    await this.flushPendingSaves();
     for (const [repoPath] of this.locksByRepo) {
-      await this.saveLocks(repoPath);
+      await this.saveLocksNow(repoPath);
     }
     this.locksByRepo.clear();
-    this.sessionLocks.clear();
+    this.hasWarnedOverflow.clear();
   }
 }

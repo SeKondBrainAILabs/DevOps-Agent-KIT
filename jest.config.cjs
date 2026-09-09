@@ -10,12 +10,14 @@ module.exports = {
     '/local_deploy/',
     '/debug-test-workspace/',
     '/.worktrees/',
+    '/.claude/worktrees/',
     '/test_scripts/'
   ],
   modulePathIgnorePatterns: [
     '<rootDir>/local_deploy/',
     '<rootDir>/debug-test-workspace/',
-    '<rootDir>/.worktrees/'
+    '<rootDir>/.worktrees/',
+    '<rootDir>/.claude/worktrees/'
   ],
   testEnvironment: 'node',
   verbose: true,

@@ -13,13 +13,17 @@ import { StatusBar } from './components/layouts/StatusBar';
 import { DashboardCanvas } from './components/features/DashboardCanvas';
 import { SessionDetailView } from './components/features/SessionDetailView';
 import { UniversalCommitsView } from './components/features/UniversalCommitsView';
+import { WorkspaceBrowserView } from './components/features/WorkspaceBrowserView';
 import { HomeArtefactLeft } from './components/ui/HomeArtefactLeft';
 import { NewSessionWizard } from './components/features/NewSessionWizard';
 import { CloseSessionDialog } from './components/features/CloseSessionDialog';
 import { SettingsModal } from './components/features/SettingsModal';
 import { CreateAgentWizard } from './components/features/CreateAgentWizard';
+import { RepoDetailModal } from './components/features/RepoDetailModal';
 import { RebaseMergeErrorDialog } from './components/features/RebaseMergeErrorDialog';
 import { OnboardingModal } from './components/features/OnboardingModal';
+import { StaleSessionsDialog } from './components/features/StaleSessionsDialog';
+import { AgentSessionsExpiredDialog } from './components/features/AgentSessionsExpiredDialog';
 import { useAgentStore, selectAgentList, selectSessionById } from './store/agentStore';
 import { useUIStore } from './store/uiStore';
 import { useConflictStore } from './store/conflictStore';
@@ -49,6 +53,10 @@ export default function App(): React.ReactElement {
     setShowSettingsModal,
     showCreateAgentWizard,
     setShowCreateAgentWizard,
+    createAgentWizardRepoPath,
+    createAgentWizardTask,
+    repoDetailPath,
+    closeRepoDetail,
     showOnboarding,
     setShowOnboarding,
   } = useUIStore();
@@ -64,6 +72,80 @@ export default function App(): React.ReactElement {
 
   // Track last rebase time per session
   const setLastRebaseTime = useAgentStore((state) => state.setLastRebaseTime);
+  const removeReportedSession = useAgentStore((state) => state.removeReportedSession);
+
+  // Startup stale-session scan results
+  const [staleSessions, setStaleSessions] = React.useState<import('../shared/types').StaleSessionInfo[]>([]);
+  const [expiredAgentSessions, setExpiredAgentSessions] = React.useState<import('../shared/types').ExpiredAgentSessionInfo[]>([]);
+  const [autoRemovedCount, setAutoRemovedCount] = React.useState(0);
+  // Orphaned session recovery — hoisted from MainLayout so the stale-session
+  // dialog can suppress the orphaned banner while it's open and can dismiss
+  // it when the user picks "Keep all". Before this, the two flows ran
+  // independently and the user's "Keep all" in the modal left the redundant
+  // "Recover All" bar dangling at the top of the app.
+  interface OrphanedSession {
+    sessionId: string;
+    repoPath: string;
+    sessionData: { task?: string; branchName?: string; agentType?: string };
+    lastModified: Date;
+  }
+  const [orphanedSessions, setOrphanedSessions] = React.useState<OrphanedSession[]>([]);
+  // Latch: once the user has dismissed the recovery UI in this session (via
+  // "Keep all" on the stale dialog, "Dismiss" on the orphaned banner, or by
+  // firing "Recover All"), we ignore later orphaned events from the still-in-
+  // flight scanAllReposForSessions IPC. Without this latch a slow scan that
+  // finishes AFTER dismissal re-populates orphanedSessions and the banner
+  // reappears — the "still seeing this issue" v2.6.85 didn't cover.
+  const recoveryDismissedRef = React.useRef(false);
+
+  useEffect(() => {
+    // Risky stale sessions (unmerged commits) → prompt the user.
+    const unsubFound = window.api?.recovery?.onStaleSessionsFound?.((sessions) => {
+      if (sessions && sessions.length > 0) setStaleSessions(sessions);
+    });
+    // Safe stale sessions auto-removed by the main process → drop from the store + show a banner.
+    const unsubAuto = window.api?.recovery?.onStaleSessionsAutoRemoved?.((sessions) => {
+      if (sessions && sessions.length > 0) {
+        sessions.forEach((s) => removeReportedSession(s.sessionId));
+        setAutoRemovedCount((n) => n + sessions.length);
+      }
+    });
+    // Orphaned sessions (disk files without matching in-memory instance).
+    // Skip when the user has already dismissed recovery in this session — the
+    // late arrival would otherwise resurrect the banner they just closed.
+    const unsubOrph = window.api?.recovery?.onOrphanedSessionsFound?.((sessions) => {
+      if (recoveryDismissedRef.current) return;
+      setOrphanedSessions(sessions);
+    });
+    // Agent-session reaper results (R1). Accumulates rather than replaces: the
+    // reaper runs every 5 minutes, and a second pass while the dialog is open
+    // must not drop the rows the user has not dealt with yet.
+    const unsubExpired = window.api?.recovery?.onAgentSessionsExpired?.((sessions) => {
+      if (!sessions || sessions.length === 0) return;
+      setExpiredAgentSessions((prev) => {
+        const seen = new Set(prev.map((s) => s.sessionId));
+        return [...prev, ...sessions.filter((s) => !seen.has(s.sessionId))];
+      });
+    });
+    return () => { unsubFound?.(); unsubAuto?.(); unsubOrph?.(); unsubExpired?.(); };
+  }, [removeReportedSession]);
+
+  const handleRecoverAll = React.useCallback(async () => {
+    const list = orphanedSessions.map(s => ({ sessionId: s.sessionId, repoPath: s.repoPath }));
+    try {
+      const result = await window.api?.recovery?.recoverMultiple?.(list);
+      if (result?.success) {
+        setOrphanedSessions([]);
+        recoveryDismissedRef.current = true;
+      }
+    } catch (err) {
+      console.error('Recovery failed:', err);
+    }
+  }, [orphanedSessions]);
+  const handleDismissOrphaned = React.useCallback(() => {
+    setOrphanedSessions([]);
+    recoveryDismissedRef.current = true;
+  }, []);
 
   useEffect(() => {
     const unsubStatus = window.api?.rebaseWatcher?.onStatusChanged?.((data) => {
@@ -90,7 +172,7 @@ export default function App(): React.ReactElement {
       showConflictDialog({
         sessionId: data.sessionId,
         repoPath: data.repoPath,
-        baseBranch: data.baseBranch,
+        baseBranch: (data.baseBranch || 'main').replace(/^origin\//, ''),
         currentBranch: data.currentBranch,
         conflictedFiles: data.conflictedFiles,
         errorMessage: data.errorMessage,
@@ -143,8 +225,6 @@ export default function App(): React.ReactElement {
     ? agents.find((a) => a.agentId === selectedAgentId)
     : null;
 
-  const removeReportedSession = useAgentStore((state) => state.removeReportedSession);
-
   // Handle session deletion
   const handleDeleteSession = async (sessionId: string): Promise<void> => {
     try {
@@ -166,7 +246,7 @@ export default function App(): React.ReactElement {
       const sessionData = session ? {
         repoPath: session.repoPath,
         branchName: session.branchName,
-        baseBranch: session.baseBranch,
+        baseBranch: (session.baseBranch || 'main').replace(/^origin\//, ''),
         worktreePath: session.worktreePath,
         agentType: session.agentType,
         task: session.task,
@@ -184,10 +264,11 @@ export default function App(): React.ReactElement {
         }
         console.log(`Session restarted: ${sessionId} -> ${newSessionId}`);
       } else {
-        console.error('Failed to restart session:', result?.error);
+        throw new Error(result?.error || 'Restart failed — no session data returned');
       }
     } catch (error) {
       console.error('Failed to restart session:', error);
+      throw error;
     }
   };
 
@@ -195,28 +276,34 @@ export default function App(): React.ReactElement {
   const setMainView = useUIStore((state) => state.setMainView);
 
   // Determine what to show in main content
-  // Priority: 1) Session detail, 2) Commits view, 3) Artefacts view, 4) Dashboard
-  const mainContent = selectedSession ? (
+  // Priority: 1) Commits/Workspaces views (always on top), 2) Session detail, 3) Dashboard
+  const mainContent = mainView === 'commits' ? (
+    <UniversalCommitsView />
+  ) : mainView === 'workspaces' ? (
+    <WorkspaceBrowserView />
+  ) : mainView === 'artefacts' ? (
+    <div className="h-full p-6 overflow-auto">
+      <HomeArtefactLeft className="max-w-5xl aspect-[1440/1024] rounded-2xl shadow-card" />
+    </div>
+  ) : selectedSession ? (
     <SessionDetailView
       session={selectedSession}
       onBack={() => setSelectedSession(null)}
       onDelete={handleDeleteSession}
       onRestart={handleRestartSession}
     />
-  ) : mainView === 'commits' ? (
-    <UniversalCommitsView />
-  ) : mainView === 'artefacts' ? (
-    <div className="h-full p-6 overflow-auto">
-      <HomeArtefactLeft className="max-w-5xl aspect-[1440/1024] rounded-2xl shadow-card" />
-    </div>
   ) : (
     <DashboardCanvas agent={selectedAgent} />
   );
 
-  // When selecting a session, switch back to dashboard view
+  // When selecting a session, switch back to dashboard view. Also close the
+  // RepoDetailModal — selecting a session navigates away from the repo view,
+  // and otherwise the modal stays mounted at z-50 covering the new
+  // SessionDetailView.
   const handleSelectSession = (sessionId: string | null) => {
     if (sessionId) {
       setMainView('dashboard');
+      closeRepoDetail();
     }
     setSelectedSession(sessionId);
   };
@@ -227,6 +314,13 @@ export default function App(): React.ReactElement {
       <MainLayout
         sidebar={<Sidebar />}
         statusBar={<StatusBar agent={selectedAgent} />}
+        orphanedSessions={orphanedSessions}
+        onRecoverOrphaned={handleRecoverAll}
+        onDismissOrphaned={handleDismissOrphaned}
+        // Hide the orphaned banner while the stale-session dialog is up so the
+        // user isn't looking at two overlapping "old sessions from prior run"
+        // affordances at the same time.
+        suppressOrphanedBanner={staleSessions.length > 0}
       >
         {mainContent}
       </MainLayout>
@@ -248,7 +342,14 @@ export default function App(): React.ReactElement {
       )}
 
       {showCreateAgentWizard && (
-        <CreateAgentWizard onClose={() => setShowCreateAgentWizard(false)} />
+        <CreateAgentWizard
+          onClose={() => setShowCreateAgentWizard(false)}
+          initialRepoPath={createAgentWizardRepoPath}
+          initialTask={createAgentWizardTask}
+        />
+      )}
+      {repoDetailPath && (
+        <RepoDetailModal repoPath={repoDetailPath} onClose={closeRepoDetail} />
       )}
 
       {/* Onboarding - shown on first launch */}
@@ -258,6 +359,62 @@ export default function App(): React.ReactElement {
 
       {/* Rebase/Merge Error Dialog - shown when conflict is detected */}
       <RebaseMergeErrorDialog />
+
+      {/* Agent-session reaper report. Rendered before the stale dialog so the
+          two never stack; this one is a report of completed actions, while the
+          stale dialog is a prompt, and a prompt behind a report reads as a
+          modal that will not close. */}
+      {expiredAgentSessions.length > 0 && (
+        <AgentSessionsExpiredDialog
+          sessions={expiredAgentSessions}
+          onClose={() => setExpiredAgentSessions([])}
+          onRemoved={(ids) => {
+            ids.forEach((id) => removeReportedSession(id));
+          }}
+        />
+      )}
+
+      {/* Startup stale-session review (risky ones with unmerged commits) */}
+      {staleSessions.length > 0 && (
+        <StaleSessionsDialog
+          sessions={staleSessions}
+          onClose={() => {
+            setStaleSessions([]);
+            // Treat "Keep all" as "leave old sessions alone entirely" — also
+            // dismiss the orphaned recovery banner and latch the decision so
+            // a late orphaned scan can't resurrect the banner the user just
+            // closed (the actual v2.6.87 fix; v2.6.85 cleared once but the
+            // late-arrival event re-populated).
+            setOrphanedSessions([]);
+            recoveryDismissedRef.current = true;
+          }}
+          onRemoved={(ids) => {
+            ids.forEach((id) => removeReportedSession(id));
+            setStaleSessions((prev) => prev.filter((s) => !ids.includes(s.sessionId)));
+          }}
+        />
+      )}
+
+      {/* Toast: stale sessions auto-removed on startup */}
+      {autoRemovedCount > 0 && (
+        <div className="fixed bottom-4 right-4 z-50 bg-white border border-[rgba(0,0,0,0.10)] rounded-[14px] shadow-[0_4px_6px_rgba(0,0,0,0.08)] px-4 py-3 max-w-sm animate-slide-up">
+          <div className="flex items-start gap-3">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500 mt-1.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm text-text-primary">
+                Cleaned up {autoRemovedCount} stale session{autoRemovedCount === 1 ? '' : 's'} with fully-merged work
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5">Worktrees idle 14+ days, already merged into main/development.</p>
+            </div>
+            <button onClick={() => setAutoRemovedCount(0)} className="text-text-secondary hover:text-text-primary" title="Dismiss">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

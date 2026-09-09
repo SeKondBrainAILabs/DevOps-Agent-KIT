@@ -8,8 +8,9 @@
 
 import { spawn } from 'child_process';
 import { mkdir, writeFile, readFile, readdir, stat, access } from 'fs/promises';
-import { existsSync, constants } from 'fs';
-import { join, basename } from 'path';
+import { existsSync, constants, lstatSync, readlinkSync, statSync } from 'fs';
+import { dirname, join, basename } from 'path';
+import { homedir } from 'os';
 import { BrowserWindow } from 'electron';
 import Store from 'electron-store';
 import { BaseService } from './BaseService';
@@ -49,7 +50,8 @@ async function execaCmd(cmd: string, args: string[], options?: { cwd?: string; t
   });
 }
 import { KANVAS_PATHS, FILE_COORDINATION_PATHS, DEVOPS_KIT_DIR } from '../../shared/agent-protocol';
-import { getAgentInstructions, generateClaudePrompt, InstructionVars } from '../../shared/agent-instructions';
+import { getAgentInstructions, generateClaudePrompt, generateCodexPrompt, InstructionVars } from '../../shared/agent-instructions';
+import { resolveUnpushedCount } from '../../shared/unpushed-count';
 import type {
   AgentType,
   AgentInstance,
@@ -60,10 +62,68 @@ import type {
   IpcResult,
   RepoEntry,
   RepoRole,
+  SessionStatus,
 } from '../../shared/types';
+
+function generateAgentPrompt(agentType: AgentType, vars: InstructionVars): string | undefined {
+  if (agentType === 'claude') return generateClaudePrompt(vars);
+  if (agentType === 'codex') return generateCodexPrompt(vars);
+  return undefined;
+}
 import { generateSecondaryBranchName } from '../../shared/types';
+import { isActiveInstance, isRunningInstance, INACTIVE_INSTANCE_STATUSES } from '../../shared/instance-status';
+import { planEnvSymlink } from '../../shared/env-symlink-plan';
+import { symlink, lstat } from 'fs/promises';
 import type { TerminalLogService } from './TerminalLogService';
+import type { ConfigService } from './ConfigService';
 import { MCP_CONFIG_FILE, CONTRACTS_PATHS } from '../../shared/agent-protocol';
+import { getWorktreeBaseDir, resolveRepoRootFromWorktree } from '../../shared/worktree-path';
+import { KeyedMutex } from '../../shared/async-mutex';
+import { reserveSession } from './SessionReservation';
+import {
+  evaluateWorktreeOutcome,
+  type WorktreeStatus,
+} from '../../shared/worktree-outcome';
+import { isObserverSession, refuseDestructiveForObserver } from '../../shared/observer-session';
+import {
+  planNodeModules,
+  type NodeModulesSetting,
+} from '../../shared/node-modules-plan';
+
+/**
+ * Compute the worktree base dir for a repo. Worktrees live OUTSIDE the source
+ * repo (sibling of the repo dir) so external `rm -rf .git`, `git clean -fdx`,
+ * or session-manager prune passes can't silently wipe them.
+ *
+ *   <repo_parent>/<repo_name>           ← source repo
+ *   <repo_parent>/KIT-DevOps-<repo_name>/<branchName>   ← worktrees go here
+ *
+ * The implementation now lives in `shared/worktree-path.ts`, which owns both
+ * directions of this layout — the reverse mapping (worktree → source repo) is
+ * needed by WatcherService today and by three later stories. Re-exported here
+ * so existing importers of `AgentInstanceService.getWorktreeBaseDir` keep
+ * working unchanged.
+ */
+export { getWorktreeBaseDir };
+
+/**
+ * Guards the check-and-reserve section in `createInstance`
+ * (ADMISSION_LOCK_KEY), so two concurrent creates cannot both pass the same
+ * guard and both claim a slot.
+ *
+ * Only that section is locked. Worktree creation is deliberately left parallel
+ * — see the note at its call site.
+ */
+const sessionMutex = new KeyedMutex();
+
+/**
+ * Serialises every read-modify-write of the user's ~/.claude.json.
+ *
+ * Separate from sessionMutex because it is keyed on a file path rather than on
+ * session admission, and because the seed runs INSIDE the create path that
+ * sessionMutex has already released by then.
+ */
+const claudeConfigMutex = new KeyedMutex();
 
 interface SessionState {
   sessionId: string;
@@ -84,6 +144,13 @@ export class AgentInstanceService extends BaseService {
   private instances: Map<string, AgentInstance> = new Map();
   private terminalLogService: TerminalLogService | null = null;
   private mcpServerUrl: string | null = null;
+  private rpcServerUrl: string | null = null;
+  private configService: ConfigService | null = null;
+
+  // Deferred session-state flush — avoids synchronous writeFileSync on every commit.
+  // electron-store uses fs.writeFileSync internally which blocks the main thread.
+  private sessionStatesCache: Record<string, SessionState> | null = null;
+  private sessionStatesFlushTimer: NodeJS.Timeout | null = null;
 
   /**
    * Callback invoked after a single-repo session is created.
@@ -114,6 +181,59 @@ export class AgentInstanceService extends BaseService {
     this.mcpServerUrl = url;
   }
 
+  /**
+   * Set the stateless JSON-RPC URL (/rpc) for Codex / type:"http" clients
+   */
+  setRpcServerUrl(url: string | null): void {
+    this.rpcServerUrl = url;
+  }
+
+  /**
+   * Inject ConfigService so we can read per-repo worktree-mode settings.
+   * Used to enforce Single-Session Mode (Epic C, story C5).
+   */
+  setConfigService(svc: ConfigService): void {
+    this.configService = svc;
+    console.log('[AgentInstanceService] ConfigService configured');
+  }
+
+  /**
+   * Return all sessions for a given repo that are currently active
+   * (i.e. not 'completed' or 'closed'). Used by Single-Session Mode
+   * checks and by the renderer to power session-count badges.
+   */
+  getActiveSessionsForRepo(repoPath: string): AgentInstance[] {
+    return Array.from(this.instances.values()).filter(
+      (inst) => inst.config.repoPath === repoPath && isActiveInstance(inst)
+    );
+  }
+
+  /**
+   * IPC-friendly count of lifecycle-active sessions for a repo.
+   * Used by the Single-Session Mode guard (a `waiting` session has claimed
+   * the slot and a second one would conflict) — must include statuses the
+   * user-facing "running" badge excludes.
+   */
+  getActiveSessionCountForRepo(repoPath: string): IpcResult<number> {
+    return { success: true, data: this.getActiveSessionsForRepo(repoPath).length };
+  }
+
+  /**
+   * Count of truly-running sessions (an agent is attached and working) for a
+   * repo. Distinct from `getActiveSessionCountForRepo` which includes
+   * `waiting`/`pending`/`initializing` — the broader set the SSM guard needs.
+   * The repo card surfaces THIS number as "N active" because users read it
+   * as "N agents actually working", not "N session records on disk".
+   * Without this distinction, agent_memory_vault showed "6 active" when 5
+   * of those were waiting-but-never-connected and only 1 had a live agent.
+   */
+  getRunningSessionCountForRepo(repoPath: string): IpcResult<number> {
+    const runningCount = Array.from(this.instances.values()).filter(
+      (inst) => inst.config.repoPath === repoPath && isRunningInstance(inst)
+    ).length;
+    return { success: true, data: runningCount };
+  }
+
   constructor() {
     super();
     this.store = new Store<StoreSchema>({
@@ -125,9 +245,13 @@ export class AgentInstanceService extends BaseService {
       },
     });
 
-    // Load existing instances
+    // Load existing instances — normalize baseBranch at read time to strip any
+    // legacy 'origin/' prefix (stored before v2.6.22 fix).
     const savedInstances = this.store.get('instances', []);
     for (const instance of savedInstances) {
+      if (instance.config?.baseBranch) {
+        instance.config.baseBranch = instance.config.baseBranch.replace(/^origin\//, '');
+      }
       this.instances.set(instance.id, instance);
     }
 
@@ -200,9 +324,29 @@ export class AgentInstanceService extends BaseService {
       const branchResult = await execaCmd('git', ['branch', '--show-current'], { cwd: repoPath });
       const currentBranch = branchResult.stdout.trim() || 'HEAD';
 
-      // Get all branches
-      const branchesResult = await execaCmd('git', ['branch', '-a', '--format=%(refname:short)'], { cwd: repoPath });
-      const branches = branchesResult.stdout.split('\n').filter(Boolean);
+      // Branch candidates for the base-branch picker. We include BOTH local heads
+      // and remote branches (with the remote prefix stripped) so that primaries like
+      // main/development are always offerable — even when the local checkout is in a
+      // detached HEAD state or simply lacks a local main (only origin/main exists).
+      // `git branch -b <new> origin/main` works fine, so these are valid bases.
+      const localResult = await execaCmd('git', ['branch', '--format=%(refname:short)'], { cwd: repoPath });
+      const localBranches = localResult.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+
+      let remoteBranches: string[] = [];
+      try {
+        const remoteBranchResult = await execaCmd('git', ['branch', '-r', '--format=%(refname:short)'], { cwd: repoPath });
+        remoteBranches = remoteBranchResult.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+          .filter(b => !b.includes('HEAD'))        // skip the 'origin/HEAD -> origin/main' pointer
+          .map(b => b.replace(/^[^/]+\//, ''));     // strip the remote name (origin/) prefix
+      } catch {
+        // No remote configured — local branches only.
+      }
+
+      // Merge, drop detached-HEAD pseudo-entries (e.g. "(HEAD detached at <tag>)"),
+      // and de-duplicate. The picker stores a plain branch name as the base.
+      const branches = Array.from(new Set(
+        [...localBranches, ...remoteBranches].filter(b => b && !b.startsWith('(') && !b.includes('HEAD detached'))
+      ));
 
       // Get remote URL
       let remoteUrl: string | undefined;
@@ -384,8 +528,8 @@ ${DEVOPS_KIT_DIR}/
         if (!gitignore.includes('.devops-commit-')) {
           gitignore += '\n# DevOps commit message files\n.devops-commit-*.msg\n';
         }
-        if (!gitignore.includes('.worktrees/')) {
-          gitignore += '\n# Local worktrees for isolated development\n.worktrees/\n';
+        if (!gitignore.includes('local_deploy/')) {
+          gitignore += '\n# Local worktrees for isolated development\nlocal_deploy/\n';
         }
         if (!gitignore.includes('.agent-config')) {
           gitignore += '\n# Agent session config (auto-generated per session)\n.agent-config\n';
@@ -417,8 +561,22 @@ ${DEVOPS_KIT_DIR}/
   /**
    * Create a new agent instance
    */
-  async createInstance(config: AgentInstanceConfig): Promise<IpcResult<AgentInstance>> {
+  async createInstance(
+    config: AgentInstanceConfig,
+    /**
+     * Internal only — never persisted. `isRestart` exempts the call from the
+     * concurrency caps and the kill switch, because a restart re-creates an
+     * existing session rather than adding a new one. It stays subject to
+     * branch-in-use and single-session mode, which are about correctness and
+     * the checkout rather than capacity.
+     */
+    opts: { isRestart?: boolean } = {}
+  ): Promise<IpcResult<AgentInstance>> {
     try {
+      // Normalize baseBranch — strip any remote-tracking prefix so git ops never
+      // double up (e.g. 'origin/main' → 'main').
+      config = { ...config, baseBranch: (config.baseBranch || 'main').replace(/^origin\//, '') };
+
       // Validate repository first
       const validation = await this.validateRepository(config.repoPath);
       if (!validation.success || !validation.data?.isValid) {
@@ -439,26 +597,39 @@ ${DEVOPS_KIT_DIR}/
         }
       }
 
-      // Check if branch name is already in use by an active session
-      const existingSession = Array.from(this.instances.values()).find(
-        inst => inst.config.branchName === config.branchName &&
-                inst.config.repoPath === config.repoPath &&
-                inst.status !== 'completed' &&
-                inst.status !== 'closed'
-      );
-      if (existingSession) {
-        return {
-          success: false,
-          error: {
-            code: 'BRANCH_IN_USE',
-            message: `Branch "${config.branchName}" is already in use by an active session. Please use a different branch name.`,
+      // Admission + slot reservation, atomically.
+      //
+      // These used to be three separate steps with awaits between them: the
+      // branch check read the map here, the single-session guard read it
+      // again, and `instances.set` claimed the slot forty lines later. Both
+      // awaits above (validateRepository, initializeKanvasDirectory) yield the
+      // event loop, so two concurrent creates passed every guard and both
+      // created. That was survivable when a human clicked a button; MCP
+      // fan-out makes concurrent creation the normal case.
+      //
+      // Everything slow stays outside the lock — worktree creation, agent
+      // environment, multi-repo setup all happen below.
+      const reservation = await reserveSession(
+        {
+          mutex: sessionMutex,
+          listInstances: () => Array.from(this.instances.values()),
+          reserve: (inst) => {
+            this.instances.set(inst.id, inst);
+            this.saveInstances();
           },
-        };
+          getWorktreeMode: (repoPath) =>
+            this.configService?.getRepoWorktreeMode(repoPath) ?? 'worktree',
+          getLimits: () => databaseService.getSessionLimits(),
+        },
+        config,
+        { isRestart: opts.isRestart }
+      );
+
+      if (!reservation.success || !reservation.data) {
+        return { success: false, error: reservation.error };
       }
 
-      // Generate unique ID
-      const id = `inst_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const { id, sessionId } = reservation.data;
 
       // Generate instructions
       const instructionVars: InstructionVars = {
@@ -474,10 +645,8 @@ ${DEVOPS_KIT_DIR}/
 
       const instructions = getAgentInstructions(config.agentType, instructionVars);
 
-      // Generate the standalone prompt for easy copying (only for Claude)
-      const prompt = config.agentType === 'claude'
-        ? generateClaudePrompt(instructionVars)
-        : undefined;
+      // Generate the standalone prompt for easy copying (agent-specific)
+      const prompt = generateAgentPrompt(config.agentType, instructionVars);
 
       // Create instance
       const instance: AgentInstance = {
@@ -490,7 +659,14 @@ ${DEVOPS_KIT_DIR}/
         sessionId,
       };
 
-      // Save instance
+      // The slot was already claimed under the lock; this rewrites that
+      // placeholder with the fully-populated instance (instructions, prompt).
+      //
+      // worktreeStatus/worktreeWarnings are NOT set here. They used to be, and
+      // it was a temporal dead zone: `worktreeOutcome` is declared ~35 lines
+      // BELOW, so every createInstance call threw "Cannot access
+      // 'worktreeOutcome' before initialization" and session creation was
+      // completely broken. They are recorded after the worktree exists.
       this.instances.set(id, instance);
       this.saveInstances();
 
@@ -502,18 +678,62 @@ ${DEVOPS_KIT_DIR}/
         agentCount: 1,
       });
 
-      // Create the branch if it doesn't exist
-      await this.createBranchIfNeeded(config);
+      // Create worktree for isolated development. createWorktreeIfNeeded
+      // handles branch creation atomically via `git worktree add -b <branch>
+      // <path> <base>` — no need to pre-create the branch by touching the
+      // source repo's HEAD. The old createBranchIfNeeded path did
+      // `git checkout -b` + `git checkout -` in config.repoPath, which
+      // switched the user's source-repo branch out from under any work they
+      // had open (and could leave them stuck on the session branch if the
+      // return checkout failed).
+      // NOT serialised, deliberately. An earlier draft of this story held a
+      // per-repo lock here on the theory that concurrent `git worktree add`
+      // contends on `.git/config.lock`. Measured against git 2.50.1: 40
+      // concurrent adds on one repo all succeeded, zero lock errors. The
+      // hazard does not reproduce, and serialising here would cost exactly the
+      // fan-out latency this epic exists to remove — worktree creation is the
+      // slow part, so eight sessions in one repo would queue behind each other
+      // for seconds. Left parallel unless a real failure is observed.
+      const worktreeOutcome = await this.createWorktreeIfNeeded(config);
+      const worktreePath = worktreeOutcome.path;
 
-      // Create worktree for isolated development
-      const worktreePath = await this.createWorktreeIfNeeded(config);
+      // An agent cannot see a silent fallback happen, and N agents sharing the
+      // user's real checkout overwrite each other. Refuse loudly instead — and
+      // release the slot we claimed under the admission lock, or the cap would
+      // leak by one on every failure.
+      const verdict = evaluateWorktreeOutcome(
+        worktreeOutcome.status,
+        config.createdBy,
+        worktreeOutcome.error
+      );
+      if (verdict.fatal) {
+        this.instances.delete(id);
+        this.saveInstances();
+        return { success: false, error: verdict.error };
+      }
 
-      // Update instance with worktree path
-      instance.worktreePath = worktreePath;
+      const isObserver = isObserverSession(config);
 
-      // ALWAYS regenerate instructions with the actual working directory (worktree path)
-      // This ensures the agent works in the isolated worktree, not the main repo
-      const workingDirectory = worktreePath; // The agent should work HERE
+      // An observer's worktreePath stays UNDEFINED. Storing the borrowed path
+      // would make deleteInstanceWithCleanup's path-equality check truthy and
+      // send `git worktree remove --force` at the OWNER's working directory.
+      instance.worktreePath = isObserver ? undefined : worktreePath;
+
+      // Record how the worktree was obtained. 'failed' now survives on the
+      // instance instead of being invisible, so the renderer can flag a
+      // session that is silently running in the source repo. Must come after
+      // createWorktreeIfNeeded — see the note at the reservation above.
+      instance.worktreeStatus = worktreeOutcome.status;
+      if (worktreeOutcome.warnings.length > 0) {
+        instance.worktreeWarnings = worktreeOutcome.warnings;
+      }
+
+      // ALWAYS regenerate instructions with the actual working directory.
+      // An observer works in the directory it borrows; a normal session in its
+      // own worktree.
+      const workingDirectory = isObserver
+        ? (config.observedPath ?? config.repoPath)
+        : worktreePath;
       console.log(`[AgentInstanceService] Working directory for agent: ${workingDirectory}`);
       console.log(`[AgentInstanceService] Main repo path: ${config.repoPath}`);
       console.log(`[AgentInstanceService] Worktree created: ${worktreePath !== config.repoPath}`);
@@ -521,19 +741,29 @@ ${DEVOPS_KIT_DIR}/
       const finalInstructionVars: InstructionVars = {
         ...instructionVars,
         repoPath: workingDirectory, // CRITICAL: Use worktree path, not main repo
+        baseBranch: config.baseBranch,
         mcpUrl: this.mcpServerUrl || undefined,
+        rpcUrl: this.rpcServerUrl || undefined,
+        customMcpEnabled: config.customMcpEnabled,
+        // Drives the read-only block in the prompt. An observer that does not
+        // know it is read-only plans edits it cannot make.
+        isolation: config.isolation,
       };
       instance.instructions = getAgentInstructions(config.agentType, finalInstructionVars);
-      if (config.agentType === 'claude') {
-        instance.prompt = generateClaudePrompt(finalInstructionVars);
-      }
+      instance.prompt = generateAgentPrompt(config.agentType, finalInstructionVars);
 
       // Save instance with updated instructions
       this.instances.set(id, instance);
       this.saveInstances();
 
-      // Create session file so it appears in the dashboard (use worktree path)
-      await this.createSessionFile({ ...config, repoPath: config.repoPath }, sessionId, worktreePath);
+      // Create session file so it appears in the dashboard. Observers pass
+      // undefined: SessionReport.worktreePath feeds hints.worktreePath on the
+      // ghost-mode delete path, which goes straight to `git worktree remove`.
+      await this.createSessionFile(
+        { ...config, repoPath: config.repoPath },
+        sessionId,
+        isObserver ? undefined : worktreePath
+      );
 
       // Emit status change event
       this.emitStatusChange(instance);
@@ -541,8 +771,18 @@ ${DEVOPS_KIT_DIR}/
       console.log(`[AgentInstanceService] Created agent instance ${id} for ${config.agentType}`);
       console.log(`[AgentInstanceService] Agent should work in: ${workingDirectory}`);
 
-      // Setup agent environment (.agent-config, .vscode/settings.json)
-      await this.setupAgentEnvironment(id);
+      // Setup agent environment (.agent-config, .vscode/settings.json).
+      //
+      // SKIPPED ENTIRELY for observers. setupAgentEnvironment writes into
+      // `instance.worktreePath || config.repoPath`, and for an observer that is
+      // a directory belonging to someone else. It would plant a .agent-config
+      // carrying the OBSERVER's session id — repointing the owner's agent and
+      // corrupting its commit attribution — plus clobber the owner's .mcp.json
+      // and .claude/settings.json. An observer is configured in-band from
+      // kit_start_session's response instead.
+      if (!isObserver) {
+        await this.setupAgentEnvironment(id);
+      }
 
       // Register single-repo session with MCP binder so tools recognize it
       if (!config.multiRepo && this.onSessionCreated) {
@@ -563,9 +803,7 @@ ${DEVOPS_KIT_DIR}/
             commitScope: config.multiRepo.commitScope,
           };
           instance.instructions = getAgentInstructions(config.agentType, multiRepoVars);
-          if (config.agentType === 'claude') {
-            instance.prompt = generateClaudePrompt(multiRepoVars);
-          }
+          instance.prompt = generateAgentPrompt(config.agentType, multiRepoVars);
 
           this.instances.set(id, instance);
           this.saveInstances();
@@ -676,60 +914,372 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
-   * Create branch if it doesn't exist.
-   * Uses `git branch` (not `git checkout -b`) to avoid checking out the branch
-   * in the main repo, which would conflict with `git worktree add` since a branch
-   * can only be checked out in one worktree at a time.
+   * Create worktree for isolated development.
+   *
+   * **Layout change (v2.6.54):** worktrees live OUTSIDE the source repo, at
+   *   `<repo_parent>/KIT-DevOps-<repo_name>/<branchName>/`
+   * (a sibling of the repo dir). The old layout, `<repo>/local_deploy/...`,
+   * sat inside the source tree, which meant any external `rm -rf .git`,
+   * `git clean -fdx`, or session-manager prune (e.g. a Codex coordinator
+   * scanning `local_deploy/codex-session-*`) would silently wipe the
+   * worktree directory. The new path is on the same disk as the repo so
+   * `git worktree add` doesn't need a `--no-checkout-link` workaround, and
+   * git tracks the worktree by absolute path so every git op continues to
+   * work normally.
+   *
+   * If a worktree already exists at the LEGACY `local_deploy/...` location,
+   * we honor it (backward compat). Only newly-created worktrees go to the
+   * new location.
    */
-  private async createBranchIfNeeded(config: AgentInstanceConfig): Promise<void> {
-    try {
-      // Check if branch exists
-      const branchResult = await execaCmd('git', ['branch', '--list', config.branchName], { cwd: config.repoPath });
+  /**
+   * Give a new worktree a node_modules directory (story KIT-MCP-A5).
+   *
+   * `git worktree add` is fast; node_modules is the real cost of a session, and
+   * KIT has never provisioned it — a fresh worktree simply has none and the
+   * agent finds out when its first build fails.
+   *
+   * Strategy comes from the pure planner. Everything here is best-effort: a
+   * failure to provision must never fail a session, because a session without
+   * node_modules still works for anything that is not a build.
+   *
+   * DEFAULT IS 'skip'. The ladder is measured but unproven at scale on this
+   * codebase, and the shared rungs let an agent's `npm install` mutate the
+   * user's own repository. Opt in via worktree.node_modules_strategy once the
+   * cost is worth the risk on a given machine.
+   */
+  private async provisionNodeModules(
+    repoPath: string,
+    worktreeDir: string
+  ): Promise<{ strategy: string; warning?: string } | null> {
+    const setting = (databaseService.getSetting(
+      'worktree.node_modules_strategy',
+      'skip'
+    ) ?? 'skip') as NodeModulesSetting;
 
-      if (!branchResult.stdout.trim()) {
-        // Branch doesn't exist — create it without checking it out
-        await execaCmd('git', ['branch', config.branchName, config.baseBranch], { cwd: config.repoPath });
-        console.log(`[AgentInstanceService] Created branch ${config.branchName} from ${config.baseBranch}`);
+    if (setting === 'skip') return null;
+
+    const source = join(repoPath, 'node_modules');
+    let sourceExists = false;
+    let sourceIsSymlink = false;
+    let sourceSymlinkTarget: string | undefined;
+    let sameFilesystem = true;
+
+    try {
+      const st = lstatSync(source);
+      sourceExists = true;
+      sourceIsSymlink = st.isSymbolicLink();
+      if (sourceIsSymlink) sourceSymlinkTarget = readlinkSync(source);
+    } catch {
+      sourceExists = false;
+    }
+
+    if (sourceExists && !sourceIsSymlink) {
+      try {
+        // A worktree normally sits beside its repo, but nothing guarantees it.
+        // A cross-device clone silently degrades to a full byte copy.
+        sameFilesystem = statSync(repoPath).dev === statSync(dirname(worktreeDir)).dev;
+      } catch {
+        sameFilesystem = false;
       }
+    }
+
+    const plan = planNodeModules({
+      setting,
+      platform: process.platform,
+      sourceExists,
+      sourceIsSymlink,
+      sourceSymlinkTarget,
+      sameFilesystem,
+      // Assume CoW where the platform commonly has it; the copy itself errors
+      // rather than silently degrading, so a wrong guess costs one failed
+      // command and falls through to a warning.
+      supportsCow: process.platform === 'darwin' || process.platform === 'linux',
+    });
+
+    const target = join(worktreeDir, 'node_modules');
+    try {
+      if (plan.strategy === 'none' || plan.strategy === 'skipped') {
+        return { strategy: plan.strategy };
+      }
+      if (plan.strategy === 'symlink') {
+        await symlink(sourceSymlinkTarget ?? source, target, 'dir');
+      } else if (plan.strategy === 'junction') {
+        await symlink(source, target, 'junction');
+      } else if (plan.strategy === 'clone' && plan.command) {
+        await execaCmd(plan.command[0], [...plan.command.slice(1), source, target]);
+      }
+      console.log(
+        `[AgentInstanceService] node_modules provisioned via ${plan.strategy}: ${plan.reason}`
+      );
+      return { strategy: plan.strategy, warning: plan.agentWarning };
     } catch (error) {
-      console.warn(`[AgentInstanceService] Could not create branch: ${error}`);
-      // Don't fail the whole operation if branch creation fails
+      // Never fatal. A session without node_modules is still a usable session.
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(`[AgentInstanceService] node_modules provisioning failed: ${detail}`);
+      return { strategy: 'skipped', warning: `node_modules not provisioned: ${detail}` };
     }
   }
 
   /**
-   * Create worktree for isolated development
-   * Creates worktree in .worktrees/{branchName} directory
+   * Create (or adopt) the session's worktree.
+   *
+   * Split into a FATAL half and a BEST-EFFORT half. Previously both lived in
+   * one try/catch, so a failure provisioning the worktree — a missing `.env`
+   * to symlink, an unreadable hook — was indistinguishable from `git worktree
+   * add` itself failing, and both silently returned the SOURCE REPO path.
+   *
+   * That mattered in both directions. An agent fan-out could land twenty
+   * sessions in the user's real checkout without anyone noticing; and a
+   * caller that hard-failed on the old return value would have destroyed a
+   * perfectly good worktree because a symlink threw.
+   *
+   * Note `installPreCommitHookIntoWorktree` already DOCUMENTED itself as
+   * "best-effort — failure here doesn't block worktree creation", but sat
+   * inside the try and so did exactly that. It is genuinely best-effort now.
    */
-  private async createWorktreeIfNeeded(config: AgentInstanceConfig): Promise<string> {
-    try {
-      // Worktree directory: .worktrees/{branchName}
-      const worktreeDir = join(config.repoPath, '.worktrees', config.branchName);
+  private async createWorktreeIfNeeded(
+    config: AgentInstanceConfig
+  ): Promise<{ path: string; status: WorktreeStatus; warnings: string[]; error?: string }> {
+    // An observer owns no worktree. Returning its BORROWED path here would be
+    // actively dangerous: the caller assigns the result to instance.worktreePath,
+    // and deleteInstanceWithCleanup feeds a non-null worktreePath straight to
+    // `git worktree remove --force` — so closing the observer would destroy the
+    // owner's working directory. The empty path is never used; the caller
+    // leaves worktreePath undefined for observers.
+    if (isObserverSession(config)) {
+      return { path: '', status: 'observer', warnings: [] };
+    }
 
-      // Check if worktree already exists
+    const warnings: string[] = [];
+    let worktreeDir: string;
+    let status: WorktreeStatus;
+
+    // Adoption (M5): the caller is taking over a checkout that already exists
+    // at a path KIT did not create. Honour it rather than falling through to
+    // `git worktree add`, which would fail with "already checked out" because
+    // the branch is live somewhere else.
+    if (config.adoptedWorktreePath) {
+      if (existsSync(config.adoptedWorktreePath)) {
+        console.log(
+          `[AgentInstanceService] Adopting existing checkout at ${config.adoptedWorktreePath}`
+        );
+        return { path: config.adoptedWorktreePath, status: 'reused', warnings };
+      }
+      // The path was recorded but is gone. Fall through to normal creation
+      // rather than failing: a missing directory is recoverable, and refusing
+      // would leave the user unable to adopt a branch whose worktree they
+      // deleted by hand.
+      warnings.push(
+        `Adopted worktree path ${config.adoptedWorktreePath} does not exist; creating a new worktree instead.`
+      );
+    }
+
+    // ── FATAL half: getting a worktree at all ────────────────────────────
+    try {
+      const legacyDir = join(config.repoPath, 'local_deploy', config.branchName);
+      const newWorktreeBaseDir = getWorktreeBaseDir(config.repoPath);
+      worktreeDir = join(newWorktreeBaseDir, config.branchName);
+
+      // Honor an existing legacy worktree (created before v2.6.54) rather than
+      // making a duplicate. Same for the new path.
+      if (existsSync(legacyDir)) {
+        console.log(`[AgentInstanceService] Worktree already exists at legacy path ${legacyDir} — honoring it`);
+        return { path: legacyDir, status: 'legacy', warnings };
+      }
       if (existsSync(worktreeDir)) {
         console.log(`[AgentInstanceService] Worktree already exists at ${worktreeDir}`);
-        return worktreeDir;
+        return { path: worktreeDir, status: 'reused', warnings };
       }
 
-      // Ensure .worktrees directory exists
-      const worktreesBaseDir = join(config.repoPath, '.worktrees');
-      if (!existsSync(worktreesBaseDir)) {
-        await mkdir(worktreesBaseDir, { recursive: true });
+      // Ensure the sibling base dir exists (e.g. `.../KIT-DevOps-<repo_name>/`).
+      if (!existsSync(newWorktreeBaseDir)) {
+        await mkdir(newWorktreeBaseDir, { recursive: true });
       }
 
-      // Create worktree
-      await execaCmd('git', ['worktree', 'add', worktreeDir, config.branchName], { cwd: config.repoPath });
+      // Create worktree — CRITICAL: branch safety.
+      // `git worktree add <dir> <ref>` resolves <ref> as ANY ref (branch, tag, or
+      // commit). If the session branch doesn't exist yet, git would silently check
+      // out a same-named tag/commit and land in DETACHED HEAD — auto-commits then
+      // attach to no branch and can be lost. To prevent this we explicitly branch:
+      //   - branch exists  → `git worktree add <dir> <branchName>` (checks it out)
+      //   - branch missing → `git worktree add -b <branchName> <dir> <baseBranch>`
+      //     (atomically creates the session branch from the base and checks it out)
+      const baseBranch = (config.baseBranch || 'main').replace(/^origin\//, '');
+      const branchListed = await execaCmd('git', ['branch', '--list', config.branchName], { cwd: config.repoPath });
+      const branchExists = Boolean(branchListed.stdout.trim());
+
+      if (branchExists) {
+        await execaCmd('git', ['worktree', 'add', worktreeDir, config.branchName], { cwd: config.repoPath });
+      } else {
+        await execaCmd('git', ['worktree', 'add', '-b', config.branchName, worktreeDir, baseBranch], { cwd: config.repoPath });
+      }
+
+      // Safety net: verify the worktree landed on the expected branch, not detached.
+      const headCheck = await execaCmd('git', ['branch', '--show-current'], { cwd: worktreeDir });
+      const head = headCheck.stdout.trim();
+      if (head !== config.branchName) {
+        console.warn(`[AgentInstanceService] Worktree HEAD is "${head || 'DETACHED'}", expected "${config.branchName}" — re-attaching to session branch`);
+        // Force the worktree onto a correctly-named session branch from base.
+        await execaCmd('git', ['checkout', '-B', config.branchName, baseBranch], { cwd: worktreeDir });
+      }
       console.log(`[AgentInstanceService] Created worktree at ${worktreeDir} for branch ${config.branchName}`);
-
-      // Initialize .S9N_KIT_DevOpsAgent in the worktree
-      await this.initializeKanvasDirectory(worktreeDir);
-
-      return worktreeDir;
+      status = 'created';
     } catch (error) {
-      console.warn(`[AgentInstanceService] Could not create worktree: ${error}`);
-      // Fall back to using main repo path
-      return config.repoPath;
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(`[AgentInstanceService] Could not create worktree: ${detail}`);
+      // The caller decides what this means — fatal for an agent-created
+      // session, degrade-and-continue for a human's. See evaluateWorktreeOutcome.
+      return { path: config.repoPath, status: 'failed', warnings, error: detail };
+    }
+
+    // ── BEST-EFFORT half: provisioning what is inside it ─────────────────
+    // A failure here leaves a perfectly usable worktree. Each step is caught
+    // separately and surfaced as a warning so a headless caller can see it —
+    // these used to be swallowed to console.warn and were invisible to MCP.
+    const provision = async (label: string, run: () => Promise<unknown>) => {
+      try {
+        await run();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`[AgentInstanceService] ${label} failed for ${worktreeDir}: ${detail}`);
+        warnings.push(`${label}: ${detail}`);
+      }
+    };
+
+    await provision('initialize KIT directory', () =>
+      this.initializeKanvasDirectory(worktreeDir)
+    );
+    await provision('link .env into worktree', () =>
+      this.linkEnvIntoWorktree(config.repoPath, worktreeDir)
+    );
+
+      // Propagate the source repo's pre-commit hook to the worktree's gitdir so
+      // every KIT-initiated commit fires the project's existing hygiene. Worktree
+      // gitdirs have their OWN .git/hooks directory — if the project uses the
+      // `pre-commit` framework or husky, the hook is only installed in the
+      // SOURCE repo's gitdir by default. This is the gap that let Kemory's
+      // truncated ai_chat_service.py reach origin/main: kit_commit / merge auto-
+      // commits ran `git commit` in a worktree gitdir with no pre-commit hook
+      // physically present, so the project's parser/format/EOF checks silently
+      // didn't run. Best-effort — failure here doesn't block worktree creation.
+    await provision('install pre-commit hook', () =>
+      this.installPreCommitHookIntoWorktree(config.repoPath, worktreeDir)
+    );
+    await provision('provision node_modules', async () => {
+      const result = await this.provisionNodeModules(config.repoPath, worktreeDir);
+      if (result?.warning) warnings.push(result.warning);
+    });
+
+    return { path: worktreeDir, status, warnings };
+  }
+
+  /**
+   * C6: Link the main repo's `.env` into the worktree if appropriate.
+   * Decision is delegated to the pure planner in `shared/env-symlink-plan.ts`;
+   * this method only handles the fs side. Failure is non-fatal — we log and
+   * carry on rather than blocking session start, except in the deliberate
+   * `block-missing-env` case (which is logged as a warning here; the
+   * stricter behavior is enforced higher up via the planner's error code).
+   */
+  private async linkEnvIntoWorktree(repoPath: string, worktreePath: string): Promise<void> {
+    try {
+      const repoEnvPath = join(repoPath, '.env');
+      const treeEnvPath = join(worktreePath, '.env');
+      const repoEnvExists = existsSync(repoEnvPath);
+
+      let worktreeEnvExists = false;
+      try {
+        await lstat(treeEnvPath);
+        worktreeEnvExists = true;
+      } catch {
+        // not present
+      }
+
+      const action = planEnvSymlink({
+        repoPath,
+        worktreePath,
+        repoEnvExists,
+        worktreeEnvExists,
+      });
+
+      switch (action.kind) {
+        case 'create-symlink':
+          await symlink(repoEnvPath, treeEnvPath);
+          console.log(`[AgentInstanceService] Linked .env into worktree: ${treeEnvPath} -> ${repoEnvPath}`);
+          break;
+        case 'skip-in-place':
+        case 'skip-already-exists':
+          console.log(`[AgentInstanceService] .env link skipped: ${action.reason}`);
+          break;
+        case 'allow-missing-env-override':
+          console.warn(`[AgentInstanceService] Starting session without .env (override): ${action.reason}`);
+          break;
+        case 'block-missing-env':
+          console.warn(`[AgentInstanceService] No .env file in repo — agent may fail at runtime: ${action.error.message}`);
+          break;
+      }
+    } catch (err) {
+      console.warn(`[AgentInstanceService] Could not link .env into worktree: ${err}`);
+    }
+  }
+
+  /**
+   * Copy the source repo's pre-commit hook script (if any) into the worktree's
+   * gitdir/hooks/ so KIT-initiated commits run the same checks. Worktrees have
+   * isolated `.git/hooks/` directories at `<source>/.git/worktrees/<wt>/hooks/`,
+   * so a hook installed by `pre-commit install` or `husky install` in the
+   * source repo only fires for commits made from the source's working tree —
+   * KIT-managed worktrees silently skip it. This is the gap that let Kemory's
+   * 1119-line truncation reach origin/main.
+   *
+   * Strategy: copy `<source>/.git/hooks/pre-commit` (the executable that
+   * `pre-commit install` / husky write) verbatim into the worktree's
+   * hooks dir. The script itself dispatches to `.pre-commit-config.yaml` or
+   * `.husky/pre-commit` so we don't need to know which tool is in use.
+   *
+   * Idempotent — if a hook is already present in the worktree gitdir we
+   * leave it alone (the user may have hand-customized it). Failure here is
+   * non-fatal: worktree creation still succeeds, the agent just doesn't get
+   * the hook safety net.
+   */
+  private async installPreCommitHookIntoWorktree(repoPath: string, worktreePath: string): Promise<void> {
+    try {
+      // Resolve the worktree's gitdir via `git rev-parse --git-dir` from
+      // inside the worktree — far more reliable than reconstructing the path
+      // from the basename (legacy `local_deploy/` worktrees don't match).
+      const gitDirRes = await execaCmd('git', ['rev-parse', '--git-dir'], { cwd: worktreePath });
+      const rawGitDir = gitDirRes.stdout.trim();
+      const wtGitDir = rawGitDir.startsWith('/') ? rawGitDir : join(worktreePath, rawGitDir);
+      const wtHooksDir = join(wtGitDir, 'hooks');
+      const wtPreCommit = join(wtHooksDir, 'pre-commit');
+
+      if (existsSync(wtPreCommit)) {
+        console.log(`[AgentInstanceService] Worktree pre-commit hook already present: ${wtPreCommit}`);
+        return;
+      }
+
+      // Source hook lives at <source>/.git/hooks/pre-commit after pre-commit or
+      // husky has been installed. If it doesn't exist, the project has no
+      // hooks configured and there's nothing to propagate.
+      const sourceGitDirRes = await execaCmd('git', ['rev-parse', '--git-common-dir'], { cwd: repoPath });
+      const rawSourceGitDir = sourceGitDirRes.stdout.trim();
+      const sourceGitDir = rawSourceGitDir.startsWith('/') ? rawSourceGitDir : join(repoPath, rawSourceGitDir);
+      const sourcePreCommit = join(sourceGitDir, 'hooks', 'pre-commit');
+
+      if (!existsSync(sourcePreCommit)) {
+        console.log(`[AgentInstanceService] No source pre-commit hook to install (${sourcePreCommit} missing)`);
+        return;
+      }
+
+      await mkdir(wtHooksDir, { recursive: true });
+      const fs = await import('fs/promises');
+      const contents = await fs.readFile(sourcePreCommit);
+      await fs.writeFile(wtPreCommit, contents, { mode: 0o755 });
+      console.log(`[AgentInstanceService] Installed pre-commit hook into worktree: ${wtPreCommit}`);
+    } catch (err) {
+      // Hook install failure is never fatal — the worktree should still come
+      // up. The KIT-side parser/diff gate provides defense-in-depth.
+      console.warn(`[AgentInstanceService] Could not install pre-commit hook into worktree: ${err}`);
     }
   }
 
@@ -748,7 +1298,7 @@ ${DEVOPS_KIT_DIR}/
         instanceId: instance.id,
         agentType: instance.config.agentType,
         branchName: instance.config.branchName,
-        baseBranch: instance.config.baseBranch,
+        baseBranch: (instance.config.baseBranch || 'main').replace(/^origin\//, ''),
         taskDescription: instance.config.taskDescription,
         createdAt: instance.createdAt,
         worktreePath,
@@ -830,12 +1380,21 @@ ${DEVOPS_KIT_DIR}/
     if (!this.mcpServerUrl) return;
 
     try {
-      const mcpConfig = {
+      // Include both transport types so any agent (Claude Code, Codex, Cursor, etc.) can connect:
+      // - kit: streamable-http for Claude Code (stateful, requires MCP session protocol)
+      // - kit-rpc: http for Codex and other plain JSON-RPC clients (stateless /rpc endpoint)
+      const mcpConfig: Record<string, unknown> = {
         mcpServers: {
           kit: {
             type: 'streamable-http',
             url: this.mcpServerUrl,
           },
+          ...(this.rpcServerUrl ? {
+            'kit-rpc': {
+              type: 'http',
+              url: this.rpcServerUrl,
+            },
+          } : {}),
         },
       };
 
@@ -874,6 +1433,173 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
+   * Pre-seed the project-scoped MCP approval in ~/.claude.json.
+   *
+   * Claude Code requires explicit approval for project-scoped servers declared in
+   * a worktree's .mcp.json (the "Do you trust the MCP servers in this project?"
+   * prompt). Until that approval is recorded under projects[<path>].
+   * enabledMcpjsonServers, Claude SILENTLY SKIPS the server on session start — so
+   * kit_commit / kit_lock_file etc. never appear, even though the KIT MCP server
+   * is healthy. Since KIT launches the session non-interactively, the prompt is
+   * never answered. We pre-seed the approval here so the kit_* tools load on the
+   * very first launch in a fresh worktree.
+   *
+   * Read-modify-write preserves all existing Claude config (history, other
+   * projects, settings); we only add/extend this worktree's entry.
+   */
+  private async seedClaudeMcpApproval(worktreePath: string): Promise<void> {
+    // Serialised with the unseed on the config path. Read-modify-write is NOT
+    // made safe by the atomic rename below: rename only stops a crash
+    // truncating the file, it does nothing about two concurrent writers each
+    // reading, editing and writing back — the later write silently discards
+    // the earlier one's project entry. At agent fan-out that is N concurrent
+    // creates racing on one file.
+    return claudeConfigMutex.runExclusive(join(homedir(), '.claude.json'), async () => {
+    try {
+      const claudeConfigPath = join(homedir(), '.claude.json');
+
+      let config: Record<string, any> = {};
+      if (existsSync(claudeConfigPath)) {
+        try {
+          config = JSON.parse(await readFile(claudeConfigPath, 'utf-8')) || {};
+        } catch (parseErr) {
+          // Corrupt/unexpected file — do NOT overwrite the user's Claude config.
+          console.warn(`[AgentInstanceService] ~/.claude.json unparseable, skipping MCP pre-approval: ${parseErr}`);
+          return;
+        }
+      }
+
+      if (typeof config.projects !== 'object' || config.projects === null) config.projects = {};
+      const project = (typeof config.projects[worktreePath] === 'object' && config.projects[worktreePath] !== null)
+        ? config.projects[worktreePath] : {};
+
+      // Approve the servers we declared in .mcp.json. Merge with any existing list.
+      const ourServers = ['kit', ...(this.rpcServerUrl ? ['kit-rpc'] : [])];
+      const existing: string[] = Array.isArray(project.enabledMcpjsonServers) ? project.enabledMcpjsonServers : [];
+      project.enabledMcpjsonServers = Array.from(new Set([...existing, ...ourServers]));
+      // If a prior decline recorded our servers as disabled, un-disable them
+      // (disabled overrides enabled in Claude Code).
+      if (Array.isArray(project.disabledMcpjsonServers)) {
+        project.disabledMcpjsonServers = project.disabledMcpjsonServers.filter((s: string) => !ourServers.includes(s));
+      }
+      // Mark the project trust dialog as accepted so Claude doesn't re-prompt.
+      if (project.hasTrustDialogAccepted !== true) project.hasTrustDialogAccepted = true;
+
+      config.projects[worktreePath] = project;
+
+      // Atomic write: temp file + rename, so a crash can't truncate ~/.claude.json.
+      const tmpPath = `${claudeConfigPath}.kit-tmp-${Date.now()}`;
+      await writeFile(tmpPath, JSON.stringify(config, null, 2));
+      const { rename } = await import('fs/promises');
+      await rename(tmpPath, claudeConfigPath);
+      console.log(`[AgentInstanceService] Pre-approved kit MCP server in ~/.claude.json for ${worktreePath}`);
+    } catch (error) {
+      // Non-fatal: the session still launches; the agent just falls back to git/file locks.
+      console.warn(`[AgentInstanceService] Could not pre-seed ~/.claude.json MCP approval: ${error}`);
+    }
+    });
+  }
+
+  /**
+   * Remove a worktree's entry from ~/.claude.json (story KIT-MCP-H5).
+   *
+   * `seedClaudeMcpApproval` adds `projects[<worktreePath>]` on every session
+   * create and nothing ever removed it, so the user's Claude config grew an
+   * entry per session forever.
+   *
+   * This is the riskiest cleanup in the epic, because the file belongs to the
+   * USER, not to KIT: it holds their Claude history and trust decisions for
+   * every project they have ever opened. Three guards, all load-bearing:
+   *
+   *   1. Only ever called when the worktree directory was ACTUALLY removed.
+   *   2. Only for paths that are demonstrably KIT worktrees, and only when the
+   *      layout resolves with 'exact' confidence. The current layout
+   *      RECONSTRUCTS a repo root from a directory name, so a renamed source
+   *      repo yields a plausible-looking path that is not what it claims —
+   *      never enough to authorise deleting one of the user's entries.
+   *   3. Never the user's own repo path. That entry is theirs.
+   */
+  private async unseedClaudeMcpApproval(worktreePath: string): Promise<void> {
+    if (!worktreePath) return;
+
+    // Guard 2: must be a KIT worktree, resolved exactly.
+    const resolved = resolveRepoRootFromWorktree(worktreePath);
+    if (!resolved) {
+      console.log(
+        `[AgentInstanceService] Not unseeding ~/.claude.json for ${worktreePath}: not a KIT worktree.`
+      );
+      return;
+    }
+    if (resolved.confidence !== 'exact') {
+      // The current layout is always 'derived'. Verify against git before
+      // treating a reconstructed path as authority to delete.
+      let verified = false;
+      try {
+        const out = await execaCmd('git', ['rev-parse', '--git-common-dir'], {
+          cwd: resolved.root,
+        });
+        verified = Boolean(out.stdout.trim());
+      } catch {
+        verified = false;
+      }
+      if (!verified) {
+        console.warn(
+          `[AgentInstanceService] Not unseeding ~/.claude.json for ${worktreePath}: ` +
+            `derived repo root ${resolved.root} could not be verified.`
+        );
+        return;
+      }
+    }
+
+    // Guard 3: never the source repo itself.
+    if (worktreePath === resolved.root) {
+      console.warn(
+        `[AgentInstanceService] Refusing to unseed ~/.claude.json for ${worktreePath}: ` +
+          "that is the user's own repository entry."
+      );
+      return;
+    }
+
+    return claudeConfigMutex.runExclusive(join(homedir(), '.claude.json'), async () => {
+      try {
+        const claudeConfigPath = join(homedir(), '.claude.json');
+        if (!existsSync(claudeConfigPath)) return;
+
+        let config: Record<string, any>;
+        try {
+          config = JSON.parse(await readFile(claudeConfigPath, 'utf-8')) || {};
+        } catch (parseErr) {
+          // Same rule as the seed: never rewrite a file we could not parse.
+          console.warn(
+            `[AgentInstanceService] ~/.claude.json unparseable, skipping unseed: ${parseErr}`
+          );
+          return;
+        }
+
+        if (
+          typeof config.projects !== 'object' ||
+          config.projects === null ||
+          !(worktreePath in config.projects)
+        ) {
+          return;
+        }
+
+        delete config.projects[worktreePath];
+
+        const tmpPath = `${claudeConfigPath}.kit-tmp-${Date.now()}`;
+        await writeFile(tmpPath, JSON.stringify(config, null, 2));
+        const { rename } = await import('fs/promises');
+        await rename(tmpPath, claudeConfigPath);
+        console.log(
+          `[AgentInstanceService] Removed ~/.claude.json entry for ${worktreePath}`
+        );
+      } catch (error) {
+        console.warn(`[AgentInstanceService] Could not unseed ~/.claude.json: ${error}`);
+      }
+    });
+  }
+
+  /**
    * Copy houserules.md and FOLDER_STRUCTURE.md from main repo to worktree root
    * Single source of truth: these files live at repo root, not inside .S9N_KIT_DevOpsAgent/
    */
@@ -898,7 +1624,7 @@ ${DEVOPS_KIT_DIR}/
 
   /**
    * Copy House_Rules_Contracts/ from main repo to worktree root
-   * So agents working in .worktrees/ can read contract docs
+   * So agents working in local_deploy/ can read contract docs
    */
   private async copyContractsToWorktree(worktreePath: string, mainRepoPath: string): Promise<void> {
     try {
@@ -975,7 +1701,7 @@ ${DEVOPS_KIT_DIR}/
   /**
    * Create multi-repo environment after primary worktree is ready.
    * For submodule secondaries: create branch in-place inside the submodule dir.
-   * For external secondaries: create branch + worktree in that repo's .worktrees/.
+   * For external secondaries: create branch + worktree in that repo's local_deploy/.
    */
   private async createMultiRepoEnvironment(
     config: AgentInstanceConfig,
@@ -1034,31 +1760,29 @@ ${DEVOPS_KIT_DIR}/
             isSubmodule: true,
           });
         } else {
-          // External repo: create worktree in that repo's .worktrees/
+          // External repo: worktree lives at <externalRepoParent>/KIT-DevOps-<externalRepoName>/<branch>
+          // (sibling of the external repo dir) — same rationale as createWorktreeIfNeeded.
+          // Honor any existing legacy worktree at <repo>/local_deploy/<branch> for backward compat.
           const externalRepoPath = secondary.repoPath;
-          const worktreeDir = join(externalRepoPath, '.worktrees', branchName);
+          const legacyDir = join(externalRepoPath, 'local_deploy', branchName);
+          const externalBaseDir = getWorktreeBaseDir(externalRepoPath);
+          const worktreeDir = existsSync(legacyDir) ? legacyDir : join(externalBaseDir, branchName);
 
           if (!existsSync(worktreeDir)) {
-            // Create branch if needed — use `git branch` (not checkout -b)
-            // to avoid checking out the branch in the main repo,
-            // which would conflict with worktree add
+            // Create worktree — branch-safe (see createWorktreeIfNeeded for rationale).
+            // Use `-b` when the branch is missing so we never detach onto a same-named tag.
+            const base = (secondary.baseBranch || 'main').replace(/^origin\//, '');
+            if (!existsSync(externalBaseDir)) {
+              await mkdir(externalBaseDir, { recursive: true });
+            }
             try {
               const branchResult = await execaCmd('git', ['branch', '--list', branchName], { cwd: externalRepoPath });
-              if (!branchResult.stdout.trim()) {
-                const base = secondary.baseBranch || 'main';
-                await execaCmd('git', ['branch', branchName, base], { cwd: externalRepoPath });
+              const branchExists = Boolean(branchResult.stdout.trim());
+              if (branchExists) {
+                await execaCmd('git', ['worktree', 'add', worktreeDir, branchName], { cwd: externalRepoPath });
+              } else {
+                await execaCmd('git', ['worktree', 'add', '-b', branchName, worktreeDir, base], { cwd: externalRepoPath });
               }
-            } catch {
-              // Branch creation may fail, continue
-            }
-
-            // Create worktree
-            const worktreesBaseDir = join(externalRepoPath, '.worktrees');
-            if (!existsSync(worktreesBaseDir)) {
-              await mkdir(worktreesBaseDir, { recursive: true });
-            }
-            try {
-              await execaCmd('git', ['worktree', 'add', worktreeDir, branchName], { cwd: externalRepoPath });
               console.log(`[AgentInstanceService] Created external repo worktree at ${worktreeDir}`);
             } catch (e) {
               console.warn(`[AgentInstanceService] Could not create external worktree: ${e}`);
@@ -1112,6 +1836,11 @@ ${DEVOPS_KIT_DIR}/
     if (mcpAgents.includes(instance.config.agentType)) {
       await this.createMcpConfigFile(worktreePath);
       await this.createClaudeProjectSettings(worktreePath);
+      // Claude Code skips project-scoped .mcp.json servers until they're approved
+      // in ~/.claude.json. Pre-seed that approval so kit_* tools load on first launch.
+      if (instance.config.agentType === 'claude') {
+        await this.seedClaudeMcpApproval(worktreePath);
+      }
     }
 
     return { success: true };
@@ -1165,37 +1894,854 @@ ${DEVOPS_KIT_DIR}/
    * List all instances
    */
   /**
+   * Find a sibling session (same repoPath, different sessionId) that has had
+   * MCP activity in the last 30 minutes. Used by InstructionsModal to surface
+   * "Agent looks connected to a different session for this repo" hints when
+   * the current session is still waiting. Returns null when there's no
+   * active sibling — the modal then shows the generic gotcha hint instead.
+   */
+  findActiveSiblingInRepo(sessionId: string): { sessionId: string; branchName: string; lastActivity: string } | null {
+    let me: AgentInstance | undefined;
+    for (const inst of this.instances.values()) {
+      if (inst.sessionId === sessionId) { me = inst; break; }
+    }
+    if (!me?.config?.repoPath) return null;
+
+    let best: { sessionId: string; branchName: string; lastActivity: string; ms: number } | null = null;
+    const cutoffMs = Date.now() - 30 * 60 * 1000;
+    for (const inst of this.instances.values()) {
+      if (!inst.sessionId || inst.sessionId === sessionId) continue;
+      if (inst.config?.repoPath !== me.config.repoPath) continue;
+      if (inst.status === 'closed' || inst.status === 'completed' || inst.status === 'failed') continue;
+      const last = databaseService.lastMcpCallTime(inst.sessionId);
+      if (!last) continue;
+      const ms = new Date(last).getTime();
+      if (ms < cutoffMs) continue;
+      if (!best || ms > best.ms) {
+        best = { sessionId: inst.sessionId, branchName: inst.config?.branchName || '(unknown)', lastActivity: last, ms };
+      }
+    }
+    if (!best) return null;
+    return { sessionId: best.sessionId, branchName: best.branchName, lastActivity: best.lastActivity };
+  }
+
+  /**
+   * Attempt to re-establish a missing worktree by running
+   *   git worktree add --force <worktreePath> <branch>
+   * from the source repo. Works when the SOURCE repo and BRANCH still exist —
+   * git materializes the worktree dir again from the branch HEAD. Returns true
+   * on success.
+   *
+   * Use case: an external `rm -rf .git` / clone of the source repo blows away
+   * the worktree registry; the worktree dir on disk may also be gone (e.g.
+   * external session-manager prune). With the source repo and branch still
+   * present, this re-creates the worktree in place. No user work is lost
+   * unless it was uncommitted at the moment of the prune — that's gone with
+   * any external delete and outside our recovery window.
+   */
+  private async tryRepairWorktree(
+    repoPath: string,
+    worktreePath: string,
+    branchName: string | undefined
+  ): Promise<boolean> {
+    if (!repoPath || !worktreePath || !branchName) return false;
+    if (!existsSync(repoPath)) return false;
+    try {
+      // Does the branch still exist in the source repo? If not, we can't
+      // re-attach to it without inventing history.
+      const branchListed = await execaCmd('git', ['branch', '--list', branchName], { cwd: repoPath });
+      if (!branchListed.stdout.trim()) return false;
+      // Ensure parent dir exists, then materialize the worktree.
+      await mkdir(dirname(worktreePath), { recursive: true });
+      await execaCmd('git', ['worktree', 'add', '--force', worktreePath, branchName], { cwd: repoPath });
+      console.log(`[AgentInstanceService] Repaired worktree at ${worktreePath} (branch ${branchName})`);
+      // Also re-install the project's pre-commit hook into the freshly
+      // materialized worktree gitdir. `git worktree add --force` doesn't
+      // copy hooks; without this, the repaired worktree commits with no
+      // project hook firing — same hole as the original create path.
+      await this.installPreCommitHookIntoWorktree(repoPath, worktreePath);
+      return true;
+    } catch (err) {
+      console.warn(`[AgentInstanceService] Could not repair worktree at ${worktreePath}: ${err}`);
+      return false;
+    }
+  }
+
+  /**
+   * One-time migration: for every non-terminal instance whose worktree still
+   * lives at the legacy `<repo>/local_deploy/<branchName>` path, move it to
+   * the new sibling location `<repo_parent>/KIT-DevOps-<repo_name>/<branchName>`
+   * via `git worktree move`, then update `instance.worktreePath` and
+   * regenerate the agent's prompt + instructions so the user-visible "Copy
+   * Prompt" output points the agent at the new directory.
+   *
+   * Skips:
+   *   - sessions already on the new layout
+   *   - sessions whose legacy dir is missing on disk (nothing to move)
+   *   - sessions whose target dir already exists (would conflict)
+   *   - terminal sessions (completed/failed/closed)
+   *
+   * Returns { moved, regenerated } counts.
+   */
+  /**
+   * Migrate stale `useWorktree: false` config where a real sibling worktree
+   * exists. The instance store ended up with many rows in an inconsistent
+   * state (useWorktree=false but worktreePath set to a distinct sibling)
+   * because `restartInstance`'s cold path fell back to
+   * `inheritedConfig?.useWorktree ?? false` when `sessionData.worktreePath`
+   * was empty at restart time. Downstream code that inspects the flag
+   * (external tooling, future guards) then reads "in-place" when the
+   * instance is actually worktree-isolated. Fix: any row where
+   * `worktreePath` is set AND differs from `repoPath` gets
+   * `useWorktree: true`. Idempotent — clean rows are untouched.
+   */
+  migrateUseWorktreeFlag(): number {
+    let migrated = 0;
+    for (const instance of this.instances.values()) {
+      const cfg = instance.config;
+      if (!cfg) continue;
+      const wt = instance.worktreePath;
+      if (!wt || wt === cfg.repoPath) continue; // no drift possible
+      if (cfg.useWorktree === true) continue;   // already correct
+      cfg.useWorktree = true;
+      migrated++;
+    }
+    if (migrated > 0) {
+      this.saveInstances();
+      console.log(`[AgentInstanceService] Migrated useWorktree=true on ${migrated} drifted instance(s)`);
+    }
+    return migrated;
+  }
+
+  async migrateLegacyWorktrees(): Promise<{ moved: number; regenerated: number }> {
+    let moved = 0;
+    let regenerated = 0;
+    const migrate = async (
+      repoPath: string,
+      currentPath: string | undefined,
+      branchName: string | undefined
+    ): Promise<string | null> => {
+      if (!repoPath || !currentPath || !branchName) return null;
+      // Only touch legacy paths: <something>/local_deploy/<branchName>
+      const legacyPattern = new RegExp(`^(.+)/local_deploy/${branchName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}/?$`);
+      if (!legacyPattern.test(currentPath)) return null;
+
+      const targetBase = getWorktreeBaseDir(repoPath);
+      const targetPath = join(targetBase, branchName);
+
+      // Already at the new location on disk? Just heal the in-memory pointer.
+      // This is the common case for sessions whose disk move succeeded in a
+      // prior migration but whose instance.worktreePath couldn't be re-saved
+      // (e.g. the IPC startup loop skipped them because the legacy path was
+      // missing, so no fresh createInstance ever recomputed the pointer).
+      // No `git worktree move` here — the files are already where we want them.
+      if (existsSync(targetPath)) {
+        console.log(`[AgentInstanceService] Worktree already at ${targetPath}; updating instance pointer from legacy ${currentPath}`);
+        return targetPath;
+      }
+
+      // Otherwise: legacy is still on disk and we need to actually move it.
+      if (!existsSync(currentPath)) {
+        // Neither side exists. Nothing we can do here — leave for the
+        // orphan reaper.
+        return null;
+      }
+      try {
+        await mkdir(targetBase, { recursive: true });
+        await execaCmd('git', ['worktree', 'move', currentPath, targetPath], { cwd: repoPath });
+        console.log(`[AgentInstanceService] Migrated worktree ${currentPath} -> ${targetPath}`);
+        return targetPath;
+      } catch (err) {
+        console.warn(`[AgentInstanceService] Could not migrate worktree ${currentPath}: ${err}`);
+        return null;
+      }
+    };
+
+    for (const instance of this.instances.values()) {
+      if (instance.status === 'completed' || instance.status === 'failed' || instance.status === 'closed') continue;
+      let anyMoved = false;
+
+      if (instance.multiRepoEntries && instance.multiRepoEntries.length > 0) {
+        for (const r of instance.multiRepoEntries) {
+          const newPath = await migrate(r.repoPath, r.worktreePath, r.branchName);
+          if (newPath) {
+            r.worktreePath = newPath;
+            anyMoved = true;
+            moved++;
+          }
+        }
+        // For multi-repo instances, instance.worktreePath mirrors the primary
+        // entry's worktreePath, and submodule secondaries are derived from it.
+        // If the primary was migrated in a previous launch but this instance's
+        // top-level pointer (and the submodule-secondary derivations) weren't
+        // re-synced, do it now. Idempotent.
+        const primary = instance.multiRepoEntries.find(e => e.role === 'primary');
+        if (primary && primary.worktreePath) {
+          if (instance.worktreePath !== primary.worktreePath) {
+            instance.worktreePath = primary.worktreePath;
+            anyMoved = true;
+          }
+          for (const r of instance.multiRepoEntries) {
+            if (r.role === 'secondary' && r.isSubmodule) {
+              const expected = join(primary.worktreePath, r.repoPath || r.repoName || '');
+              if (r.worktreePath !== expected) {
+                r.worktreePath = expected;
+                anyMoved = true;
+              }
+            }
+          }
+        }
+      } else {
+        const newPath = await migrate(instance.config.repoPath, instance.worktreePath, instance.config.branchName);
+        if (newPath) {
+          instance.worktreePath = newPath;
+          anyMoved = true;
+          moved++;
+        }
+      }
+
+      // Regenerate the agent's prompt/instructions with the new worktreePath so
+      // the user-visible "Copy Prompt" string isn't stale.
+      if (anyMoved) {
+        const wt = instance.worktreePath || instance.config.repoPath;
+        const vars: InstructionVars = {
+          repoPath: wt,
+          repoName: basename(instance.config.repoPath),
+          branchName: instance.config.branchName,
+          sessionId: instance.sessionId || instance.id,
+          taskDescription: instance.config.taskDescription,
+          systemPrompt: instance.config.systemPrompt || '',
+          contextPreservation: instance.config.contextPreservation || '',
+          rebaseFrequency: instance.config.rebaseFrequency || 'never',
+          baseBranch: instance.config.baseBranch,
+          mcpUrl: this.mcpServerUrl || undefined,
+          rpcUrl: this.rpcServerUrl || undefined,
+          customMcpEnabled: instance.config.customMcpEnabled,
+          ...(instance.multiRepoEntries && instance.multiRepoEntries.length > 0
+            ? {
+                multiRepoEntries: instance.multiRepoEntries,
+                commitScope: instance.config.multiRepo?.commitScope,
+              }
+            : {}),
+        };
+        try {
+          instance.instructions = getAgentInstructions(instance.config.agentType, vars);
+          instance.prompt = generateAgentPrompt(instance.config.agentType, vars);
+          regenerated++;
+        } catch (err) {
+          console.warn(`[AgentInstanceService] Failed to regenerate prompt for ${instance.id}: ${err}`);
+        }
+      }
+    }
+
+    if (moved > 0) {
+      this.saveInstances();
+      console.log(`[AgentInstanceService] Migrated ${moved} legacy worktree(s); regenerated ${regenerated} prompt(s)`);
+    }
+    return { moved, regenerated };
+  }
+
+  /**
+   * Walk every non-terminal instance and, for each one whose worktree dir is
+   * missing, attempt to re-create it via `git worktree add --force <path>
+   * <branch>` from the source repo. Many "lost" worktrees still have an
+   * intact source repo + branch and come back with one command.
+   *
+   * Returns the count of worktrees successfully repaired. Anything still
+   * missing after this pass should be reaped via `reapOrphanInstances`.
+   */
+  async repairOrphanWorktrees(): Promise<number> {
+    let repaired = 0;
+    for (const instance of this.instances.values()) {
+      if (instance.status === 'completed' || instance.status === 'failed' || instance.status === 'closed') continue;
+      if (instance.multiRepoEntries && instance.multiRepoEntries.length > 0) {
+        for (const r of instance.multiRepoEntries) {
+          if (r.worktreePath && !existsSync(r.worktreePath)) {
+            const ok = await this.tryRepairWorktree(r.repoPath, r.worktreePath, r.branchName);
+            if (ok) repaired++;
+          }
+        }
+      } else {
+        const wt = instance.worktreePath;
+        if (wt && !existsSync(wt)) {
+          const ok = await this.tryRepairWorktree(instance.config.repoPath, wt, instance.config.branchName);
+          if (ok) repaired++;
+        }
+      }
+    }
+    if (repaired > 0) {
+      console.log(`[AgentInstanceService] Repaired ${repaired} worktree(s) via 'git worktree add --force'`);
+    }
+    return repaired;
+  }
+
+  /**
+   * Record `predecessorSessionId` on `instance` and persist. Used by both
+   * restart paths to extend the lineage chain. `inheritedChain` is the
+   * predecessor list of the instance being replaced — passed in so the new
+   * instance inherits its full ancestry, not just the immediate predecessor.
+   */
+  private recordPredecessor(
+    instance: AgentInstance,
+    predecessorSessionId: string,
+    inheritedChain: string[] = []
+  ): void {
+    if (!predecessorSessionId || predecessorSessionId === instance.sessionId) return;
+    const existing = instance.predecessorSessionIds || [];
+    // De-duplicate while preserving order (most ancient first, most recent last).
+    const merged = [...existing, ...inheritedChain, predecessorSessionId];
+    const seen = new Set<string>();
+    const deduped: string[] = [];
+    for (const sid of merged) {
+      if (!sid || sid === instance.sessionId) continue;
+      if (seen.has(sid)) continue;
+      seen.add(sid);
+      deduped.push(sid);
+    }
+    instance.predecessorSessionIds = deduped;
+    this.saveInstances();
+  }
+
+  /**
+   * Repatriate orphaned `mcp_calls` rows. Two strategies, in order:
+   *
+   *   1. **Lineage chain** (the reliable one going forward): for every live
+   *      instance with `predecessorSessionIds`, transfer mcp_calls from each
+   *      old sessionId to the live one. Lineage is recorded at restart time
+   *      by `recordPredecessor`, so this catches every previous-restart id
+   *      no matter how many restarts back.
+   *
+   *   2. **(repoPath, branchName) group fallback**: for any closed instances
+   *      that ARE still in the Map (rare — `restartInstance` usually purges
+   *      them), match them to a live instance with the same repo+branch and
+   *      transfer. Cheap; runs after the chain pass and skips already-empty
+   *      sessionIds.
+   *
+   * Idempotent — after one pass the old ids hold zero mcp rows, so reruns
+   * find nothing to move.
+   */
+  backfillMcpCallsByLineage(): number {
+    let totalTransferred = 0;
+
+    // Pass 1: walk every live instance's recorded predecessor chain.
+    for (const inst of this.instances.values()) {
+      if (inst.status === 'closed' || inst.status === 'completed' || inst.status === 'failed') continue;
+      if (!inst.sessionId || !inst.predecessorSessionIds || inst.predecessorSessionIds.length === 0) continue;
+      for (const oldSid of inst.predecessorSessionIds) {
+        if (oldSid === inst.sessionId) continue;
+        const n = databaseService.transferMcpCalls(oldSid, inst.sessionId);
+        if (n > 0) {
+          totalTransferred += n;
+          console.log(`[AgentInstanceService] Backfilled ${n} mcp_calls row(s) via lineage: ${oldSid} -> ${inst.sessionId}`);
+        }
+      }
+    }
+
+    // Pass 2: (repoPath, branchName) match for any closed sibling that
+    // somehow survived purgeInstancesOnBranch.
+    const byKey = new Map<string, { live: AgentInstance | null; closed: AgentInstance[] }>();
+    for (const inst of this.instances.values()) {
+      const cfg = inst.config;
+      if (!cfg?.repoPath || !cfg?.branchName) continue;
+      const key = `${cfg.repoPath}::${cfg.branchName}`;
+      let entry = byKey.get(key);
+      if (!entry) {
+        entry = { live: null, closed: [] };
+        byKey.set(key, entry);
+      }
+      if (inst.status === 'closed' || inst.status === 'completed' || inst.status === 'failed') {
+        entry.closed.push(inst);
+      } else if (!entry.live && inst.sessionId) {
+        entry.live = inst;
+      }
+    }
+    for (const { live, closed } of byKey.values()) {
+      if (!live || !live.sessionId || closed.length === 0) continue;
+      for (const old of closed) {
+        if (!old.sessionId || old.sessionId === live.sessionId) continue;
+        const n = databaseService.transferMcpCalls(old.sessionId, live.sessionId);
+        if (n > 0) {
+          totalTransferred += n;
+          console.log(`[AgentInstanceService] Backfilled ${n} mcp_calls row(s) via repo+branch match: ${old.sessionId} -> ${live.sessionId}`);
+        }
+      }
+    }
+
+    if (totalTransferred > 0) {
+      console.log(`[AgentInstanceService] mcp_calls backfill complete: ${totalTransferred} row(s) repatriated`);
+    }
+    return totalTransferred;
+  }
+
+  /**
+   * Detect "branch-gone orphans": the worktree directory still exists on disk,
+   * but its `.git` link points at a missing registry entry AND the source
+   * branch is gone from the source repo. This is the steady state after the
+   * source repo gets reinitialized externally (the registry wipe we saw on
+   * SA-Piggy-Bank) when the branch had also been deleted post-merge. Every
+   * KIT git op against the worktree fails with `fatal: not a git repository`
+   * — including Sync (rebase), which leaves the UI stuck.
+   *
+   * For each such instance, mark it `completed` (the typical reason a branch
+   * is gone is that it was merged + deleted) and save. Reads the per-worktree
+   * `.git` file to discover the registry path; uses `git rev-parse` to verify
+   * the branch's absence in the source repo. Idempotent.
+   */
+  async reapBrokenLinks(): Promise<number> {
+    let reaped = 0;
+    const reapedDetails: Array<{ id: string; sessionId: string; branch: string; path: string }> = [];
+
+    for (const instance of this.instances.values()) {
+      if (instance.status === 'completed' || instance.status === 'failed' || instance.status === 'closed') continue;
+      const wt = instance.worktreePath;
+      const repoPath = instance.config?.repoPath;
+      const branchName = instance.config?.branchName;
+      if (!wt || !repoPath || !branchName) continue;
+      if (!existsSync(wt)) continue; // handled by reapOrphanInstances
+
+      // Is the worktree's .git link broken?
+      const dotGitPath = join(wt, '.git');
+      if (!existsSync(dotGitPath)) continue; // not the kind of broken state we're after
+      let gitdir: string | null = null;
+      try {
+        const content = await readFile(dotGitPath, 'utf8');
+        const m = content.match(/^gitdir:\s*(.+)\s*$/m);
+        gitdir = m ? m[1].trim() : null;
+      } catch {
+        // unreadable — leave for the existing orphan path
+        continue;
+      }
+      if (!gitdir) continue;
+      if (existsSync(gitdir)) continue; // registry entry intact — nothing to do
+
+      // Registry gone. Is the source branch still around?
+      let branchExists = true;
+      try {
+        const r = await execaCmd('git', ['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd: repoPath, reject: false });
+        branchExists = (r as { exitCode?: number }).exitCode === 0;
+      } catch {
+        branchExists = false;
+      }
+      if (branchExists) continue; // recoverable case — leave for repair/sync to surface
+
+      // Worktree dir exists, registry gone, branch gone. Almost always means
+      // "merged + branch deleted, then source .git wiped". Mark completed.
+      instance.status = 'completed';
+      reaped++;
+      reapedDetails.push({
+        id: instance.id,
+        sessionId: instance.sessionId || '(none)',
+        branch: branchName,
+        path: wt,
+      });
+    }
+
+    if (reaped > 0) {
+      this.saveInstances();
+      console.warn(
+        `[AgentInstanceService] Marked ${reaped} branch-gone orphan instance(s) as completed:\n` +
+          reapedDetails.map(d => `  - ${d.id} (${d.sessionId}) branch=${d.branch} path=${d.path}`).join('\n')
+      );
+    }
+    return reaped;
+  }
+
+  /**
+   * Detect interrupted rebases in every live worktree and flag the instance.
+   *
+   * Why: when a rebase is left mid-flight (agent quit, machine slept, Kanvas
+   * auto-save committed during the pause), `HEAD` ends up parked at a
+   * historical snapshot. The next agent that walks in sees "files reverted"
+   * and gets paranoid — exactly the failure mode you hit on
+   * codex-session-20260527-citw. Surfacing it as an instance-level flag lets
+   * the UI show a banner with "Abort + back up" rather than relying on the
+   * agent to diagnose git plumbing on its own.
+   *
+   * For each non-terminal instance we resolve the worktree's gitdir via
+   * `git rev-parse --git-dir` and look for `rebase-merge` or `rebase-apply`.
+   * Anything older than STALE_REBASE_MINUTES (6h) gets flagged; younger ones
+   * we leave alone — could be an in-flight rebase the agent is mid-way
+   * through. Idempotent: a subsequent scan that finds no rebase state clears
+   * the flag.
+   */
+  async detectStaleRebases(): Promise<number> {
+    const STALE_REBASE_MINUTES = 360; // 6h — anything younger is plausibly active
+    const { statSync } = await import('fs');
+    let flagged = 0;
+    let cleared = 0;
+    let saveNeeded = false;
+
+    const inspect = async (wt: string): Promise<AgentInstance['staleRebase'] | null> => {
+      if (!existsSync(wt)) return null;
+      let gitDirRel: string;
+      try {
+        const r = await execaCmd('git', ['rev-parse', '--git-dir'], { cwd: wt });
+        gitDirRel = r.stdout.trim();
+      } catch {
+        return null;
+      }
+      const absGitDir = gitDirRel.startsWith('/') ? gitDirRel : join(wt, gitDirRel);
+      for (const kind of ['merge', 'apply'] as const) {
+        const dir = join(absGitDir, `rebase-${kind}`);
+        if (!existsSync(dir)) continue;
+        try {
+          const s = statSync(dir);
+          const ageMs = Date.now() - s.mtimeMs;
+          const ageMinutes = Math.round(ageMs / 60_000);
+          if (ageMinutes < STALE_REBASE_MINUTES) return null;
+          return {
+            detectedAt: new Date().toISOString(),
+            startedAt: new Date(s.mtimeMs).toISOString(),
+            kind,
+            ageMinutes,
+            gitDir: dir,
+          };
+        } catch {
+          // unreadable — skip rather than guess
+        }
+      }
+      return null;
+    };
+
+    for (const instance of this.instances.values()) {
+      if (instance.status === 'completed' || instance.status === 'failed' || instance.status === 'closed') continue;
+
+      let detected: AgentInstance['staleRebase'] | null = null;
+      const wts = instance.multiRepoEntries && instance.multiRepoEntries.length > 0
+        ? instance.multiRepoEntries.map(r => r.worktreePath).filter((p): p is string => !!p)
+        : (instance.worktreePath ? [instance.worktreePath] : []);
+      for (const wt of wts) {
+        detected = await inspect(wt);
+        if (detected) break; // first hit per instance is enough — UI will deep-link
+      }
+
+      if (detected && !instance.staleRebase) {
+        instance.staleRebase = detected;
+        flagged++;
+        saveNeeded = true;
+        const ageHours = Math.round(detected.ageMinutes / 60);
+        console.warn(
+          `[AgentInstanceService] Stale rebase flagged on ${instance.id} (${instance.sessionId || 'no-session'}): ${detected.kind}, ${ageHours}h old`
+        );
+      } else if (!detected && instance.staleRebase) {
+        delete instance.staleRebase;
+        cleared++;
+        saveNeeded = true;
+      }
+    }
+
+    if (saveNeeded) this.saveInstances();
+    if (flagged + cleared > 0) {
+      console.log(`[AgentInstanceService] Stale-rebase scan: ${flagged} flagged, ${cleared} cleared`);
+    }
+    return flagged;
+  }
+
+  /**
+   * Garbage-collect crash-safety snapshots. `WatcherService.triggerPeriodicSnapshot`
+   * pins worktree state to `refs/kit-autosave/<sessionId>` every 5 min; without
+   * pruning, these refs accumulate forever (each is a stash commit + tree,
+   * potentially megabytes for large worktrees). Prunes refs older than
+   * SNAPSHOT_TTL_DAYS. Safe: real work is on session branches, not autosave
+   * refs; the refs are pure crash-recovery. Runs on startup only for now —
+   * a daily timer would be nicer but 7-day TTL doesn't need it.
+   */
+  /**
+   * Whether a snapshot ref older than the TTL may actually be deleted.
+   *
+   * The obvious rule — "drop refs whose sessionId matches no live instance" —
+   * is WRONG here, and dangerously so. `purgeInstancesOnBranch` deliberately
+   * removes instance records on every restart, so a large set of
+   * `refs/kit-autosave/<old-id>` legitimately match no instance while still
+   * being the only copy of a crashed agent's uncommitted work. Applying that
+   * rule would delete real work on the first launch after upgrade.
+   *
+   * So an unmatched ref is collectable only when it is unmatched by ANY id the
+   * session ever had — live or predecessor. Age is already checked by the
+   * caller; a ref belonging to a session KIT still knows about is left alone
+   * regardless, because that session may yet be restarted.
+   */
+  private snapshotRefIsCollectable(ref: string): boolean {
+    const sessionId = ref.split('/').pop();
+    if (!sessionId) return false;
+
+    for (const inst of this.instances.values()) {
+      if (inst.sessionId === sessionId) return false;
+      if (inst.predecessorSessionIds?.includes(sessionId)) return false;
+    }
+    return true;
+  }
+
+  async gcOldSnapshots(): Promise<number> {
+    const SNAPSHOT_TTL_DAYS = 7;
+    const cutoffSec = Math.floor(Date.now() / 1000) - SNAPSHOT_TTL_DAYS * 86400;
+    let pruned = 0;
+
+    // Group instances by repoPath (worktrees share a common gitdir per repo)
+    // so we scan each source repo's ref namespace once.
+    const seenRepos = new Set<string>();
+    for (const inst of this.instances.values()) {
+      const repoPath = inst.config?.repoPath;
+      if (!repoPath || seenRepos.has(repoPath)) continue;
+      seenRepos.add(repoPath);
+      if (!existsSync(repoPath)) continue;
+      try {
+        // for-each-ref gives us `<sha> <committer-timestamp> <refname>`.
+        // Autosave refs are the same across worktrees of the same repo since
+        // they share the common gitdir.
+        const listed = await execaCmd('git', [
+          'for-each-ref',
+          '--format=%(objectname)%09%(committerdate:unix)%09%(refname)',
+          // refs/kit-idle-end/ was never scanned before, so idle-end snapshots
+          // accumulated forever while autosave ones were pruned at 7 days.
+          'refs/kit-autosave/',
+          'refs/kit-idle-end/',
+        ], { cwd: repoPath });
+        const lines = listed.stdout.split('\n').filter(Boolean);
+        for (const line of lines) {
+          const [, tsStr, ref] = line.split('\t');
+          const ts = parseInt(tsStr, 10);
+          if (!Number.isFinite(ts) || ts >= cutoffSec) continue;
+          if (!this.snapshotRefIsCollectable(ref)) continue;
+          try {
+            await execaCmd('git', ['update-ref', '-d', ref], { cwd: repoPath });
+            pruned++;
+          } catch (err) {
+            console.warn(`[AgentInstanceService] Failed to prune ${ref}: ${err}`);
+          }
+        }
+      } catch { /* repo may not have any autosave refs — fine */ }
+    }
+    if (pruned > 0) {
+      console.log(`[AgentInstanceService] GC'd ${pruned} stale autosave snapshot ref(s) (>${SNAPSHOT_TTL_DAYS}d)`);
+    }
+    return pruned;
+  }
+
+  /**
+   * One-click rebase repair: back up the current tip + pre-rebase tip to
+   * `backup/<sessionId>-pre-abort-HEAD` and `backup/<sessionId>-pre-rebase-tip`,
+   * then `git rebase --abort`. Clears the `staleRebase` flag on success.
+   * Returns the backup branch names so the UI can quote them in a toast.
+   *
+   * Safe by design: only runs when the gitdir genuinely has rebase state,
+   * never deletes data (the floating commits remain in reflog for 90 days
+   * after abort, the explicit backup branches survive even past that).
+   */
+  async repairStaleRebase(instanceId: string): Promise<IpcResult<{
+    backupBranches: string[];
+    landedAt: string;
+  }>> {
+    const instance = this.instances.get(instanceId);
+    if (!instance) return { success: false, error: { code: 'NOT_FOUND', message: `Instance ${instanceId} not found` } };
+
+    const wt = instance.multiRepoEntries?.[0]?.worktreePath || instance.worktreePath;
+    if (!wt || !existsSync(wt)) {
+      return { success: false, error: { code: 'NO_WORKTREE', message: 'Worktree path missing or gone' } };
+    }
+
+    // Verify there's actually rebase state — refuse to act otherwise so a
+    // stale flag can't trigger a destructive `--abort` on a clean tree.
+    let gitDirRel: string;
+    try {
+      const r = await execaCmd('git', ['rev-parse', '--git-dir'], { cwd: wt });
+      gitDirRel = r.stdout.trim();
+    } catch (err) {
+      return { success: false, error: { code: 'GIT_FAIL', message: `git rev-parse failed: ${err instanceof Error ? err.message : String(err)}` } };
+    }
+    const absGitDir = gitDirRel.startsWith('/') ? gitDirRel : join(wt, gitDirRel);
+    const hasRebase = existsSync(join(absGitDir, 'rebase-merge')) || existsSync(join(absGitDir, 'rebase-apply'));
+    if (!hasRebase) {
+      // Stale flag, no real state — just clear and exit cleanly.
+      delete instance.staleRebase;
+      this.saveInstances();
+      return { success: true, data: { backupBranches: [], landedAt: 'no-op (no rebase state)' } };
+    }
+
+    const tag = (instance.sessionId || instanceId).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const headBackup = `backup/${tag}-pre-abort-HEAD`;
+    const origBackup = `backup/${tag}-pre-rebase-tip`;
+    const made: string[] = [];
+
+    // Capture HEAD (whatever weird mid-rebase state it's in) and ORIG_HEAD
+    // (the pre-rebase branch tip). Both are recoverable from reflog too, but
+    // explicit branches survive reflog expiry and are easier to inspect.
+    try {
+      const headSha = (await execaCmd('git', ['rev-parse', 'HEAD'], { cwd: wt })).stdout.trim();
+      if (headSha) {
+        await execaCmd('git', ['branch', '-f', headBackup, headSha], { cwd: wt });
+        made.push(headBackup);
+      }
+    } catch {
+      // best-effort — don't block abort on backup failure (reflog still has it)
+    }
+    try {
+      const origSha = (await execaCmd('git', ['rev-parse', 'ORIG_HEAD'], { cwd: wt })).stdout.trim();
+      if (origSha) {
+        await execaCmd('git', ['branch', '-f', origBackup, origSha], { cwd: wt });
+        made.push(origBackup);
+      }
+    } catch {
+      // ORIG_HEAD may be missing in some rebase states — that's fine
+    }
+
+    // Actually abort
+    try {
+      await execaCmd('git', ['rebase', '--abort'], { cwd: wt });
+    } catch (err) {
+      return { success: false, error: { code: 'ABORT_FAIL', message: `git rebase --abort failed: ${err instanceof Error ? err.message : String(err)}` } };
+    }
+
+    delete instance.staleRebase;
+    this.saveInstances();
+
+    const landedSha = (await execaCmd('git', ['rev-parse', '--short', 'HEAD'], { cwd: wt }).catch(() => ({ stdout: 'unknown' }))).stdout.trim();
+    console.log(`[AgentInstanceService] Aborted stale rebase on ${instance.id} (${instance.sessionId || 'no-session'}); backups: ${made.join(', ') || 'none'}; HEAD now at ${landedSha}`);
+    return { success: true, data: { backupBranches: made, landedAt: landedSha } };
+  }
+
+  /**
+   * Mark instances whose worktreePath no longer exists on disk as 'closed' and
+   * save. Returns the number of instances reaped.
+   *
+   * Why: `MergeService.executeMerge()` post-merge `git worktree remove` deletes
+   * the directory but doesn't update the `AgentInstance` record. External
+   * session-manager prune passes do the same. The next launch then tries to
+   * re-register / restart / watch a path that's gone — `spawn git ENOENT`
+   * every operation. Best paired with `repairOrphanWorktrees()` first; what
+   * can't be repaired gets reaped here.
+   */
+  reapOrphanInstances(): number {
+    let reaped = 0;
+    const reapedDetails: Array<{ id: string; sessionId: string; reason: string; path: string }> = [];
+    for (const instance of this.instances.values()) {
+      if (instance.status === 'completed' || instance.status === 'failed' || instance.status === 'closed') continue;
+
+      let allGone = false;
+      let firstMissing: string | null = null;
+      let reason = 'worktree-missing';
+
+      if (instance.multiRepoEntries && instance.multiRepoEntries.length > 0) {
+        allGone = instance.multiRepoEntries.every(r => r.worktreePath && !existsSync(r.worktreePath));
+        firstMissing = instance.multiRepoEntries.find(r => !existsSync(r.worktreePath))?.worktreePath || null;
+      } else {
+        const wt = instance.worktreePath;
+        if (wt && !existsSync(wt)) {
+          allGone = true;
+          firstMissing = wt;
+        }
+      }
+
+      // Catch the disconnected-volume / moved-repo case the worktree check
+      // misses: worktreePath is unset (or both worktree and repo are gone),
+      // and the configured source repoPath dir doesn't exist on disk. The
+      // session can't be Sync'd / restarted / interacted with — git ops will
+      // ENOENT on every call. Reap it instead of leaving it stuck in waiting.
+      if (!allGone) {
+        const repo = instance.config?.repoPath;
+        if (repo && !existsSync(repo)) {
+          allGone = true;
+          firstMissing = repo;
+          reason = 'repo-missing';
+        }
+      }
+
+      if (allGone) {
+        instance.status = 'closed';
+        reaped++;
+        reapedDetails.push({
+          id: instance.id,
+          sessionId: instance.sessionId || '(none)',
+          reason,
+          path: firstMissing || '(unknown)',
+        });
+      }
+    }
+    if (reaped > 0) {
+      this.saveInstances();
+      console.warn(
+        `[AgentInstanceService] Reaped ${reaped} orphan instance(s) whose worktree was removed off-app and could not be repaired:\n` +
+          reapedDetails.map(d => `  - ${d.id} (${d.sessionId}) [${d.reason}] -> ${d.path}`).join('\n')
+      );
+    }
+    return reaped;
+  }
+
+  /**
    * Re-register all active sessions with MCP binder on startup.
    * Needed because the binder is in-memory and sessions are persisted in electron-store.
+   *
+   * Reaps orphan instances first so we don't try to re-register sessions whose
+   * worktree directory was removed off-app (typically by a merge cleanup).
    */
+  /**
+   * v2.7.4 — Register an OLD sessionId in the MCP binder as an alias pointing
+   * at a live instance's worktree. Called by restart paths so an agent client
+   * holding a stale ID (they don't observe our internal restart) still resolves
+   * to the current worktree. Delegates to onSessionCreated /
+   * onMultiRepoSessionCreated so aliases go through the same registration
+   * hooks as fresh sessions.
+   */
+  private aliasOldSessionInBinder(oldSessionId: string, newInstance: AgentInstance): void {
+    if (!oldSessionId || oldSessionId === newInstance.sessionId) return;
+    if (newInstance.multiRepoEntries && newInstance.multiRepoEntries.length > 0) {
+      if (this.onMultiRepoSessionCreated) {
+        this.onMultiRepoSessionCreated(
+          oldSessionId,
+          newInstance.multiRepoEntries.map(r => ({
+            repoName: r.repoName,
+            worktreePath: r.worktreePath,
+            role: r.role,
+          }))
+        );
+      }
+    } else {
+      const worktree = newInstance.worktreePath || newInstance.config?.repoPath;
+      if (worktree && this.onSessionCreated) {
+        this.onSessionCreated(oldSessionId, worktree);
+      }
+    }
+  }
+
   registerExistingSessionsWithBinder(): void {
+    this.reapOrphanInstances();
+
     let count = 0;
     for (const instance of this.instances.values()) {
-      if (instance.status === 'completed' || instance.status === 'failed') continue;
+      if (instance.status === 'completed' || instance.status === 'failed' || instance.status === 'closed') continue;
       const worktree = instance.worktreePath || instance.config.repoPath;
       if (!instance.sessionId || !worktree) continue;
 
       if (instance.multiRepoEntries && instance.multiRepoEntries.length > 0) {
         if (this.onMultiRepoSessionCreated) {
-          this.onMultiRepoSessionCreated(
-            instance.sessionId,
-            instance.multiRepoEntries.map(r => ({
-              repoName: r.repoName,
-              worktreePath: r.worktreePath,
-              role: r.role,
-            }))
-          );
+          const repos = instance.multiRepoEntries.map(r => ({
+            repoName: r.repoName,
+            worktreePath: r.worktreePath,
+            role: r.role,
+          }));
+          this.onMultiRepoSessionCreated(instance.sessionId, repos);
+          // v2.7.4 — also register every predecessor sessionId as an alias so
+          // MCP clients holding an old ID (from before a KIT restart) still
+          // resolve to the current worktree. Without this, kit_get_session_info
+          // returned "Unknown session" after every restart even though the
+          // work was intact — see the koofcrf39 incident.
+          for (const oldId of instance.predecessorSessionIds || []) {
+            this.onMultiRepoSessionCreated(oldId, repos);
+          }
           count++;
         }
       } else {
         if (this.onSessionCreated) {
           this.onSessionCreated(instance.sessionId, worktree);
+          for (const oldId of instance.predecessorSessionIds || []) {
+            this.onSessionCreated(oldId, worktree);
+          }
           count++;
         }
       }
     }
     if (count > 0) {
-      console.log(`[AgentInstanceService] Re-registered ${count} existing session(s) with MCP binder`);
+      console.log(`[AgentInstanceService] Re-registered ${count} existing session(s) with MCP binder (including predecessor aliases)`);
     }
   }
 
@@ -1209,18 +2755,55 @@ ${DEVOPS_KIT_DIR}/
   /**
    * Get a specific instance
    */
-  getInstance(instanceId: string): IpcResult<AgentInstance | null> {
-    return {
-      success: true,
-      data: this.instances.get(instanceId) || null,
-    };
+  getInstance(instanceIdOrSessionId: string): IpcResult<AgentInstance | null> {
+    let found = this.instances.get(instanceIdOrSessionId) || null;
+    if (!found) {
+      // Fall back to matching by sessionId (callers often only have the session id).
+      for (const inst of this.instances.values()) {
+        if (inst.sessionId === instanceIdOrSessionId) { found = inst; break; }
+      }
+    }
+    return { success: true, data: found };
   }
 
   /**
    * Pre-delete safety check: returns info about worktree, uncommitted changes,
    * unpushed commits, and remote branch existence so the UI can show warnings.
    */
-  async getDeleteSafetyInfo(sessionId: string): Promise<IpcResult<{
+  /**
+   * Resolve a sessionId to an instance, falling back to (repoPath, branchName)
+   * when the in-memory map doesn't have a direct sessionId match. Required
+   * because SessionReports loaded from disk often carry sessionIds from an
+   * earlier lifecycle (pre-restart, pre-purge) that no longer exist in the
+   * live map. Without this fallback, every Delete on such a session returns
+   * "Session not found" and the user has to do filesystem surgery manually.
+   *
+   * Returns the matched instance (and its in-memory id) or null. Callers
+   * still need their own NOT_FOUND branch for the truly-orphaned case where
+   * even the (repo, branch) lookup misses — that's the "ghost delete" path.
+   */
+  private resolveInstanceForDelete(
+    sessionId: string,
+    hints?: { repoPath?: string; branchName?: string }
+  ): { id: string; instance: AgentInstance } | null {
+    for (const [id, inst] of this.instances) {
+      if (inst.sessionId === sessionId) return { id, instance: inst };
+    }
+    if (hints?.repoPath && hints?.branchName) {
+      for (const [id, inst] of this.instances) {
+        if (inst.config?.repoPath === hints.repoPath &&
+            inst.config?.branchName === hints.branchName) {
+          return { id, instance: inst };
+        }
+      }
+    }
+    return null;
+  }
+
+  async getDeleteSafetyInfo(
+    sessionId: string,
+    hints?: { repoPath?: string; branchName?: string }
+  ): Promise<IpcResult<{
     hasWorktree: boolean;
     worktreePath: string | null;
     hasUncommittedChanges: boolean;
@@ -1229,29 +2812,42 @@ ${DEVOPS_KIT_DIR}/
     branchName: string;
     repoPath: string;
   }>> {
-    // Find instance by sessionId
-    let instance: AgentInstance | undefined;
-    for (const inst of this.instances.values()) {
-      if (inst.sessionId === sessionId) {
-        instance = inst;
-        break;
-      }
-    }
+    // Resolve via sessionId first, fall back to (repoPath, branchName) hints
+    // so a stale sessionId on a SessionReport doesn't block delete.
+    const resolved = this.resolveInstanceForDelete(sessionId, hints);
+    let repoPath: string;
+    let branchName: string;
+    let baseBranch: string;
+    let worktreePath: string | null;
 
-    if (!instance) {
-      return { success: false, error: { code: 'NOT_FOUND', message: 'Session not found' } };
+    if (resolved) {
+      repoPath = resolved.instance.config.repoPath;
+      branchName = resolved.instance.config.branchName;
+      baseBranch = (resolved.instance.config.baseBranch || 'main').replace(/^origin\//, '');
+      worktreePath = resolved.instance.worktreePath && resolved.instance.worktreePath !== repoPath
+        ? resolved.instance.worktreePath : null;
+    } else if (hints?.repoPath && hints?.branchName) {
+      // Ghost-mode safety check: no in-memory instance, but we know which
+      // (repo, branch) this session refers to. We can still do all the git
+      // checks against the user-provided paths. Worktree path is unknown
+      // here — the cleanup call will derive it from the worktree registry.
+      repoPath = hints.repoPath;
+      branchName = hints.branchName;
+      baseBranch = 'main';
+      worktreePath = null;
+    } else {
+      return { success: false, error: { code: 'NOT_FOUND', message: 'Session not found and no (repoPath, branchName) hint provided. Re-open the session list and try again.' } };
     }
-
-    const repoPath = instance.config.repoPath;
-    const branchName = instance.config.branchName;
-    const worktreePath = instance.worktreePath && instance.worktreePath !== repoPath
-      ? instance.worktreePath : null;
 
     let hasUncommittedChanges = false;
     let unpushedCommitCount = 0;
     let hasRemoteBranch = false;
 
     const checkPath = worktreePath || repoPath;
+    // Count against the worktree (where the branch is actually checked out) so
+    // HEAD resolves to the session branch even when the main repo is on a
+    // different branch.
+    const countPath = worktreePath || repoPath;
 
     try {
       // Check uncommitted changes
@@ -1259,11 +2855,54 @@ ${DEVOPS_KIT_DIR}/
       hasUncommittedChanges = statusOut.stdout.trim().length > 0;
     } catch { /* ignore */ }
 
-    try {
-      // Check unpushed commits
-      const aheadOut = await execaCmd('git', ['rev-list', '--count', `origin/${branchName}..${branchName}`], { cwd: repoPath });
-      unpushedCommitCount = parseInt(aheadOut.stdout.trim(), 10) || 0;
-    } catch { /* branch may not track remote */ }
+    // ------------------------------------------------------------------
+    // Unpushed / at-risk commit count.
+    //
+    // FIX: the old metric `origin/<branch>..<branch>` (no fetch, compared
+    // against the branch's OWN remote ref) massively over-reported after a
+    // rebase — a real dialog warned "322 unpushed commits will be lost" when
+    // only 1 commit was truly at risk (the rest were patch-present on
+    // origin/main). We now:
+    //   1. FETCH the branch's remote ref + the base branch so we compare
+    //      against fresh state.
+    //   2. Compute a PATCH-EQUIVALENCE-AWARE count (--cherry-pick) against
+    //      BOTH origin/<branch> and origin/<baseBranch>, and take the MIN —
+    //      work present on either baseline is not lost when we delete locally.
+    // ------------------------------------------------------------------
+
+    // Best-effort fetch (short timeout, never fatal — offline / no-remote is fine).
+    await execaCmd('git', ['fetch', 'origin', branchName], { cwd: repoPath, timeout: 15_000 }).catch(() => {});
+    await execaCmd('git', ['fetch', 'origin', baseBranch], { cwd: repoPath, timeout: 15_000 }).catch(() => {});
+
+    const cherryCount = async (base: string): Promise<number | null> => {
+      try {
+        const out = await execaCmd(
+          'git',
+          ['rev-list', '--count', '--cherry-pick', '--right-only', `${base}...HEAD`],
+          { cwd: countPath }
+        );
+        const n = parseInt(out.stdout.trim(), 10);
+        return Number.isFinite(n) ? n : null;
+      } catch {
+        return null; // base ref doesn't exist / not comparable
+      }
+    };
+
+    const vsRemoteBranch = await cherryCount(`origin/${branchName}`);
+    const vsBaseBranch = await cherryCount(`origin/${baseBranch}`);
+
+    let totalCommits: number | undefined;
+    if (vsRemoteBranch === null && vsBaseBranch === null) {
+      // No comparable baseline at all — fall back to raw commit count so a
+      // brand-new never-pushed branch still warns about its real work.
+      try {
+        const out = await execaCmd('git', ['rev-list', '--count', 'HEAD'], { cwd: countPath });
+        const n = parseInt(out.stdout.trim(), 10);
+        if (Number.isFinite(n)) totalCommits = n;
+      } catch { /* ignore */ }
+    }
+
+    unpushedCommitCount = resolveUnpushedCount({ vsRemoteBranch, vsBaseBranch }, totalCommits);
 
     try {
       // Check if remote branch exists
@@ -1290,35 +2929,116 @@ ${DEVOPS_KIT_DIR}/
    */
   async deleteInstanceWithCleanup(
     sessionId: string,
-    options: { deleteWorktree?: boolean; deleteLocalBranch?: boolean; deleteRemoteBranch?: boolean }
+    options: { deleteWorktree?: boolean; deleteLocalBranch?: boolean; deleteRemoteBranch?: boolean },
+    hints?: { repoPath?: string; branchName?: string; worktreePath?: string }
   ): Promise<IpcResult<void>> {
-    // Find instance by sessionId
+    // Resolve via sessionId, then (repo, branch) hints, then ghost-mode if
+    // even hints alone are enough to do filesystem cleanup. The "Session not
+    // found" hardstop here was the user-visible bug: stale SessionReports
+    // carry sessionIds that no longer match the live map, and the only way
+    // out was manual git surgery.
+    const resolved = this.resolveInstanceForDelete(sessionId, hints);
+
     let instanceId: string | undefined;
-    let instance: AgentInstance | undefined;
-    for (const [id, inst] of this.instances) {
-      if (inst.sessionId === sessionId) {
-        instanceId = id;
-        instance = inst;
-        break;
-      }
+    let repoPath: string;
+    let branchName: string;
+    let worktreePath: string | null;
+
+    if (resolved) {
+      instanceId = resolved.id;
+      repoPath = resolved.instance.config.repoPath;
+      branchName = resolved.instance.config.branchName;
+      worktreePath = resolved.instance.worktreePath && resolved.instance.worktreePath !== repoPath
+        ? resolved.instance.worktreePath : null;
+    } else if (hints?.repoPath && hints?.branchName) {
+      // Ghost-mode delete: no in-memory instance, but the UI knows the
+      // (repo, branch) — just clean what's on disk. instanceId stays
+      // undefined; we'll skip the deleteInstance() bookkeeping call at the
+      // end since there's nothing to delete from electron-store.
+      repoPath = hints.repoPath;
+      branchName = hints.branchName;
+      worktreePath = hints.worktreePath || null;
+      console.log(`[AgentInstanceService] Ghost-mode delete for ${sessionId} (no in-memory instance) — operating on ${repoPath} branch ${branchName}`);
+    } else {
+      return { success: false, error: { code: 'NOT_FOUND', message: 'Session not found and no (repoPath, branchName) hint provided.' } };
     }
 
-    if (!instance || !instanceId) {
-      return { success: false, error: { code: 'NOT_FOUND', message: 'Session not found' } };
+    // An observer owns NOTHING on disk — no worktree, no branch. Every
+    // destructive step below would therefore act on a directory or ref
+    // belonging to somebody else.
+    //
+    // Leaving worktreePath undefined already makes the path-equality check
+    // above produce null for observers, but that is a coincidence rather than
+    // a safety property: `resolveInstanceForDelete` can also reach here in
+    // ghost mode with hints supplied by the renderer. This is the explicit
+    // guard.
+    if (resolved && refuseDestructiveForObserver(resolved.instance.config ?? {})) {
+      console.log(
+        `[AgentInstanceService] ${sessionId} is an observer session — skipping all ` +
+          'worktree and branch cleanup; it owns nothing on disk.'
+      );
+      return instanceId ? this.deleteInstance(instanceId) : { success: true, data: undefined };
     }
-
-    const repoPath = instance.config.repoPath;
-    const branchName = instance.config.branchName;
-    const worktreePath = instance.worktreePath && instance.worktreePath !== repoPath
-      ? instance.worktreePath : null;
 
     // 1. Remove worktree first (must happen before branch delete)
     if (options.deleteWorktree && worktreePath) {
       try {
+        const stack = (new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' <- ');
+        console.warn(`[AgentInstanceService] WORKTREE REMOVE (deleteInstanceWithCleanup ${sessionId}): ${worktreePath}\n  caller: ${stack}`);
+        this.terminalLogService?.warn?.(`Worktree removed (deleteInstanceWithCleanup): ${worktreePath} — caller: ${stack}`, sessionId, 'WorktreeRemove');
         await execaCmd('git', ['worktree', 'remove', worktreePath, '--force'], { cwd: repoPath });
         console.log(`[AgentInstanceService] Removed worktree at ${worktreePath}`);
       } catch (err) {
         console.warn(`[AgentInstanceService] Failed to remove worktree: ${err}`);
+      }
+
+      // Remove this worktree's entry from the user's ~/.claude.json.
+      //
+      // Only here, inside the `options.deleteWorktree && worktreePath` branch,
+      // because the entry describes a directory — leaving it behind for a
+      // worktree that still exists would break the agent's MCP pre-approval
+      // for a session that is merely closed. Observers never reach this branch
+      // at all; their path belongs to someone else.
+      await this.unseedClaudeMcpApproval(worktreePath);
+
+      // Drop this session's crash-recovery snapshot refs.
+      //
+      // GATED on deleteWorktree AND deleteLocalBranch, deliberately. These refs
+      // (`refs/kit-autosave/<id>`, `refs/kit-idle-end/<id>`) are the ONLY copy
+      // of work an agent had uncommitted when it died — a safe close, or a
+      // close that keeps the branch, must leave them alone. Only when the
+      // worktree AND the branch are both going does the snapshot have nothing
+      // left to protect.
+      //
+      // Predecessor ids are included: a session restarted twice has refs under
+      // every id it ever had, and clearing only the live one orphans the rest
+      // for gcOldSnapshots to find later with no instance attached.
+      if (options.deleteWorktree && options.deleteLocalBranch) {
+        const ids = [
+          sessionId,
+          ...(resolved?.instance.predecessorSessionIds ?? []),
+        ];
+        for (const ns of ['refs/kit-autosave/', 'refs/kit-idle-end/']) {
+          for (const id of ids) {
+            try {
+              await execaCmd('git', ['update-ref', '-d', `${ns}${id}`], { cwd: repoPath });
+            } catch {
+              // No such ref — the common case. Never fatal.
+            }
+          }
+        }
+      }
+
+      // Prune the worktree registry. Without this, `git worktree list` keeps
+      // reporting the removed entry as prunable, so kit_list_worktrees shows
+      // ghosts to any agent that inspects the repo after a cleanup. Matches
+      // what MergeService already does after its own worktree removal
+      // (MergeService.ts:1416). Separate try/catch so a prune failure cannot
+      // abort the branch deletions below.
+      try {
+        await execaCmd('git', ['worktree', 'prune'], { cwd: repoPath });
+      } catch (err) {
+        console.warn(`[AgentInstanceService] Failed to prune worktrees: ${err}`);
       }
     }
 
@@ -1342,8 +3062,22 @@ ${DEVOPS_KIT_DIR}/
       }
     }
 
-    // 4. Delete the instance itself (files, state, etc.)
-    return this.deleteInstance(instanceId);
+    // 4. Delete the instance itself (files, state, etc.) — only if we had
+    // an in-memory instance. Ghost-mode delete already finished the on-disk
+    // cleanup above and has nothing to remove from electron-store.
+    if (instanceId) {
+      return this.deleteInstance(instanceId);
+    }
+
+    // Ghost-mode: still attempt to delete session files on disk by sessionId,
+    // since SessionReports come from those files and the user will keep
+    // seeing the entry in the list until they're gone.
+    try {
+      await this.deleteSessionFilesFromDiskBySessionId(sessionId, repoPath);
+    } catch (err) {
+      console.warn(`[AgentInstanceService] Ghost-mode delete: failed to clean session files: ${err}`);
+    }
+    return { success: true, data: undefined };
   }
 
   /**
@@ -1360,6 +3094,19 @@ ${DEVOPS_KIT_DIR}/
       // Clear session state
       if (instance.sessionId) {
         this.clearSessionState(instance.sessionId);
+
+        // Drop the session's disposable telemetry. Passes every id the session
+        // ever answered to: rows written before a restart are keyed to the
+        // predecessor id, so purging only the live one orphans them forever.
+        //
+        // Deliberately here and not on a safe close — a safe close marks the
+        // session closed without deleting it, and the session reaper reads
+        // mcp_calls to decide liveness. `commits` and `session_history` are
+        // left alone; they are history, not telemetry.
+        databaseService.purgeSessionTelemetry([
+          instance.sessionId,
+          ...(instance.predecessorSessionIds ?? []),
+        ]);
       }
 
       // Decrement the agent count for this repo in recent repos
@@ -1539,6 +3286,70 @@ ${DEVOPS_KIT_DIR}/
    * @param sessionId - The session ID to restart
    * @param sessionData - Optional session data to use if no instance exists
    */
+  /**
+   * Compute a session's REAL "last change" time — the most recent of:
+   *   - last logged activity (covers MCP calls, commits, locks — written to the DB)
+   *   - the worktree's last commit time
+   *   - the newest mtime among uncommitted/untracked files in the worktree
+   *
+   * This is what the UI should show instead of the session's `updated` bookkeeping
+   * field (which moves on create/restart, not on real work). Returns an ISO string
+   * or null. Cheap: uses `git status --porcelain` (changed files only), not a full
+   * tree walk.
+   */
+  async getSessionLastChange(sessionId: string): Promise<IpcResult<string | null>> {
+    try {
+      let instance: AgentInstance | undefined;
+      for (const inst of this.instances.values()) {
+        if (inst.sessionId === sessionId || inst.id === sessionId) { instance = inst; break; }
+      }
+      const worktreePath = instance?.worktreePath || instance?.config?.repoPath;
+
+      const candidates: number[] = [];
+
+      // 1. Last logged activity (MCP calls etc.)
+      const dbTs = databaseService.getLatestActivityTimestamp(instance?.sessionId || sessionId);
+      if (dbTs) { const t = Date.parse(dbTs); if (!Number.isNaN(t)) candidates.push(t); }
+
+      if (worktreePath && existsSync(worktreePath)) {
+        // 2. Last commit time on the worktree's branch (one cheap git call).
+        try {
+          const { stdout } = await execaCmd('git', ['log', '-1', '--format=%cI'], { cwd: worktreePath });
+          const t = Date.parse(stdout.trim());
+          if (!Number.isNaN(t)) candidates.push(t);
+        } catch { /* no commits yet */ }
+
+        // 3. Worktree directory mtime — a CHEAP single stat that catches recent
+        //    file adds/removes. We intentionally do NOT run `git status` + stat
+        //    every file here: on a large repo that's expensive and this method is
+        //    polled per session. Uncommitted edits are captured within minutes by
+        //    the watcher's auto-commit (→ #2) and by logged activity (→ #1).
+        try {
+          const st = await stat(worktreePath);
+          candidates.push(st.mtime.getTime());
+        } catch { /* worktree gone */ }
+      }
+
+      if (candidates.length === 0) return { success: true, data: null };
+      return { success: true, data: new Date(Math.max(...candidates)).toISOString() };
+    } catch (error) {
+      return { success: false, error: { code: 'LAST_CHANGE_FAILED', message: error instanceof Error ? error.message : 'failed' } };
+    }
+  }
+
+  /**
+   * Remove any in-memory instances on the given repo+branch. Used by restart so
+   * a re-created session can't leave a stale duplicate on the same branch (which
+   * would surface as two rows like "1-31eb" / "2-31eb").
+   */
+  private purgeInstancesOnBranch(repoPath: string, branchName: string): void {
+    for (const [id, inst] of this.instances) {
+      if (inst.config?.repoPath === repoPath && inst.config?.branchName === branchName) {
+        this.instances.delete(id);
+      }
+    }
+  }
+
   async restartInstance(
     sessionId: string,
     sessionData?: {
@@ -1564,25 +3375,46 @@ ${DEVOPS_KIT_DIR}/
         }
       }
 
-      // If no instance found but we have session data, create a temporary config
+      // If no instance found but we have session data, create a temporary config.
+      // Try to inherit from any closed/historical instance that ever ran on this
+      // (repoPath, branchName) pair — that's where mergeAction, multiRepo,
+      // customMcpEnabled etc. live. Cherry-picking only the sessionData fields
+      // (as the original code did) silently stripped tag-push config on every
+      // cold-path restart, which is why most users saw "tags suddenly broken".
       if (!targetInstance && sessionData) {
         console.log(`[AgentInstanceService] No instance found for ${sessionId}, creating from session data`);
         this.terminalLogService?.info(`No stored instance found, using session data`, sessionId, 'Restart');
 
-        // Create config from session data
+        // Scan the in-memory map for a recent instance on the same (repo, branch)
+        // whose config we can carry forward. Most recent wins.
+        let inheritedConfig: AgentInstanceConfig | undefined;
+        for (const inst of this.instances.values()) {
+          if (inst.config?.repoPath === sessionData.repoPath &&
+              inst.config?.branchName === sessionData.branchName) {
+            inheritedConfig = inst.config;
+            break;
+          }
+        }
+
         const config: AgentInstanceConfig = {
+          // Inherit everything first (mergeAction, multiRepo, customMcpEnabled, etc.)…
+          ...(inheritedConfig || {}),
+          // …then override with the live session-data values we trust more.
           repoPath: sessionData.repoPath,
-          agentType: sessionData.agentType || 'claude',
-          taskDescription: sessionData.task || 'Restarted session',
+          agentType: sessionData.agentType || inheritedConfig?.agentType || 'claude',
+          taskDescription: sessionData.task || inheritedConfig?.taskDescription || 'Restarted session',
           branchName: sessionData.branchName,
-          baseBranch: sessionData.baseBranch || 'main',
-          useWorktree: !!sessionData.worktreePath,
-          autoCommit: true,
-          commitInterval: 30000,
-          rebaseFrequency: 'never',
-          systemPrompt: '',
-          contextPreservation: '',
+          baseBranch: (sessionData.baseBranch || inheritedConfig?.baseBranch || 'main').replace(/^origin\//, ''),
+          useWorktree: !!sessionData.worktreePath || (inheritedConfig?.useWorktree ?? false),
+          autoCommit: inheritedConfig?.autoCommit ?? true,
+          commitInterval: inheritedConfig?.commitInterval ?? 30000,
+          rebaseFrequency: inheritedConfig?.rebaseFrequency ?? 'never',
+          systemPrompt: inheritedConfig?.systemPrompt ?? '',
+          contextPreservation: inheritedConfig?.contextPreservation ?? '',
         };
+
+        // Purge any lingering instance on this branch so restart can't duplicate it.
+        this.purgeInstancesOnBranch(config.repoPath, config.branchName);
 
         // Create the new instance directly (skip finding old instance)
         this.terminalLogService?.info(`Initializing Kanvas directory...`, sessionId, 'Restart');
@@ -1612,9 +3444,21 @@ ${DEVOPS_KIT_DIR}/
 
         // Create new instance with the config
         this.terminalLogService?.info(`Creating new session...`, sessionId, 'Restart');
-        const newInstance = await this.createInstance(config);
+        const newInstance = await this.createInstance(config, { isRestart: true });
 
         if (newInstance.success && newInstance.data) {
+          // Record lineage so backfillMcpCallsByLineage can repatriate any
+          // mcp_calls stranded under previous sessionIds. No prior instance
+          // record here (this is the "restart from session data" path), so
+          // the chain is just the immediate predecessor.
+          this.recordPredecessor(newInstance.data, sessionId);
+
+          // v2.7.4 — Alias the outgoing sessionId in the MCP binder so any
+          // agent client still holding the old ID (Claude Code / Codex don't
+          // observe our internal restart) resolves to the new worktree
+          // without needing to be told the new ID.
+          this.aliasOldSessionInBinder(sessionId, newInstance.data);
+
           // Transfer database records (commits, activity logs) from old session to new
           if (newInstance.data.sessionId) {
             const transferred = databaseService.transferSessionData(sessionId, newInstance.data.sessionId);
@@ -1651,6 +3495,10 @@ ${DEVOPS_KIT_DIR}/
       const config = targetInstance.config;
       const oldInstanceId = targetInstance.id;
       const worktreePath = targetInstance.worktreePath || config.repoPath;
+      // Snapshot the target's predecessor chain BEFORE we delete it, so the
+      // new instance can inherit and extend it (used by the mcp_calls
+      // lineage backfill).
+      const inheritedPredecessors: string[] = [...(targetInstance.predecessorSessionIds || [])];
 
       console.log(`[AgentInstanceService] Restarting session ${sessionId} in ${worktreePath}`);
       this.terminalLogService?.info(`Found stored instance, restarting in ${worktreePath}`, sessionId, 'Restart');
@@ -1673,8 +3521,10 @@ ${DEVOPS_KIT_DIR}/
       this.terminalLogService?.info(`Cleaning up old session files...`, sessionId, 'Restart');
       await this.cleanupSessionFiles(config.repoPath, sessionId);
 
-      // Delete old instance
+      // Delete old instance — and any other lingering instance on the same branch
+      // (e.g. a stale one left after the worktree was removed) to avoid duplicates.
       this.instances.delete(oldInstanceId);
+      this.purgeInstancesOnBranch(config.repoPath, config.branchName);
 
       // Re-initialize the .S9N_KIT_DevOpsAgent directory (ensures structure is correct)
       this.terminalLogService?.info(`Re-initializing Kanvas directory...`, sessionId, 'Restart');
@@ -1689,9 +3539,22 @@ ${DEVOPS_KIT_DIR}/
 
       // Create new instance with same config (this generates new session ID)
       this.terminalLogService?.info(`Creating new session...`, sessionId, 'Restart');
-      const newInstance = await this.createInstance(config);
+      const newInstance = await this.createInstance(config, { isRestart: true });
 
       if (newInstance.success && newInstance.data) {
+        // Carry the predecessor chain forward (inherited from targetInstance)
+        // and add the just-replaced sessionId. Persists immediately so the
+        // record survives a crash mid-restart.
+        this.recordPredecessor(newInstance.data, sessionId, inheritedPredecessors);
+
+        // v2.7.4 — Alias the outgoing sessionId AND the full inherited chain
+        // in the MCP binder so any agent client holding any prior ID still
+        // resolves to the new worktree.
+        this.aliasOldSessionInBinder(sessionId, newInstance.data);
+        for (const oldId of inheritedPredecessors) {
+          this.aliasOldSessionInBinder(oldId, newInstance.data);
+        }
+
         // Transfer database records (commits, activity logs) from old session to new
         if (newInstance.data.sessionId) {
           const transferred = databaseService.transferSessionData(sessionId, newInstance.data.sessionId);
@@ -1891,8 +3754,9 @@ ${DEVOPS_KIT_DIR}/
         };
       }
 
-      // Update the config
-      targetInstance.config.baseBranch = newBaseBranch;
+      // Update the config — normalize to strip origin/ prefix
+      const cleanedBaseBranch = newBaseBranch.replace(/^origin\//, '');
+      targetInstance.config.baseBranch = cleanedBaseBranch;
       this.instances.set(targetInstance.id, targetInstance);
       this.saveInstances();
 
@@ -1902,7 +3766,7 @@ ${DEVOPS_KIT_DIR}/
         try {
           const content = await readFile(sessionFilePath, 'utf-8');
           const sessionData = JSON.parse(content);
-          sessionData.baseBranch = newBaseBranch;
+          sessionData.baseBranch = cleanedBaseBranch;
           sessionData.updated = new Date().toISOString();
           await writeFile(sessionFilePath, JSON.stringify(sessionData, null, 2));
         } catch {
@@ -1922,8 +3786,9 @@ ${DEVOPS_KIT_DIR}/
         agentType: targetInstance.config.agentType,
         task: targetInstance.config.taskDescription || targetInstance.config.branchName || `${targetInstance.config.agentType} session`,
         branchName: targetInstance.config.branchName,
-        baseBranch: newBaseBranch,
-        worktreePath: targetInstance.worktreePath || repoPath,
+        baseBranch: cleanedBaseBranch,
+        worktreePath: targetInstance.worktreePath && targetInstance.worktreePath !== repoPath
+          ? targetInstance.worktreePath : undefined,
         repoPath,
         status: targetInstance.status === 'running' ? 'active' as const : 'idle' as const,
         created: targetInstance.createdAt,
@@ -1951,16 +3816,226 @@ ${DEVOPS_KIT_DIR}/
 
   /**
    * Update instance status
+   *
+   * R1 fix: when a session transitions across the active/inactive boundary
+   * (e.g. running → completed), we recalc `RecentRepo.agentCount` so the
+   * repo-picker session count stays accurate without restarting the app.
    */
+  /**
+   * Mark a session closed WITHOUT deleting it (story KIT-MCP-M2).
+   *
+   * There was no such path before: 'closed' was only ever set by internal
+   * reapers, and every user-facing route deleted instead. A safe close has to
+   * leave the record — and the worktree and branch — in place.
+   *
+   * Deliberately does NOT emit `session:closed`; the renderer treats that as a
+   * deletion and drops the row. It emits a status change, and
+   * `emitStoredSessions` now reports terminal statuses honestly rather than
+   * flattening everything to 'idle'.
+   */
+  markSessionClosed(
+    sessionId: string,
+    opts: { reason?: string; closedBy?: string } = {}
+  ): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+
+    const wasActive = isActiveInstance(instance);
+    instance.status = 'closed' as AgentInstance['status'];
+    instance.closedAt = new Date().toISOString();
+    if (opts.reason) instance.closeReason = opts.reason;
+
+    this.saveInstances();
+    this.emitStatusChange(instance);
+    if (wasActive) this.recalculateRepoAgentCounts();
+
+    // Refresh the dashboard's view so the row reflects the new status rather
+    // than waiting for the next window load.
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /**
+   * Stamp `reapedAt` so a later reaper pass does not reconsider a session it
+   * already acted on (R1).
+   *
+   * Separate from `status` on purpose: the snapshot-and-close disposition sets
+   * status 'closed', but so does an ordinary safe close, and the two must stay
+   * distinguishable — the expiry dialog (R2) shows only the reaped ones.
+   */
+  markSessionReaped(sessionId: string, action: string): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+    instance.reapedAt = new Date().toISOString();
+    instance.closeReason = instance.closeReason ?? `reaped (${action})`;
+    this.saveInstances();
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /**
+   * Apply a validated config patch to a live session (M5).
+   *
+   * Deliberately allow-listed rather than a spread of the caller's object: the
+   * patch arrives from an MCP tool, and letting it write arbitrary config keys
+   * would let an agent set `createdBy: 'ui'` on itself and become un-closable,
+   * or point `repoPath` somewhere else entirely.
+   *
+   * `expiresAt` is on the INSTANCE, not the config, so it is handled here too
+   * rather than making the caller do two round trips.
+   */
+  async updateSessionConfig(
+    sessionId: string,
+    patch: Record<string, unknown>
+  ): Promise<IpcResult<void>> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+
+    const ALLOWED_CONFIG_KEYS = new Set([
+      'taskDescription',
+      'baseBranch',
+      'autoCommit',
+      'rebaseFrequency',
+      'systemPrompt',
+      'ttlMinutes',
+    ]);
+
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) continue;
+      if (key === 'expiresAt') {
+        instance.expiresAt = String(value);
+        continue;
+      }
+      if (!ALLOWED_CONFIG_KEYS.has(key)) continue;
+      (instance.config as unknown as Record<string, unknown>)[key] = value;
+    }
+
+    // Keep expiresAt consistent when the TTL itself is changed, or a session
+    // could be given a longer ttlMinutes while its old deadline still stands.
+    if (patch.ttlMinutes !== undefined && Number.isFinite(Number(patch.ttlMinutes))) {
+      instance.expiresAt = new Date(
+        Date.parse(instance.createdAt) + Number(patch.ttlMinutes) * 60_000
+      ).toISOString();
+    }
+
+    this.saveInstances();
+    this.emitStatusChange(instance);
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /**
+   * Record that an agent has asked for review (KIT-PR-P5).
+   *
+   * `kit_request_review` previously wrote `reviewRequested: true` into an
+   * activity row that nothing read. This gives the signal somewhere to live
+   * that the renderer can actually render.
+   *
+   * Repeated calls REPLACE rather than accumulate — an agent that requests
+   * review three times has one outstanding request, not three.
+   */
+  setReviewRequest(
+    sessionId: string,
+    review: {
+      summary: string;
+      prUrl?: string;
+      prNumber?: number;
+      prStatus?: string;
+    }
+  ): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+
+    instance.reviewRequest = {
+      summary: review.summary,
+      requestedAt: new Date().toISOString(),
+      prUrl: review.prUrl,
+      prNumber: review.prNumber,
+      prStatus: review.prStatus,
+    };
+    this.saveInstances();
+    this.emitStatusChange(instance);
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /** Clear an outstanding review request once it is merged or dismissed. */
+  clearReviewRequest(sessionId: string): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+    delete instance.reviewRequest;
+    this.saveInstances();
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
+  /** Pin/unpin a session against the reaper (R2). */
+  setSessionPinned(sessionId: string, pinned: boolean): IpcResult<void> {
+    const instance = Array.from(this.instances.values()).find(
+      (i) =>
+        i.sessionId === sessionId ||
+        (Array.isArray(i.predecessorSessionIds) &&
+          i.predecessorSessionIds.includes(sessionId))
+    );
+    if (!instance) {
+      return { success: false, error: { code: 'NOT_FOUND', message: `No session ${sessionId}` } };
+    }
+    instance.pinned = pinned;
+    this.saveInstances();
+    this.emitStatusChange(instance);
+    this.emitStoredSessions();
+    return { success: true, data: undefined };
+  }
+
   updateInstanceStatus(instanceId: string, status: AgentInstance['status'], error?: string): void {
     const instance = this.instances.get(instanceId);
     if (instance) {
+      const wasActive = isActiveInstance(instance);
       instance.status = status;
       if (error) {
         instance.error = error;
       }
+      const nowActive = isActiveInstance(instance);
       this.saveInstances();
       this.emitStatusChange(instance);
+      if (wasActive !== nowActive) {
+        this.recalculateRepoAgentCounts();
+      }
     }
   }
 
@@ -2020,12 +4095,17 @@ ${DEVOPS_KIT_DIR}/
   }
 
   /**
-   * Recalculate agent counts for all recent repos based on actual stored instances
-   * This fixes stale counts that got out of sync
+   * Recalculate agent counts for all recent repos based on actual stored instances.
+   * R1 fix: counts ONLY active sessions (filters out completed/closed/failed)
+   * so the "Setup new instance" repo picker shows the live session count, not
+   * a stale all-time tally.
+   *
+   * Active/inactive rule lives in `shared/instance-status.ts` so it stays in
+   * sync with the C5 Single-Session Mode guard.
    */
   recalculateRepoAgentCounts(): void {
     const repos = this.store.get('recentRepos', []) as RecentRepo[];
-    const instances = Array.from(this.instances.values());
+    const instances = Array.from(this.instances.values()).filter(isActiveInstance);
 
     // Count instances per repo
     const countByRepo = new Map<string, number>();
@@ -2082,6 +4162,8 @@ ${DEVOPS_KIT_DIR}/
         contextPreservation: instance.config.contextPreservation || '',
         rebaseFrequency: instance.config.rebaseFrequency || 'never',
         mcpUrl: this.mcpServerUrl || undefined,
+        rpcUrl: this.rpcServerUrl || undefined,
+        baseBranch: (instance.config.baseBranch || 'main').replace(/^origin\//, ''),
         multiRepoEntries: instance.multiRepoEntries,
         commitScope: instance.config.multiRepo?.commitScope,
       };
@@ -2125,13 +4207,32 @@ ${DEVOPS_KIT_DIR}/
         agentType: instance.config.agentType,
         task: instance.config.taskDescription || instance.config.branchName || `${instance.config.agentType} session`,
         branchName: instance.config.branchName,
-        baseBranch: instance.config.baseBranch, // The branch this session was created from (merge target)
-        worktreePath: instance.worktreePath || instance.config.repoPath,
+        baseBranch: (instance.config.baseBranch || 'main').replace(/^origin\//, ''), // The branch this session was created from (merge target)
+        // Only expose worktreePath when a real git worktree exists (distinct from repoPath).
+        // Falling back to repoPath makes worktreePath === repoPath, which confuses the
+        // conflict-resolution modal into running git ops on the root instead of the worktree.
+        worktreePath: instance.worktreePath && instance.worktreePath !== instance.config.repoPath
+          ? instance.worktreePath
+          : undefined,
         repoPath: instance.config.repoPath,
-        status: instance.status === 'running' ? 'active' as const : 'idle' as const,
+        // Report terminal statuses honestly. This used to flatten EVERY status
+        // to 'active' or 'idle', so a closed session was re-emitted as 'idle'
+        // and looked alive — at fan-out the sidebar filled with sessions that
+        // had already been torn down.
+        status: (INACTIVE_INSTANCE_STATUSES.has(instance.status as string)
+          ? 'closed'
+          : instance.status === 'running'
+            ? 'active'
+            : 'idle') as SessionStatus,
         created: instance.createdAt,
         updated: now,
         commitCount: 0,
+        // Lineage + origin, so the sidebar can distinguish an agent-created
+        // session from one the user made, and nest children under parents.
+        createdBy: instance.config.createdBy ?? 'ui',
+        parentSessionId: instance.config.parentSessionId,
+        worktreeStatus: instance.worktreeStatus,
+        reviewRequest: instance.reviewRequest,
       };
 
       // Create agent info
@@ -2178,29 +4279,45 @@ ${DEVOPS_KIT_DIR}/
     contractChangesCount = 0,
     breakingChangesCount = 0
   ): void {
-    const states = this.store.get('sessionStates', {});
-    states[sessionId] = {
+    // Mutate the in-memory cache immediately
+    if (!this.sessionStatesCache) {
+      this.sessionStatesCache = this.store.get('sessionStates', {});
+    }
+    this.sessionStatesCache[sessionId] = {
       sessionId,
       lastProcessedCommit: commitHash,
       lastProcessedAt: new Date().toISOString(),
-      contractChangesCount: (states[sessionId]?.contractChangesCount || 0) + contractChangesCount,
-      breakingChangesCount: (states[sessionId]?.breakingChangesCount || 0) + breakingChangesCount,
+      contractChangesCount: (this.sessionStatesCache[sessionId]?.contractChangesCount || 0) + contractChangesCount,
+      breakingChangesCount: (this.sessionStatesCache[sessionId]?.breakingChangesCount || 0) + breakingChangesCount,
     };
-    this.store.set('sessionStates', states);
     console.log(`[AgentInstanceService] Updated session ${sessionId} last commit: ${commitHash.substring(0, 7)}`);
+
+    // Flush to disk at most once every 5 seconds — electron-store uses fs.writeFileSync
+    // which blocks the main thread; calling it on every commit causes ANR on busy agents.
+    if (!this.sessionStatesFlushTimer) {
+      this.sessionStatesFlushTimer = setTimeout(() => {
+        this.sessionStatesFlushTimer = null;
+        if (this.sessionStatesCache) {
+          this.store.set('sessionStates', this.sessionStatesCache);
+        }
+      }, 5_000);
+    }
   }
 
   /**
-   * Get all session states (for crash recovery check)
+   * Get all session states (for crash recovery check) — uses in-memory cache when available
    */
   getAllSessionStates(): Record<string, SessionState> {
-    return this.store.get('sessionStates', {});
+    return this.sessionStatesCache ?? this.store.get('sessionStates', {});
   }
 
   /**
    * Clear session state (when session is deleted)
    */
   clearSessionState(sessionId: string): void {
+    if (this.sessionStatesCache) {
+      delete this.sessionStatesCache[sessionId];
+    }
     const states = this.store.get('sessionStates', {});
     delete states[sessionId];
     this.store.set('sessionStates', states);

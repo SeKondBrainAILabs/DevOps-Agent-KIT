@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { AppConfig, AgentType, RepoVersionInfo, RepoVersionSettings, AppUpdateInfo } from '../../../shared/types';
 import { useAgentStore } from '../../store/agentStore';
+import { formatDateTimeShort } from '../../../shared/format-datetime';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -365,10 +366,10 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-secondary border border-border rounded-lg w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col animate-slide-up">
+    <div className="fixed inset-0 bg-black/15 backdrop-blur-[2px] flex items-center justify-center z-50">
+      <div className="bg-white border border-[rgba(0,0,0,0.10)] rounded-[22px] shadow-[0_4px_6px_rgba(0,0,0,0.08)] w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col animate-slide-up">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border">
+        <div className="flex items-center justify-between p-4 border-b border-[rgba(0,0,0,0.10)]">
           <h2 className="text-lg font-semibold text-gray-100">Settings</h2>
           <button onClick={onClose} className="btn-icon">
             <svg
@@ -389,33 +390,33 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-border">
+        <div className="flex gap-1 px-4 py-2 border-b border-[rgba(0,0,0,0.10)]">
           <button
             onClick={() => setActiveTab('general')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 py-1.5 text-sm font-medium transition-colors rounded-full ${
               activeTab === 'general'
-                ? 'text-accent border-b-2 border-accent'
-                : 'text-gray-400 hover:text-gray-200'
+                ? 'bg-black text-white'
+                : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.04)]'
             }`}
           >
             General
           </button>
           <button
             onClick={() => setActiveTab('credentials')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 py-1.5 text-sm font-medium transition-colors rounded-full ${
               activeTab === 'credentials'
-                ? 'text-accent border-b-2 border-accent'
-                : 'text-gray-400 hover:text-gray-200'
+                ? 'bg-black text-white'
+                : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.04)]'
             }`}
           >
             Credentials
           </button>
           <button
             onClick={() => setActiveTab('maintenance')}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 py-1.5 text-sm font-medium transition-colors rounded-full ${
               activeTab === 'maintenance'
-                ? 'text-accent border-b-2 border-accent'
-                : 'text-gray-400 hover:text-gray-200'
+                ? 'bg-black text-white'
+                : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.04)]'
             }`}
           >
             Maintenance
@@ -435,10 +436,10 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 if (result?.success && result.data) setClaudeDesktopConfig(result.data);
               });
             }}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 py-1.5 text-sm font-medium transition-colors rounded-full ${
               activeTab === 'mcp'
-                ? 'text-accent border-b-2 border-accent'
-                : 'text-gray-400 hover:text-gray-200'
+                ? 'bg-black text-white'
+                : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.04)]'
             }`}
           >
             MCP
@@ -453,10 +454,10 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 }
               });
             }}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 py-1.5 text-sm font-medium transition-colors rounded-full ${
               activeTab === 'debug'
-                ? 'text-accent border-b-2 border-accent'
-                : 'text-gray-400 hover:text-gray-200'
+                ? 'bg-black text-white'
+                : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.04)]'
             }`}
           >
             Debug
@@ -468,7 +469,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
           {activeTab === 'general' && config && (
             <>
               {/* Repo Version Management */}
-              <div className="bg-surface-tertiary rounded-lg p-3 mb-4 space-y-3">
+              <div className="bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] p-3 mb-4 space-y-3">
                 <div className="text-xs text-gray-500 uppercase tracking-wide">Repo Version</div>
 
                 {uniqueRepos.size === 0 ? (
@@ -505,7 +506,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                           <button
                             onClick={() => handleBump('patch')}
                             disabled={isBumping}
-                            className="flex-1 py-1.5 px-2 rounded bg-surface-secondary hover:bg-surface-primary border border-border text-sm text-gray-200 transition-colors disabled:opacity-50"
+                            className="flex-1 py-1.5 px-2 rounded-[10px] bg-surface-secondary hover:bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-sm text-text-primary transition-colors disabled:opacity-50"
                           >
                             <div className="font-medium">Patch</div>
                             <div className="text-xs text-gray-500 font-mono">
@@ -515,7 +516,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                           <button
                             onClick={() => handleBump('minor')}
                             disabled={isBumping}
-                            className="flex-1 py-1.5 px-2 rounded bg-surface-secondary hover:bg-surface-primary border border-border text-sm text-gray-200 transition-colors disabled:opacity-50"
+                            className="flex-1 py-1.5 px-2 rounded-[10px] bg-surface-secondary hover:bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-sm text-text-primary transition-colors disabled:opacity-50"
                           >
                             <div className="font-medium">Minor</div>
                             <div className="text-xs text-gray-500 font-mono">
@@ -525,7 +526,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                           <button
                             onClick={() => handleBump('major')}
                             disabled={isBumping}
-                            className="flex-1 py-1.5 px-2 rounded bg-surface-secondary hover:bg-surface-primary border border-border text-sm text-gray-200 transition-colors disabled:opacity-50"
+                            className="flex-1 py-1.5 px-2 rounded-[10px] bg-surface-secondary hover:bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-sm text-text-primary transition-colors disabled:opacity-50"
                           >
                             <div className="font-medium">Major</div>
                             <div className="text-xs text-gray-500 font-mono">
@@ -539,18 +540,18 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                     )}
 
                     {/* Separator */}
-                    <div className="border-t border-border" />
+                    <div className="border-t border-[rgba(0,0,0,0.10)]" />
 
                     {/* Auto version bump toggle */}
                     <div className="flex items-center justify-between">
                       <div>
-                        <div className="text-sm text-gray-200">Auto version bump</div>
-                        <div className="text-xs text-gray-500">Bump on daily rollover</div>
+                        <div className="text-sm text-text-primary">Auto version bump</div>
+                        <div className="text-xs text-text-secondary">Bump on daily rollover</div>
                       </div>
                       <button
                         onClick={() => handleAutoVersionBumpToggle(!versionSettings.autoVersionBump)}
                         className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                          versionSettings.autoVersionBump ? 'bg-accent' : 'bg-gray-600'
+                          versionSettings.autoVersionBump ? 'bg-black' : 'bg-[rgba(0,0,0,0.15)]'
                         }`}
                       >
                         <span
@@ -567,7 +568,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 <div className="pt-1 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-gray-500">
-                      Kanvas for Kit v{appVersion || '...'}
+                      KIT for DevOps v{appVersion || '...'}
                     </span>
 
                     {/* Update actions */}
@@ -611,7 +612,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                           }
                         }}
                         disabled={isCheckingUpdate}
-                        className="px-2 py-0.5 text-xs rounded bg-surface-secondary hover:bg-surface-primary border border-border text-gray-300 transition-colors disabled:opacity-50"
+                        className="px-2 py-0.5 text-xs rounded-full bg-surface-secondary hover:bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-text-secondary transition-colors disabled:opacity-50"
                       >
                         {isCheckingUpdate ? 'Checking...' : 'Check for Updates'}
                       </button>
@@ -941,7 +942,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-gray-300">Started</span>
                       <span className="text-sm text-gray-200">
-                        {new Date(mcpStatus.startedAt).toLocaleTimeString()}
+                        {formatDateTimeShort(mcpStatus.startedAt)}
                       </span>
                     </div>
                   )}
@@ -1221,29 +1222,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
 
                 {manualSetupOpen && mcpStatus?.url && (
                   <div className="space-y-4 pl-5">
-                    {/* Global settings.json */}
-                    <div className="space-y-1.5">
-                      <label className="text-xs text-gray-500 uppercase tracking-wide">~/.claude/settings.json</label>
-                      <div className="bg-surface-tertiary rounded-lg p-3 relative">
-                        <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
-{JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
-                        </pre>
-                        <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2));
-                            setMcpJsonCopied('global');
-                            setTimeout(() => setMcpJsonCopied(null), 2000);
-                          }}
-                          className="absolute top-2 right-2 btn-secondary px-2 py-1 text-xs"
-                        >
-                          {mcpJsonCopied === 'global' ? 'Copied!' : 'Copy'}
-                        </button>
-                      </div>
-                    </div>
+                    <p className="text-xs text-gray-500">
+                      Add the <code className="font-mono bg-surface-tertiary px-1 rounded">kit</code> entry to your agent's MCP config file, then restart the agent.
+                    </p>
 
-                    {/* .mcp.json */}
+                    {/* .mcp.json — universal project-level config (Claude Code, Codex, Cursor, Windsurf, etc.) */}
                     <div className="space-y-1.5">
-                      <label className="text-xs text-gray-500 uppercase tracking-wide">.mcp.json (project root)</label>
+                      <label className="text-xs text-gray-500 uppercase tracking-wide">.mcp.json — project root (all agents)</label>
                       <div className="bg-surface-tertiary rounded-lg p-3 relative">
                         <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
 {JSON.stringify({ mcpServers: { kit: { type: 'streamable-http', url: mcpStatus.url } } }, null, 2)}
@@ -1257,6 +1242,46 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                           className="absolute top-2 right-2 btn-secondary px-2 py-1 text-xs"
                         >
                           {mcpJsonCopied === 'mcp' ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Claude Code global */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-500 uppercase tracking-wide">Claude Code — ~/.claude.json (global)</label>
+                      <div className="bg-surface-tertiary rounded-lg p-3 relative">
+                        <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
+{JSON.stringify({ mcpServers: { kit: { type: 'http', url: mcpStatus.url } } }, null, 2)}
+                        </pre>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kit: { type: 'http', url: mcpStatus.url } } }, null, 2));
+                            setMcpJsonCopied('global');
+                            setTimeout(() => setMcpJsonCopied(null), 2000);
+                          }}
+                          className="absolute top-2 right-2 btn-secondary px-2 py-1 text-xs"
+                        >
+                          {mcpJsonCopied === 'global' ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Codex CLI */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-gray-500 uppercase tracking-wide">OpenAI Codex CLI — ~/.codex/config.json</label>
+                      <div className="bg-surface-tertiary rounded-lg p-3 relative">
+                        <pre className="text-xs font-mono text-gray-300 whitespace-pre overflow-x-auto pr-8">
+{JSON.stringify({ mcpServers: { kit: { type: 'http', url: mcpStatus.url } } }, null, 2)}
+                        </pre>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(JSON.stringify({ mcpServers: { kit: { type: 'http', url: mcpStatus.url } } }, null, 2));
+                            setMcpJsonCopied('codex');
+                            setTimeout(() => setMcpJsonCopied(null), 2000);
+                          }}
+                          className="absolute top-2 right-2 btn-secondary px-2 py-1 text-xs"
+                        >
+                          {mcpJsonCopied === 'codex' ? 'Copied!' : 'Copy'}
                         </button>
                       </div>
                     </div>

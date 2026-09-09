@@ -92,16 +92,16 @@ export function FileCoordinationPanel({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
+      <div className="bg-surface rounded-[22px] shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
         {/* Header */}
-        <div className="p-4 border-b border-border flex items-center justify-between">
+        <div className="p-4 border-b border-[rgba(0,0,0,0.10)] flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-text-primary">File Coordination</h2>
             <p className="text-sm text-text-secondary">Active file locks across all sessions</p>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-lg hover:bg-surface-secondary transition-colors"
+            className="p-2 rounded-full hover:bg-surface-secondary transition-colors"
           >
             <svg className="w-5 h-5 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -113,7 +113,7 @@ export function FileCoordinationPanel({
         <div className="p-4 overflow-auto max-h-[60vh]">
           {loading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="animate-spin w-8 h-8 border-2 border-kanvas-blue border-t-transparent rounded-full" />
+              <div className="animate-spin w-8 h-8 border-2 border-black border-t-transparent rounded-full" />
             </div>
           ) : locks.length === 0 ? (
             <div className="text-center py-12">
@@ -137,12 +137,12 @@ export function FileCoordinationPanel({
                 return (
                   <div
                     key={lock.sessionId}
-                    className={`p-4 rounded-xl border transition-all ${
+                    className={`p-4 rounded-[14px] border transition-all ${
                       isStale
                         ? 'border-yellow-200 bg-yellow-50'
                         : isCurrentSession
                         ? 'border-kanvas-blue/30 bg-kanvas-blue/5'
-                        : 'border-border bg-surface-secondary'
+                        : 'border-[rgba(0,0,0,0.10)] bg-surface-secondary'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-4">
@@ -206,7 +206,7 @@ export function FileCoordinationPanel({
                         <button
                           onClick={() => handleForceRelease(lock.sessionId)}
                           disabled={releasing === lock.sessionId}
-                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
                             releasing === lock.sessionId
                               ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                               : 'bg-red-100 text-red-700 hover:bg-red-200'
@@ -234,14 +234,14 @@ export function FileCoordinationPanel({
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-border bg-surface-secondary">
+        <div className="p-4 border-t border-[rgba(0,0,0,0.10)] bg-surface-secondary">
           <div className="flex items-center justify-between">
             <p className="text-xs text-text-secondary">
               Stale locks (past estimated duration) can be force-released.
             </p>
             <button
               onClick={onClose}
-              className="px-4 py-2 rounded-lg bg-surface text-text-primary hover:bg-surface-tertiary transition-colors text-sm font-medium"
+              className="px-4 py-2 rounded-full bg-surface text-text-primary hover:bg-surface-tertiary transition-colors text-sm font-medium"
             >
               Close
             </button>
@@ -284,7 +284,7 @@ export function FileCoordinationButton({
     <>
       <button
         onClick={() => setIsOpen(true)}
-        className="relative flex-1 py-2 px-2 rounded-xl border border-border text-text-primary text-[13px] leading-5
+        className="relative flex-1 py-2 px-2 rounded-[14px] border border-[rgba(0,0,0,0.10)] text-text-primary text-[13px] leading-5
           hover:bg-surface-secondary transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap"
         title="File Coordination"
       >

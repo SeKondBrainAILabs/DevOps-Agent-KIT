@@ -12,7 +12,7 @@ import { McpSessionBinder } from '../../../electron/services/mcp/session-binder'
 function zodChain(): any {
   const c: any = {};
   ['string', 'number', 'boolean', 'array', 'object', 'enum', 'record',
-    'optional', 'default', 'describe', 'unknown'].forEach(m => { c[m] = (..._a: any[]) => zodChain(); });
+    'optional', 'default', 'describe', 'unknown', 'int', 'min', 'max'].forEach(m => { c[m] = (..._a: any[]) => zodChain(); });
   c.then = undefined;
   return c;
 }
@@ -62,6 +62,8 @@ describe('MCP Tools', () => {
           { hash: 'abc123', shortHash: 'abc123', message: 'feat: add feature', author: 'test', date: '2026-01-01', filesChanged: 2 },
         ],
       }),
+      // Worktree-divergence guard: report the worktree is on the expected session branch.
+      getCurrentBranchName: (jest.fn() as any).mockResolvedValue('feat/test'),
     };
 
     mockActivityService = { log: jest.fn() };
@@ -109,6 +111,13 @@ describe('MCP Tools', () => {
   function callTool(name: string, args: Record<string, any>) {
     const tool = registeredTools.get(name);
     if (!tool) throw new Error(`Tool ${name} not registered`);
+    // Mutating tools now require `cwd` (the agent's working directory). Default it
+    // to the session's registered worktree so existing tests model a well-behaved
+    // agent that's in the right place; divergence tests pass an explicit cwd.
+    if (args.cwd === undefined && args.session_id) {
+      const wt = binder.getWorktreePathForRepo(args.session_id, args.repo);
+      if (wt) args = { ...args, cwd: wt };
+    }
     return tool.handler(args);
   }
 
@@ -155,11 +164,13 @@ describe('MCP Tools', () => {
         message: 'feat: test commit',
       });
 
+      // Signature: recordCommit(hash, sessionId, message, timestamp, { filesChanged, repoName })
       expect(mockDatabaseService.recordCommit).toHaveBeenCalledWith(
-        'sess_test_123',
         'abc123def456',
+        'sess_test_123',
         'feat: test commit',
-        3
+        expect.any(String),
+        expect.objectContaining({ filesChanged: 3 })
       );
     });
 
@@ -172,7 +183,15 @@ describe('MCP Tools', () => {
 
       const data = parseResult(result);
       expect(data.pushed).toBe(true);
-      expect(mockGitService.push).toHaveBeenCalledWith('sess_test_123', undefined);
+      // GitService.push gained a third `options` param ({ forceWithLease }).
+      // This assertion still expected the two-argument call and had been
+      // failing since before the MCP session-lifecycle epic began — a stale
+      // test, not a defect in the tool.
+      expect(mockGitService.push).toHaveBeenCalledWith(
+        'sess_test_123',
+        undefined,
+        undefined
+      );
     });
 
     it('should not push by default', async () => {
@@ -196,6 +215,96 @@ describe('MCP Tools', () => {
         expect.stringContaining('Committed'),
         expect.objectContaining({ source: 'mcp' })
       );
+    });
+  });
+
+  // ==========================================================================
+  // Worktree-divergence guards (Layers 1+2)
+  // ==========================================================================
+  describe('worktree-divergence guards', () => {
+    it('rejects kit_commit when cwd is not the session worktree (WRONG_WORKTREE)', async () => {
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: from the wrong place',
+        cwd: '/tmp/some-other-clone',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBe(true);
+      expect(data.error).toBe('WRONG_WORKTREE');
+      expect(data.expected_worktree).toBe('/tmp/worktree-test');
+      expect(data.your_cwd).toBe('/tmp/some-other-clone');
+      // The commit must NOT have been performed.
+      expect(mockGitService.commit).not.toHaveBeenCalled();
+    });
+
+    it('rejects kit_commit when the worktree is on the wrong branch (WRONG_BRANCH)', async () => {
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValueOnce('some-other-branch');
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: wrong branch',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBe(true);
+      expect(data.error).toBe('WRONG_BRANCH');
+      expect(data.expected_branch).toBe('feat/test');
+      expect(data.your_branch).toBe('some-other-branch');
+      expect(mockGitService.commit).not.toHaveBeenCalled();
+    });
+
+    it('rejects kit_commit when the worktree is in detached HEAD (DETACHED_HEAD)', async () => {
+      // rev-parse --abbrev-ref HEAD prints the literal "HEAD" when detached.
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValueOnce('HEAD');
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: detached',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBe(true);
+      expect(data.error).toBe('DETACHED_HEAD');
+      expect(mockGitService.commit).not.toHaveBeenCalled();
+    });
+
+    it('allows kit_commit when the branch check is inconclusive (fail open)', async () => {
+      // null = the branch could not be determined (git error / lock / path) — we must
+      // NOT report a false detached HEAD. The cwd already matched, so allow the commit.
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValueOnce(null);
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: inconclusive branch check',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBeFalsy();
+      expect(data.commitHash).toBe('abc123def456');
+      expect(mockGitService.commit).toHaveBeenCalled();
+    });
+
+    it('allows kit_commit when cwd matches the worktree and branch is correct', async () => {
+      const result = await callTool('kit_commit', {
+        session_id: 'sess_test_123',
+        message: 'feat: correct location',
+      });
+      const data = parseResult(result);
+      expect(result.isError).toBeFalsy();
+      expect(data.commitHash).toBe('abc123def456');
+      expect(mockGitService.commit).toHaveBeenCalled();
+    });
+
+    it('rejects kit_lock_file on directory mismatch but does not require a branch', async () => {
+      (mockGitService.getCurrentBranchName as jest.Mock).mockResolvedValue('any-branch');
+      const wrong = await callTool('kit_lock_file', {
+        session_id: 'sess_test_123',
+        files: ['src/x.ts'],
+        cwd: '/tmp/elsewhere',
+      });
+      expect(wrong.isError).toBe(true);
+      expect(parseResult(wrong).error).toBe('WRONG_WORKTREE');
+
+      // Right directory, "wrong" branch — lock is still allowed (coordination, not commit).
+      const ok = await callTool('kit_lock_file', {
+        session_id: 'sess_test_123',
+        files: ['src/x.ts'],
+      });
+      expect(ok.isError).toBeFalsy();
     });
   });
 
@@ -375,7 +484,14 @@ describe('MCP Tools', () => {
       const data = parseResult(result);
       expect(data.unlocked).toBe(true);
       expect(data.files).toBe('all');
-      expect(mockLockService.releaseFiles).toHaveBeenCalledWith('sess_test_123');
+      // KIT-MCP-H6: releaseFiles is now keyed by SOURCE REPO ROOT as well as
+      // session. Locks live in <repo>/.S9N_KIT_DevOpsAgent/locks.json, so a
+      // release without the repo would target a store nothing writes to —
+      // which is exactly the bug that made cross-session locking a no-op.
+      expect(mockLockService.releaseFiles).toHaveBeenCalledWith(
+        expect.any(String),
+        'sess_test_123'
+      );
     });
 
     it('should return error for unknown session', async () => {
@@ -431,10 +547,30 @@ describe('MCP Tools', () => {
         summary: 'Implemented user auth with JWT tokens',
       });
 
+      // KIT-PR-P4 changed this contract: the tool now also opens a pull
+      // request, so it reports `ok` plus a `pr` block rather than `logged`.
       const data = parseResult(result);
-      expect(data.logged).toBe(true);
+      expect(data.ok).toBe(true);
+      expect(data.review_logged).toBe(true);
       expect(data.summary).toBe('Implemented user auth with JWT tokens');
-      expect(data.sessionId).toBe('sess_test_123');
+      expect(data.session_id).toBe('sess_test_123');
+    });
+
+    it('still succeeds when there is no GitHub integration wired', async () => {
+      // The rule the whole story rests on: the review signal is the primary
+      // effect and works offline. An agent on a local-only repo must not be
+      // told it failed for doing exactly the right thing.
+      const result = await callTool('kit_request_review', {
+        session_id: 'sess_test_123',
+        summary: 'Work done on a repo with no remote',
+      });
+
+      const data = parseResult(result);
+      expect(data.ok).toBe(true);
+      expect(data.review_logged).toBe(true);
+      // ...and it says WHY there is no link, rather than returning null silently.
+      expect(data.pr).not.toBeNull();
+      expect(typeof data.pr.status).toBe('string');
     });
 
     it('should log activity with review details', async () => {
@@ -484,7 +620,9 @@ describe('MCP Tools', () => {
       const data = parseResult(result);
       expect(data.commitHash).toBeDefined();
       expect(data.repo).toBe('shared-lib');
-      expect(mockGitService.commit).toHaveBeenCalledWith('sess_multi_001', 'feat: update shared lib', 'shared-lib');
+      // Secondary-repo commits are prefixed with "[Upgrade From <primary>]" so the
+      // history shows which root change drove the secondary update.
+      expect(mockGitService.commit).toHaveBeenCalledWith('sess_multi_001', '[Upgrade From primary] feat: update shared lib', 'shared-lib');
     });
 
     it('should default to primary repo when no repo param', async () => {

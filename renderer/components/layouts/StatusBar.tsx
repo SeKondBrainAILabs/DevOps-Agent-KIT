@@ -7,6 +7,8 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { useAgentStore } from '../../store/agentStore';
 import type { AgentInfo } from '../../../shared/agent-protocol';
+import type { AppUpdateInfo } from '../../../shared/types';
+import { formatDateTimeShort } from '../../../shared/format-datetime';
 
 interface RegisteredAgent extends AgentInfo {
   isAlive: boolean;
@@ -110,6 +112,57 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
     }
   }, []);
 
+  // Auto-update state
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [updateAction, setUpdateAction] = useState<'idle' | 'downloading' | 'ready'>('idle');
+
+  useEffect(() => {
+    // Seed current status (catches updates detected before this component mounts)
+    window.api?.update?.getStatus?.().then((result) => {
+      if (result?.success && result.data?.updateAvailable) {
+        setUpdateInfo(result.data);
+        setUpdateAction(result.data.downloaded ? 'ready' : 'idle');
+      }
+    }).catch(() => {});
+
+    const unsubAvailable = window.api?.update?.onAvailable?.((info) => {
+      setUpdateInfo(info);
+      setUpdateAction('idle');
+    });
+    const unsubProgress = window.api?.update?.onProgress?.((info) => {
+      setUpdateInfo(info);
+      setUpdateAction('downloading');
+    });
+    const unsubDownloaded = window.api?.update?.onDownloaded?.((info) => {
+      setUpdateInfo(info);
+      setUpdateAction('ready');
+    });
+    const unsubError = window.api?.update?.onError?.((info) => {
+      setUpdateInfo(info);
+      setUpdateAction('idle');
+    });
+
+    return () => {
+      unsubAvailable?.();
+      unsubProgress?.();
+      unsubDownloaded?.();
+      unsubError?.();
+    };
+  }, []);
+
+  const handleUpdateClick = useCallback(async () => {
+    if (updateAction === 'ready') {
+      window.api?.update?.install?.();
+    } else if (updateAction === 'idle' && updateInfo?.updateAvailable) {
+      setUpdateAction('downloading');
+      try {
+        await window.api?.update?.download?.();
+      } catch {
+        setUpdateAction('idle');
+      }
+    }
+  }, [updateAction, updateInfo]);
+
   // MCP server status
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
 
@@ -157,21 +210,16 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
   const totalSessions = sessions.length;
 
   return (
-    <div className="h-7 px-4 bg-surface border-t border-border flex items-center gap-4 text-xs">
-      {/* Kanvas branding */}
-      <span className="flex items-center gap-1.5 text-kanvas-blue font-medium">
-        <div className="w-3 h-3 rounded bg-kanvas-blue flex items-center justify-center">
-          <svg viewBox="0 0 24 24" className="w-2 h-2 text-white" fill="currentColor">
-            <circle cx="12" cy="12" r="5" />
-          </svg>
-        </div>
-        Kanvas
+    <div className="h-7 px-4 bg-white flex items-center gap-4 text-xs">
+      {/* KIT branding */}
+      <span className="flex items-center gap-1.5 font-medium" style={{ color: 'var(--c-blue)', fontFamily: 'var(--f-mono)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+        KIT
       </span>
 
-      <span className="text-border">|</span>
+      <span className="text-[rgba(0,0,0,0.15)]">|</span>
 
       {/* Agent count */}
-      <span className="flex items-center gap-1.5 text-text-secondary">
+      <span className="flex items-center gap-1.5" style={{ color: 'var(--c-muted)' }}>
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
         </svg>
@@ -179,7 +227,7 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
       </span>
 
       {/* Session count */}
-      <span className="flex items-center gap-1.5 text-text-secondary">
+      <span className="flex items-center gap-1.5" style={{ color: 'var(--c-muted)' }}>
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
         </svg>
@@ -189,7 +237,7 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
       {/* Selected agent info */}
       {agent && (
         <>
-          <span className="text-border">|</span>
+          <span className="text-[rgba(0,0,0,0.15)]">|</span>
           <span className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-full ${agent.isAlive ? 'bg-green-500' : 'bg-gray-400'}`} />
             <span className="text-text-primary font-medium">{agent.agentName}</span>
@@ -203,7 +251,7 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
       {/* Worker process status */}
       {workerStatus && (
         <>
-          <span className="text-border">|</span>
+          <span className="text-[rgba(0,0,0,0.15)]">|</span>
           <span
             className="flex items-center gap-1.5 cursor-pointer hover:text-text-primary transition-colors"
             onClick={handleWorkerRestart}
@@ -237,7 +285,7 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
       {/* MCP server status */}
       {mcpStatus && (
         <>
-          <span className="text-border">|</span>
+          <span className="text-[rgba(0,0,0,0.15)]">|</span>
           <span
             className="flex items-center gap-1.5 cursor-pointer hover:text-text-primary transition-colors"
             title={
@@ -247,7 +295,7 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
                     `URL: ${mcpStatus.url}`,
                     `Port: ${mcpStatus.port}`,
                     `Connections: ${mcpStatus.connectionCount}`,
-                    mcpStatus.startedAt ? `Up since: ${new Date(mcpStatus.startedAt).toLocaleTimeString()}` : null,
+                    mcpStatus.startedAt ? `Up since: ${formatDateTimeShort(mcpStatus.startedAt)}` : null,
                     'Click to copy URL',
                   ].filter(Boolean).join(' · ')
                 : 'MCP Server: Down · Agents cannot use MCP tools'
@@ -275,19 +323,71 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
         </>
       )}
 
+      {/* Auto-update notification */}
+      {updateInfo?.updateAvailable && (
+        <>
+          <span className="text-[rgba(0,0,0,0.15)]">|</span>
+          <button
+            onClick={handleUpdateClick}
+            disabled={updateAction === 'downloading'}
+            title={
+              updateInfo.error
+                ? `Update error: ${updateInfo.error}`
+                : updateAction === 'ready'
+                  ? `v${updateInfo.latestVersion} downloaded — click to restart and install`
+                  : updateAction === 'downloading'
+                    ? `Downloading v${updateInfo.latestVersion}… ${updateInfo.progress ? Math.round(updateInfo.progress.percent) + '%' : ''}`
+                    : `v${updateInfo.latestVersion} available — click to download`
+            }
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '1px 8px', borderRadius: 999,
+              background: updateAction === 'ready' ? 'var(--c-blue)' : 'var(--c-paper)',
+              border: `1px solid ${updateAction === 'ready' ? 'var(--c-blue)' : 'var(--border-1)'}`,
+              color: updateAction === 'ready' ? '#fff' : 'var(--c-muted)',
+              fontSize: 11, fontFamily: 'var(--f-mono)', cursor: updateAction === 'downloading' ? 'default' : 'pointer',
+              opacity: updateAction === 'downloading' ? 0.7 : 1,
+            }}
+          >
+            {updateAction === 'ready' ? (
+              <>
+                <svg style={{ width: 12, height: 12 }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Restart to update v{updateInfo.latestVersion}
+              </>
+            ) : updateAction === 'downloading' ? (
+              <>
+                <svg style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {updateInfo.progress ? `${Math.round(updateInfo.progress.percent)}%` : 'Downloading…'}
+              </>
+            ) : (
+              <>
+                <svg style={{ width: 12, height: 12 }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
+                </svg>
+                v{updateInfo.latestVersion} available
+              </>
+            )}
+          </button>
+        </>
+      )}
+
       {/* Spacer */}
       <div className="flex-1" />
 
       {/* Keyboard shortcuts hint */}
-      <span className="text-text-secondary hidden md:inline">
-        <kbd className="px-1 py-0.5 rounded bg-surface-tertiary text-text-secondary font-mono text-[10px]">Ctrl</kbd>
+      <span className="hidden md:inline" style={{ color: 'var(--c-muted)' }}>
+        <kbd style={{ padding: '1px 5px', background: 'var(--c-paper)', border: '1px solid var(--border-1)', borderRadius: 6, fontFamily: 'var(--f-mono)', fontSize: 11, color: 'var(--c-muted)' }}>Ctrl</kbd>
         <span className="mx-0.5">+</span>
-        <kbd className="px-1 py-0.5 rounded bg-surface-tertiary text-text-secondary font-mono text-[10px]">N</kbd>
+        <kbd style={{ padding: '1px 5px', background: 'var(--c-paper)', border: '1px solid var(--border-1)', borderRadius: 6, fontFamily: 'var(--f-mono)', fontSize: 11, color: 'var(--c-muted)' }}>N</kbd>
         <span className="ml-1">New</span>
       </span>
 
       {/* Version */}
-      {appVersion && <span className="text-text-secondary/60">v{appVersion}</span>}
+      {appVersion && <span style={{ color: 'var(--c-muted)', opacity: 0.6 }}>v{appVersion}</span>}
     </div>
   );
 }
