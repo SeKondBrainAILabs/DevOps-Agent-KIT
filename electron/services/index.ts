@@ -457,6 +457,21 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   mcpServer.setMcpUrlProvider(() => mcpServer.getUrl());
   // KIT-PR-P4 — pull request creation. The gh runner, push and git reads are
   // bound here so the tool layer holds one narrow function, not the services.
+  // KIT-PR-P10 - MergeService uses this to deliver protected merges as PRs.
+  merge.setGitHubService({
+    ensurePullRequest: (session: any) =>
+      ensurePullRequest(
+        {
+          gh: createGhRunner(),
+          push: (sessionId: string) => git.push(sessionId),
+          getRemoteUrl: (worktreePath: string) => git.getRemoteUrl(worktreePath),
+          getCommits: (worktreePath: string, baseBranch: string, branchName: string) =>
+            git.getCommitsAhead(worktreePath, baseBranch, branchName),
+        },
+        session
+      ),
+  });
+
   mcpServer.setGitHubService({
     ensurePullRequest: (session) =>
       ensurePullRequest(

@@ -227,7 +227,7 @@ export interface McpServiceDeps {
       repoPath: string,
       sourceBranch: string,
       targetBranch: string,
-      options?: { worktreePath?: string; skipCiGate?: boolean }
+      options?: { worktreePath?: string; skipCiGate?: boolean; via?: 'auto' | 'pr' | 'direct' }
     ) => Promise<any>;
   };
   /** v2.6.95 — expose on-demand rebase to agents. Calls performRebaseForPath

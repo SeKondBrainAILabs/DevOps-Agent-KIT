@@ -1347,7 +1347,10 @@ export function registerTools(
   srv.tool(
     'kit_merge',
     'Merge the session branch into a target branch (default: baseBranch). ' +
-    'For protected targets (main/master/production/release) the S9N-6394 CI ' +
+    'For a PROTECTED target (main/master/production/release) this opens a PULL ' +
+    'REQUEST rather than merging — a direct push to a protected branch cannot ' +
+    'satisfy required reviews or checks and is rejected. Pass via to override. ' +
+    'For protected targets the S9N-6394 CI ' +
     'gate refuses the merge if `gh pr checks` reports non-green, if pending, ' +
     'if the source contains WIP/[Kanvas] auto-checkpoint commits, or if gh is ' +
     'not installed. Pass force=true ONLY when the user has explicitly ' +
@@ -1357,8 +1360,9 @@ export function registerTools(
       cwd: z.string().describe('Your current shell working directory (run `pwd`). REQUIRED — must be the session worktree, on the session branch.'),
       target_branch: z.string().optional().describe('Target branch to merge into. Defaults to the session\'s baseBranch.'),
       force: z.boolean().optional().default(false).describe('Bypass the S9N-6394 CI gate. ONLY set when the user has explicitly authorized skipping the CI verification. Never set on your own initiative — the gate exists because auto-sync merged a mid-write file into Core_Kora_ChromeExt/main on 2026-07-22.'),
+      via: z.enum(['auto', 'pr', 'direct']).optional().describe("How to deliver the merge. 'auto' (default) opens a pull request for protected targets (main/master/production/release) and merges directly otherwise. 'pr' always opens a pull request and merges nothing locally. 'direct' always merges and pushes — on a protected branch that push will usually be rejected."),
     },
-    withCallLog('kit_merge', async ({ session_id, cwd, target_branch, force }) => {
+    withCallLog('kit_merge', async ({ session_id, cwd, target_branch, force, via }) => {
       if (!deps.mergeService) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Merge service not available' }) }] };
       }
@@ -1386,6 +1390,7 @@ export function registerTools(
       const result = await deps.mergeService.executeMerge(repoPath, sourceBranch, resolvedTarget, {
         worktreePath: worktree,
         skipCiGate: !!force,
+        via,
       });
 
       if (!result.success || !result.data) {
