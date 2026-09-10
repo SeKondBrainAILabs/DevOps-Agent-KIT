@@ -1,6 +1,6 @@
 {
   "name": "kit-for-devops",
-  "version": "2.7.6",
+  "version": "2.8.0",
   "description": "KIT for DevOps - AI Agent Dashboard",
   "main": "dist/electron/index.js",
   "type": "module",
