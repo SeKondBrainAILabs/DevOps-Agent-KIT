@@ -579,7 +579,33 @@ export type ExtractData<T> = T extends IpcResult<infer U> ? U : never;
 // For creating new agent instances from Kanvas dashboard
 // =============================================================================
 
-export type InstanceStatus = 'pending' | 'initializing' | 'waiting' | 'active' | 'error';
+/**
+ * An agent instance's lifecycle status.
+ *
+ * The terminal states and 'idle' were being assigned at runtime while absent
+ * from this union — `markSessionClosed` wrote `'closed' as AgentInstance['status']`
+ * and the MCP first-call handler passed `'idle'` through an undeclared shim
+ * method. Both worked, because a cast and a missing declaration both silence
+ * the compiler, and neither is a statement that the value is valid.
+ *
+ * Declared honestly here so status filters and the reaper's terminal-status set
+ * can be checked rather than guessed.
+ */
+export type InstanceStatus =
+  | 'pending'
+  | 'initializing'
+  | 'waiting'
+  /** Connected and working. */
+  | 'active'
+  /** Connected but not currently doing anything. Set on an agent's first MCP call. */
+  | 'idle'
+  | 'error'
+  /** Terminal: closed by a human, an agent, or the reaper. */
+  | 'closed'
+  /** Terminal: the work finished. */
+  | 'completed'
+  /** Terminal: the session failed. */
+  | 'failed';
 
 export type RebaseFrequency = 'never' | 'daily' | 'weekly' | 'on-demand';
 
@@ -589,6 +615,14 @@ export interface AgentInstanceConfig {
   taskDescription: string;
   branchName: string;
   baseBranch: string;
+  /**
+   * @deprecated Derived from `isolation` as of the MCP session-lifecycle epic.
+   * Still required and still written for one release: it is non-optional
+   * today, constructed by the wizard and by restartInstance, and
+   * `migrateUseWorktreeFlag` rewrites drifted rows on every launch. Removing
+   * it in the same change as the isolation work would have meant touching all
+   * of those at once.
+   */
   useWorktree: boolean;
   autoCommit: boolean;
   commitInterval: number;
@@ -602,6 +636,44 @@ export interface AgentInstanceConfig {
   customMcpEnabled?: boolean;
   // Optional: fire a GitHub Action when this session is merged (see MergeActionConfig).
   mergeAction?: MergeActionConfig;
+  /**
+   * Who created this session. Absent means a record written before the field
+   * existed, i.e. a human's — so it is treated as 'ui' everywhere, which keeps
+   * legacy sessions out of the agent concurrency budget and out of reach of an
+   * agent's close permissions.
+   *
+   * (A1 adds the rest of the lineage/isolation fields; this one lands with G1
+   * because the admission guard is its first consumer.)
+   */
+  createdBy?: 'ui' | 'mcp' | 'adopted';
+  /** The session that asked for this one, when an agent spawned it. */
+  parentSessionId?: string;
+  /**
+   * 'observer' sessions own NO worktree — they borrow `observedPath` and every
+   * write tool refuses for them. Absent means 'worktree' (a normal session).
+   */
+  isolation?: 'worktree' | 'observer';
+  /** Observer only: the directory being borrowed. Never a worktree it owns. */
+  observedPath?: string;
+  /** Observer only: the session whose worktree is borrowed, if any. */
+  observerOfSessionId?: string;
+  /**
+   * Adoption only (M5): an EXISTING checkout to take over, at a path KIT did
+   * not create and would not guess — the user's own repo root, or a worktree
+   * they made themselves.
+   *
+   * Without this, adoption falls through to `git worktree add`, which fails
+   * because the branch is already checked out elsewhere. Only paths that
+   * already exist are honoured; a stale one falls back to normal creation.
+   */
+  adoptedWorktreePath?: string;
+  /**
+   * Requested lifetime in minutes, from `kit_start_session(ttl_minutes)`.
+   * Materialised onto the instance as `expiresAt` at creation. The reaper
+   * treats it as a HARD ceiling; the idle TTL applies independently and is
+   * usually what fires first.
+   */
+  ttlMinutes?: number;
 }
 
 /**
@@ -640,6 +712,18 @@ export interface AgentInstance {
    */
   predecessorSessionIds?: string[];
   /**
+   * How this session's worktree was obtained. 'failed' means worktree creation
+   * did not succeed and the session is running directly in the source repo —
+   * previously indistinguishable from a normal session.
+   */
+  worktreeStatus?: 'created' | 'reused' | 'legacy' | 'observer' | 'failed';
+  /**
+   * Non-fatal problems hit while provisioning the worktree (env symlink,
+   * pre-commit hook, KIT directory). Previously swallowed to console.warn and
+   * invisible to any headless caller.
+   */
+  worktreeWarnings?: string[];
+  /**
    * Set by `detectStaleRebases` startup scan when the worktree's gitdir has a
    * `rebase-merge` or `rebase-apply` directory older than the stale threshold
    * (default 6h). Cleared automatically when the gitdir no longer has rebase
@@ -653,6 +737,69 @@ export interface AgentInstance {
     ageMinutes: number;     // age at detection time
     gitDir: string;         // absolute path to the rebase-* dir, for repair
   };
+  /**
+   * When `markSessionClosed` ran. Set for both a safe close (worktree and
+   * branch retained) and the destructive path.
+   *
+   * These two fields were assigned by `markSessionClosed` before they were
+   * declared here, which type-checked as an error the build never surfaced —
+   * electron-vite compiles with esbuild and does not check types. See
+   * `scripts/typecheck-gate.sh`.
+   */
+  closedAt?: string;
+  /** Free text: 'task complete', 'reaped: idle 4h', 'app_quit', ... */
+  closeReason?: string;
+  /**
+   * Hard deadline for the reaper (R1), ISO-8601. Set at creation from
+   * `config.ttlMinutes`. Absent means the idle TTL alone applies.
+   */
+  expiresAt?: string;
+  /**
+   * User has pinned this session: the reaper skips it entirely, whatever its
+   * age or idleness. Set from the session row menu (R2).
+   */
+  pinned?: boolean;
+  /**
+   * Set when the reaper acted on this session, so the expiry dialog can show
+   * what happened and the pass is not repeated. Absent means never reaped.
+   */
+  reapedAt?: string;
+  /**
+   * Set by `kit_request_review` (KIT-PR-P5). Before this existed the tool
+   * wrote `reviewRequested: true` into an activity row that nothing in the
+   * codebase read, so an agent finishing its work announced itself into a
+   * void.
+   */
+  reviewRequest?: {
+    summary: string;
+    requestedAt: string;
+    prUrl?: string;
+    prNumber?: number;
+    /** Why there is no PR link, when there isn't one. */
+    prStatus?: string;
+  };
+}
+
+/**
+ * One line in the agent-session expiry dialog (R2): what the reaper did to a
+ * session whose TTL ran out, and what is still recoverable.
+ */
+export interface ExpiredAgentSessionInfo {
+  sessionId: string;
+  branchName?: string;
+  repoPath?: string;
+  worktreePath?: string;
+  taskDescription?: string;
+  /** Why it expired: idle TTL, hard ceiling, or an explicit expiresAt. */
+  reasonCode: string;
+  /** What was actually done. Only 'delete-clean' removed anything. */
+  action: 'delete-observer' | 'delete-clean' | 'snapshot-and-close' | 'teardown-only';
+  detail: string;
+  idleMinutes: number;
+  /** Set when uncommitted work was pinned to a ref before closing. */
+  snapshotRef?: string;
+  worktreeDeleted: boolean;
+  localBranchDeleted: boolean;
 }
 
 // =============================================================================
@@ -1048,7 +1195,7 @@ export interface MergeResult {
   /** Files that could not be recovered from stash due to unresolvable conflicts */
   stashConflictFiles?: string[];
   /** S9N-6394: reason the merge gate blocked the operation, when it did. */
-  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN';
+  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING';
   /** S9N-6394: raw payload from the gate (failing checks, WIP shas, etc.). */
   gateDetails?: unknown;
 }

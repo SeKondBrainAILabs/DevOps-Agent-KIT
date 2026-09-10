@@ -26,8 +26,20 @@
  */
 
 import { z } from 'zod';
+import {
+  MCP_STATE_CHANGING_TOOLS,
+  MCP_TOOL_LOG_TYPE,
+  MCP_OBSERVER_FORBIDDEN_TOOLS,
+  actorSessionIdFor,
+} from '../../../shared/mcp-types';
 import { existsSync, realpathSync } from 'fs';
-import { join, basename, relative } from 'path';
+import { join, basename, relative, resolve as resolvePath } from 'path';
+import {
+  generateSessionBranchName,
+  pickDefaultBaseBranch,
+} from '../../../shared/branch-naming';
+import { isKitWorktreePath, resolveRepoRootFromWorktree } from '../../../shared/worktree-path';
+import { deriveObserverConfig } from '../../../shared/observer-session';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
@@ -174,12 +186,34 @@ export function registerTools(
   // Cast to any to avoid TS compiler OOM from complex zod+MCP generic inference
   const srv: any = server;
 
-  // Tools that change state — their calls are logged to the session activity feed
-  const STATE_CHANGING_TOOLS = new Set([
-    'kit_commit', 'kit_commit_all', 'kit_lock_file', 'kit_unlock_file', 'kit_request_review',
-    'kit_workspace_add', 'kit_workspace_scan', 'kit_project_group_add',
-    'kit_set_repo_worktree_mode',
-  ]);
+  // ---------------------------------------------------------------------------
+  // Session → AgentInstance resolution (predecessor-aware).
+  //
+  // After a KIT restart a session is re-created with a fresh id and the old id
+  // is recorded on the new instance's `predecessorSessionIds`. Agents keep
+  // calling with the id they were launched with — i.e. the OLD, now-predecessor
+  // id. The MCP binder registers predecessors as aliases (v2.7.4), so tools that
+  // resolve via the binder (kit_commit, kit_get_session_info's worktree/repos)
+  // work with a predecessor id. But three call sites looked the instance up by
+  // EXACT `sessionId` match — kit_get_session_info's extraInfo, kit_merge, and
+  // kit_rebase — so for a predecessor id they silently found nothing:
+  // kit_get_session_info dropped branchName/baseBranch, and kit_merge/kit_rebase
+  // failed with "Could not resolve source branch or repo path" for a session
+  // every other tool resolved fine. One helper so the git tools resolve a
+  // session exactly like the worktree tools and can't drift again.
+  const resolveInstance = (session_id: string): any => {
+    const listed = deps.agentInstanceService?.listInstances();
+    if (!listed?.success || !listed.data) return undefined;
+    return listed.data.find((i: any) =>
+      i.sessionId === session_id ||
+      (Array.isArray(i.predecessorSessionIds) && i.predecessorSessionIds.includes(session_id))
+    );
+  };
+
+  // Tools that change state — their calls are logged to the session activity
+  // feed. Owned by shared/mcp-types.ts so the set cannot drift from the
+  // registry the way MCP_TOOLS itself did (it listed 8 of 22 live tools).
+  const STATE_CHANGING_TOOLS = MCP_STATE_CHANGING_TOOLS;
 
   // ===========================================================================
   // Pre-commit sanity gate
@@ -483,7 +517,44 @@ export function registerTools(
   ): (args: T) => Promise<any> {
     return async (args: T) => {
       const start = Date.now();
-      const sessionId = (args as any).session_id || 'unknown';
+      // The CALLER, which is not always `session_id`: on the close tools
+      // `session_id` is the TARGET and `caller_session_id` is the actor. Using
+      // the target here would flip the closed session's status to 'idle', file
+      // the activity entry in its feed rather than the caller's, and drift-check
+      // a worktree that may have just been removed.
+      const sessionId = actorSessionIdFor(toolName, args as Record<string, unknown>);
+
+      // Read-only enforcement for observer sessions.
+      //
+      // Central rather than per-tool, for the same reason STATE_CHANGING_TOOLS
+      // is: a per-tool check is one `srv.tool(` block away from being forgotten
+      // by the next contributor, and the failure mode of forgetting is an
+      // observer committing into somebody else's worktree.
+      if (
+        sessionId !== 'unknown' &&
+        MCP_OBSERVER_FORBIDDEN_TOOLS.has(toolName) &&
+        (binder as any).isObserver?.(sessionId)
+      ) {
+        const bound = binder.getSession(sessionId);
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({
+            error: 'OBSERVER_SESSION_READ_ONLY',
+            tool: toolName,
+            isolation: 'observer',
+            observed_path: bound?.worktreePath,
+            owner_session_id: (bound as any)?.ownerSessionId ?? null,
+            instruction:
+              'This is an OBSERVER session. It shares another session\'s working ' +
+              'directory and owns no branch, so all write operations are refused — ' +
+              'a commit here would land in someone else\'s worktree. Read tools ' +
+              '(kit_get_repo_status, kit_get_commit_history, kit_list_branches, ' +
+              'kit_get_session_info, kit_list_sessions) work normally. To make ' +
+              'changes, ask the orchestrator for a session with isolation=\'worktree\'. ' +
+              'To report findings, use kit_log_activity.',
+          }) }],
+        };
+      }
 
       // First MCP call from an agent flips the instance status from 'waiting'
       // (the post-create / post-restart default) to 'idle' so the
@@ -507,7 +578,11 @@ export function registerTools(
 
       // Log state-changing tool calls to the activity feed so they're visible in KIT
       if (STATE_CHANGING_TOOLS.has(toolName) && sessionId !== 'unknown') {
-        deps.activityService?.log(sessionId, 'git', `MCP › ${toolName}`, { source: 'mcp', toolName });
+        // Not everything state-changing is a git operation — starting or
+        // closing a session is not a commit, and filing it under 'git' makes
+        // the feed read as though the repo had been touched.
+        const logType = MCP_TOOL_LOG_TYPE[toolName] ?? 'git';
+        deps.activityService?.log(sessionId, logType, `MCP › ${toolName}`, { source: 'mcp', toolName });
       }
 
       try {
@@ -610,7 +685,7 @@ export function registerTools(
       session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
       cwd: z.string().describe('Your current shell working directory (run `pwd`). REQUIRED. The commit is rejected if this is not the session worktree, so your work is never silently committed to the wrong place.'),
-      push: z.boolean().optional().default(false).describe('Push to remote after commit'),
+      push: z.boolean().optional().default(true).describe('Push to remote after commit. Defaults to TRUE — commits ship to origin so CI runs and other collaborators can see them. Pass push=false ONLY when you explicitly want a local-only commit (rare — mostly for WIP work you plan to squash before pushing).'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
       force: z.boolean().optional().default(false).describe('Bypass the pre-commit sanity gate (diff-size warning + parser check). Set to true ONLY after re-reading any flagged file and confirming the change is intentional. Parser errors block even with force=true — they always mean the on-disk file is broken.'),
     },
@@ -683,16 +758,40 @@ export function registerTools(
           });
         }
 
-        // 4. Optional push — capture failure reason so agent knows exactly what went wrong
+        // 4. Post-commit rebase (v2.7.5) — runs BEFORE push so the commit
+        //    lands on top of the latest base. Awaited (not fire-and-forget)
+        //    so failures are visible to the agent and can block the push.
+        //    If the rebase fails, the branch is left at pre-rebase state
+        //    and push is skipped so we don't publish a stale-base commit.
+        let rebaseInfo: {
+          ok: boolean;
+          rewrote: boolean;
+          commitsIntegrated: number;
+          baseBranch?: string;
+          message: string;
+          conflictFiles?: string[];
+        } | undefined;
+        try {
+          rebaseInfo = await deps.postCommitRebase?.(session_id, repo);
+        } catch (err) {
+          rebaseInfo = { ok: false, rewrote: false, commitsIntegrated: 0, message: err instanceof Error ? err.message : 'Rebase threw' };
+        }
+
+        // 5. Push — only when rebase either succeeded or wasn't needed.
+        //    Force-with-lease if the rebase rewrote history (replayed local
+        //    commits on top of new base ⇒ non-fast-forward push otherwise).
         let pushed = false;
         let pushError: string | undefined;
-        if (push) {
+        const rebaseFailed = rebaseInfo && !rebaseInfo.ok;
+        if (push && !rebaseFailed) {
           try {
-            const pushResult = await deps.gitService.push(session_id, repo);
+            const pushResult = await deps.gitService.push(
+              session_id,
+              repo,
+              rebaseInfo?.rewrote ? { forceWithLease: true } : undefined,
+            );
             pushed = pushResult.success === true;
-            if (!pushed) {
-              pushError = pushResult.error?.message || 'Push returned failure';
-            }
+            if (!pushed) pushError = pushResult.error?.message || 'Push returned failure';
           } catch (err) {
             pushError = err instanceof Error ? err.message : 'Push threw an error';
           }
@@ -702,17 +801,12 @@ export function registerTools(
               { commitHash: hash, pushError, repo, source: 'mcp' }
             );
           }
+        } else if (push && rebaseFailed) {
+          pushError = 'Push skipped — post-commit rebase failed. Fix conflicts then run kit_rebase.';
         }
 
-        // 5. Emit commit event so renderer CommitsTab updates in real-time
+        // 6. Emit commit event so renderer CommitsTab updates in real-time.
         deps.emitCommitCompleted?.(session_id, hash, commitMessage, filesChanged);
-
-        // 6. On-demand post-commit rebase (fire-and-forget). Wired from
-        // services/index.ts to WatcherService.attemptPostCommitRebase — same
-        // logic the .commit-msg-file path fires. Before v2.6.92 this was
-        // silently skipped for MCP commits so agent-driven sessions never got
-        // the "on-demand" rebase they were configured for.
-        deps.postCommitRebase?.(session_id, repo).catch(() => { /* non-fatal */ });
 
         // 7. Post-commit contract check (fire-and-forget)
         triggerContractCheck(session_id, worktree, hash).catch(() => {});
@@ -727,6 +821,19 @@ export function registerTools(
         };
         // Always tell the agent why push failed — it needs this to decide next steps
         if (pushError) result.pushError = pushError;
+        // v2.7.5 — surface rebase outcome so the agent knows whether the
+        // commit is on top of the latest base and can retry via kit_rebase
+        // when a conflict blocked us.
+        if (rebaseInfo) {
+          result.rebase = {
+            ok: rebaseInfo.ok,
+            rewrote: rebaseInfo.rewrote,
+            commitsIntegrated: rebaseInfo.commitsIntegrated,
+            baseBranch: rebaseInfo.baseBranch,
+            message: rebaseInfo.message,
+            conflictFiles: rebaseInfo.conflictFiles,
+          };
+        }
 
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (err) {
@@ -747,7 +854,7 @@ export function registerTools(
       session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
       cwd: z.string().describe('Your current shell working directory (run `pwd`). REQUIRED — must be the session\'s primary worktree, or the call is rejected.'),
-      push: z.boolean().optional().default(false).describe('Push to remote after each commit'),
+      push: z.boolean().optional().default(true).describe('Push each per-repo commit to its remote. Defaults to TRUE — every repo\'s commit ships to origin so CI runs. Pass push=false only when you want a local-only multi-repo commit (rare).'),
       force: z.boolean().optional().default(false).describe('Bypass the pre-commit sanity gate (diff-size warning) for ALL repos in this multi-repo commit. Parser errors still block even with force=true.'),
     },
     withCallLog('kit_commit_all', async ({ session_id, message, cwd, push, force }) => {
@@ -822,12 +929,27 @@ export function registerTools(
             });
           }
 
-          // Optional push — capture failure reason
+          // v2.7.5 — Post-commit rebase awaited BEFORE push (same rationale
+          // as kit_commit). Failure blocks the push so no stale-base commit
+          // ships to origin.
+          let rebaseInfo: { ok: boolean; rewrote: boolean; commitsIntegrated: number; baseBranch?: string; message: string; conflictFiles?: string[]; } | undefined;
+          try {
+            rebaseInfo = await deps.postCommitRebase?.(session_id, repo.repoName);
+          } catch (err) {
+            rebaseInfo = { ok: false, rewrote: false, commitsIntegrated: 0, message: err instanceof Error ? err.message : 'Rebase threw' };
+          }
+
+          // Push (only after rebase succeeded or was not needed).
           let pushed = false;
           let pushError: string | undefined;
-          if (push) {
+          const rebaseFailed = rebaseInfo && !rebaseInfo.ok;
+          if (push && !rebaseFailed) {
             try {
-              const pushResult = await deps.gitService.push(session_id, repoName);
+              const pushResult = await deps.gitService.push(
+                session_id,
+                repoName,
+                rebaseInfo?.rewrote ? { forceWithLease: true } : undefined,
+              );
               pushed = pushResult.success === true;
               if (!pushed) pushError = pushResult.error?.message || 'Push returned failure';
             } catch (err) {
@@ -839,16 +961,16 @@ export function registerTools(
                 { commitHash: hash, pushError, repo: repo.repoName, source: 'mcp' }
               );
             }
+          } else if (push && rebaseFailed) {
+            pushError = 'Push skipped — post-commit rebase failed. Fix conflicts then run kit_rebase.';
           }
-
-          // On-demand post-commit rebase (fire-and-forget) — see kit_commit.
-          deps.postCommitRebase?.(session_id, repo.repoName).catch(() => { /* non-fatal */ });
 
           // Post-commit contract check
           triggerContractCheck(session_id, repo.worktreePath, hash).catch(() => {});
 
           const repoResult: Record<string, unknown> = { repoName: repo.repoName, commitHash: hash, filesChanged, pushed };
           if (pushError) repoResult.pushError = pushError;
+          if (rebaseInfo) repoResult.rebase = { ok: rebaseInfo.ok, rewrote: rebaseInfo.rewrote, commitsIntegrated: rebaseInfo.commitsIntegrated, baseBranch: rebaseInfo.baseBranch, message: rebaseInfo.message, conflictFiles: rebaseInfo.conflictFiles };
           results.push(repoResult as any);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : 'Failed';
@@ -876,12 +998,13 @@ export function registerTools(
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session', session_id }) }] };
       }
 
-      // Try to get richer info from agentInstanceService
+      // Try to get richer info from agentInstanceService (predecessor-aware, so
+      // branchName/baseBranch still resolve when called with a post-restart
+      // predecessor id — the same id kit_merge/kit_rebase must resolve).
       let extraInfo: Record<string, unknown> = {};
       if (deps.agentInstanceService) {
-        const instances = deps.agentInstanceService.listInstances();
-        if (instances.success && instances.data) {
-          const match = instances.data.find((i: any) => i.sessionId === session_id);
+        {
+          const match = resolveInstance(session_id);
           if (match) {
             extraInfo = {
               agentType: match.config?.agentType,
@@ -965,8 +1088,17 @@ export function registerTools(
       }
 
       try {
+        // Locks are keyed by SOURCE REPO ROOT, not by worktree.
+        //
+        // This call used to pass `worktree`, while the watcher's auto-locks
+        // pass the repo root — so the two wrote to different locks.json files
+        // and never saw each other. Cross-session locking was a no-op as a
+        // result: kit_lock_file always reported "no conflicts" regardless of
+        // who actually held the file.
+        const lockRoot = resolveRepoRootFromWorktree(worktree)?.root ?? worktree;
+
         // Check for conflicts first
-        const conflictResult = await deps.lockService.checkConflicts(worktree, files, session_id);
+        const conflictResult = await deps.lockService.checkConflicts(lockRoot, files, session_id);
         const conflicts = conflictResult.success && conflictResult.data?.length > 0
           ? conflictResult.data
           : [];
@@ -996,7 +1128,7 @@ export function registerTools(
         }
 
         // Declare locks
-        await deps.lockService.declareFiles(session_id, files, 'edit');
+        await deps.lockService.declareFiles(lockRoot, session_id, files, 'edit');
 
         if (deps.activityService) {
           deps.activityService.log(session_id, 'info', `Locked files: ${files.join(', ')}`, {
@@ -1035,15 +1167,18 @@ export function registerTools(
       }
 
       try {
+        // Same repo-root normalisation as kit_lock_file — forceReleaseLock and
+        // releaseFiles both key by repo, so a worktree path would target a
+        // store nothing writes to.
+        const worktree = binder.getWorktreePathForRepo(session_id, repo)!;
+        const lockRoot = resolveRepoRootFromWorktree(worktree)?.root ?? worktree;
+
         if (files && files.length > 0) {
-          // Release specific files by force-releasing each
-          const worktree = binder.getWorktreePathForRepo(session_id, repo)!;
           for (const file of files) {
-            await deps.lockService.forceReleaseLock(worktree, file);
+            await deps.lockService.forceReleaseLock(lockRoot, file);
           }
         } else {
-          // Release all locks for this session
-          await deps.lockService.releaseFiles(session_id);
+          await deps.lockService.releaseFiles(lockRoot, session_id);
         }
 
         const unlockedLabel = files ? files.join(', ') : 'all files';
@@ -1096,7 +1231,11 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_request_review',
-    'Signal that work is ready for review. Logs activity and emits event to KIT dashboard.',
+    'Signal that work is ready for review, and open a pull request for it. ' +
+    'Creates the PR if there is not one, updates it if there is — calling this ' +
+    'repeatedly never opens a second PR. The PR body lists what is actually on ' +
+    'the branch. Safe to call on a repo with no GitHub remote: the review is ' +
+    'still recorded, you just get no PR link back.',
     {
       session_id: z.string().describe('The KIT session ID'),
       summary: z.string().describe('Summary of work completed and what to review'),
@@ -1119,10 +1258,80 @@ export function registerTools(
         });
       }
 
+      // KIT-PR-P4 — open or update the pull request.
+      //
+      // This must NEVER fail the call. The review signal is the primary effect
+      // and works offline; the PR is enrichment. An agent on a local-only repo
+      // must not see an error for doing exactly the right thing, so every
+      // non-GitHub outcome comes back as ok:true with a status explaining why
+      // there is no link.
+      let pr: Record<string, unknown> | null = null;
+      try {
+        const instances = deps.agentInstanceService?.listInstances?.();
+        const inst = instances?.success && instances.data
+          ? instances.data.find(
+              (i: any) =>
+                i.sessionId === session_id ||
+                (Array.isArray(i.predecessorSessionIds) &&
+                  i.predecessorSessionIds.includes(session_id))
+            )
+          : undefined;
+
+        if (!deps.githubService) {
+          pr = { status: 'unavailable', message: 'GitHub integration is not configured.' };
+        } else if (!inst) {
+          pr = { status: 'unavailable', message: 'No KIT instance found for this session.' };
+        } else {
+          const result = await deps.githubService.ensurePullRequest({
+            sessionId: inst.sessionId ?? session_id,
+            branchName: inst.config?.branchName ?? '',
+            baseBranch: inst.config?.baseBranch ?? 'development',
+            taskDescription: inst.config?.taskDescription ?? summary,
+            worktreePath: inst.worktreePath || inst.config?.repoPath || cwd,
+          });
+          pr = {
+            status: result.status,
+            url: result.url ?? null,
+            number: result.number ?? null,
+            reason: result.reason ?? null,
+            message: result.message ?? null,
+          };
+        }
+      } catch (err) {
+        // Even an unexpected throw must not lose the review.
+        pr = {
+          status: 'failed',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+
+      if (deps.activityService && pr?.url) {
+        deps.activityService.log(session_id, 'info', `Pull request ready: ${pr.url}`, {
+          reviewRequested: true,
+          prUrl: pr.url,
+          source: 'mcp',
+        });
+      }
+
+      // KIT-PR-P5 — put the request somewhere the renderer can see it. The
+      // activity row above is history; this is outstanding state.
+      deps.agentInstanceService?.setReviewRequest?.(session_id, {
+        summary,
+        prUrl: (pr?.url as string) ?? undefined,
+        prNumber: (pr?.number as number) ?? undefined,
+        prStatus: (pr?.status as string) ?? undefined,
+      });
+
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ logged: true, summary, sessionId: session_id }),
+          text: JSON.stringify({
+            ok: true,
+            review_logged: true,
+            session_id,
+            summary,
+            pr,
+          }),
         }],
       };
     })
@@ -1161,8 +1370,10 @@ export function registerTools(
       if (divergence) return divergenceResponse(session_id, 'kit_merge', divergence);
 
       // Resolve source branch + target from the instance config.
-      const instances = deps.agentInstanceService?.listInstances();
-      const inst = instances?.success && instances.data ? instances.data.find((i: any) => i.sessionId === session_id) : undefined;
+      // Predecessor-aware (see resolveInstance) — a post-restart session id is a
+      // predecessor, and an exact-match find would miss it here even though the
+      // binder resolved the worktree above.
+      const inst = resolveInstance(session_id);
       const sourceBranch = inst?.config?.branchName;
       const resolvedTarget = target_branch || inst?.config?.baseBranch || 'main';
       const repoPath = inst?.config?.repoPath;
@@ -1226,8 +1437,7 @@ export function registerTools(
       const divergence = await checkDivergence(session_id, undefined, cwd);
       if (divergence) return divergenceResponse(session_id, 'kit_rebase', divergence);
 
-      const instances = deps.agentInstanceService?.listInstances();
-      const inst = instances?.success && instances.data ? instances.data.find((i: any) => i.sessionId === session_id) : undefined;
+      const inst = resolveInstance(session_id);
       const resolvedBase = base_branch || inst?.config?.baseBranch || 'main';
       const repoPath = inst?.config?.repoPath;
       if (!repoPath) {
@@ -1251,6 +1461,734 @@ export function registerTools(
           success: false,
         }) }] };
       }
+    })
+  );
+
+  // ==========================================================================
+  // Session lifecycle (MCP session-lifecycle epic).
+  //
+  // These go through SessionOrchestrator — the same funnel IPC.INSTANCE_CREATE
+  // uses — so an agent-created session is identical to one the user made in
+  // the UI, watcher and all. Reimplementing the compose step here is exactly
+  // how the two would drift.
+  // ==========================================================================
+
+  /**
+   * Normalise a caller-supplied repo path.
+   *
+   * `getActiveSessionsForRepo` compares repo paths by EXACT STRING, so a
+   * trailing slash or a symlinked path silently creates a second bucket — and
+   * with it a way past both the per-repo cap and Single-Session Mode. Agents
+   * format paths inconsistently, so this is a realistic bypass rather than a
+   * theoretical one.
+   */
+  function normaliseRepoPath(input: string): string {
+    const resolved = resolvePath(input);
+    try {
+      return realpathSync(resolved);
+    } catch {
+      // Path does not exist yet — validation downstream will reject it.
+      return resolved;
+    }
+  }
+
+  srv.tool(
+    'kit_start_session',
+    'Create a new KIT session (its own git branch + worktree, auto-commit watcher, and MCP binding) and return everything a subagent needs to start working in it. Use this to fan out work; close them again with kit_close_session or kit_close_sessions.',
+    {
+      repo_path: z.string().describe('Absolute path to the git repository root the new session works in.'),
+      task: z.string().min(1).describe('What this session is for, in one sentence. Shown in the KIT UI and embedded in the agent prompt.'),
+      session_id: z.string().optional().describe('YOUR own KIT session id. The new session is recorded as its child so you can later close everything you spawned in one kit_close_sessions call.'),
+      agent_type: z.enum(['claude', 'cursor', 'codex', 'copilot', 'aider', 'cline', 'warp', 'custom']).optional().describe('Which coding agent will run in this session. Defaults to claude.'),
+      isolation: z.enum(['worktree', 'observer']).optional().describe("\"worktree\" (default) gives the session its own branch and worktree directory with full read/write. \"observer\" gives it NO worktree: it borrows another session's directory (or a repo checkout) and every write tool — kit_commit, kit_merge, kit_rebase, kit_lock_file — is refused. Use observer for reviewers and analysts that must not mutate the tree; it costs no disk and no watcher."),
+      observe_session_id: z.string().optional().describe("With isolation=\"observer\": the session whose worktree to borrow. Omit to observe repo_path directly."),
+      branch_name: z.string().optional().describe('Branch to create. Omit and KIT derives one in the same shape the UI uses.'),
+      base_branch: z.string().optional().describe('Branch to cut from and merge back into. Omit and KIT uses the repo current branch, falling back to main/master/development.'),
+      auto_commit: z.boolean().optional().describe('Run the KIT file watcher and auto-commit the worktree. Default true.'),
+      rebase_frequency: z.enum(['never', 'daily', 'weekly', 'on-demand']).optional().describe('How often KIT rebases this session on its base branch. Default never.'),
+      system_prompt: z.string().optional().describe('Extra instructions injected into the generated agent prompt — the subagent role.'),
+      include_prompt: z.boolean().optional().describe('Return the full generated agent prompt. Default true; set false to save tokens.'),
+      dry_run: z.boolean().optional().describe('Resolve and return the plan (branch, base, worktree path) WITHOUT creating anything.'),
+    },
+    withCallLog('kit_start_session', async (args: any) => {
+      const fail = (code: string, message: string, extra: Record<string, unknown> = {}) => ({
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, error_code: code, message, ...extra }) }],
+      });
+
+      if (!deps.sessionOrchestrator?.startSession) return notAvailable('sessionOrchestrator');
+
+      const repoPath = normaliseRepoPath(args.repo_path);
+
+      if (!existsSync(repoPath)) {
+        return fail('INVALID_REPO', `No such directory: ${repoPath}`, { retryable: false });
+      }
+
+      // An orchestrator running inside its own KIT worktree will naturally pass
+      // its cwd here. That would nest a KIT-DevOps-<branch>/ directory inside
+      // the parent's worktree, which the parent's watcher would then
+      // auto-commit into the parent's branch.
+      if (isKitWorktreePath(repoPath)) {
+        return fail(
+          'NESTED_WORKTREE_REFUSED',
+          `${repoPath} is itself a KIT session worktree. Pass the SOURCE repository path instead — creating a session inside another session's worktree would nest worktrees and the parent's watcher would commit them.`,
+          { retryable: false, instruction: 'Use kit_get_session_info to find the source repo path for your session.' }
+        );
+      }
+
+      const agentType = args.agent_type ?? 'claude';
+      const isolation = args.isolation ?? 'worktree';
+
+      // ── Observer branch ───────────────────────────────────────────────
+      // No worktree, no branch, no watcher, no agent environment. It borrows a
+      // directory and every write tool refuses for it.
+      if (isolation === 'observer') {
+        let observedPath = repoPath;
+        let ownerIsObserver = false;
+
+        if (args.observe_session_id) {
+          const owner = deps.sessionOrchestrator!
+            .listSessions()
+            .find((i: any) => i.sessionId === args.observe_session_id);
+          if (!owner) {
+            return fail('NOT_FOUND', `No session ${args.observe_session_id} to observe.`);
+          }
+          ownerIsObserver = owner.config?.isolation === 'observer';
+          observedPath = owner.worktreePath ?? owner.config?.repoPath ?? repoPath;
+        }
+
+        const derived = deriveObserverConfig({
+          observedPath,
+          ownerSessionId: args.observe_session_id,
+          ownerIsObserver,
+        });
+        if (!derived.ok) {
+          return fail(derived.error!.code, derived.error!.message, {
+            instruction: derived.error!.instruction,
+          });
+        }
+
+        const observerConfig: any = {
+          ...derived.config,
+          agentType,
+          taskDescription: args.task,
+          baseBranch: 'main',
+          useWorktree: false,
+          // An observer must never auto-commit: the tree it watches is not its
+          // own, and the watcher is skipped for it entirely.
+          autoCommit: false,
+          commitInterval: 30,
+          rebaseFrequency: 'never',
+          systemPrompt: args.system_prompt ?? '',
+          contextPreservation: '',
+          createdBy: 'mcp',
+          parentSessionId: args.session_id,
+        };
+
+        if (args.dry_run) {
+          return { content: [{ type: 'text', text: JSON.stringify({
+            ok: true, dry_run: true,
+            plan: {
+              isolation: 'observer',
+              observed_path: derived.config!.observedPath,
+              repo_path: derived.config!.repoPath,
+              observer_of: args.observe_session_id ?? null,
+            },
+          }) }] };
+        }
+
+        const obs = await deps.sessionOrchestrator!.startSession(observerConfig);
+        if (!obs?.success || !obs.data) {
+          const e = obs?.error ?? { code: 'INTERNAL', message: 'Observer creation failed' };
+          return fail(e.code, e.message, { details: (e as any).details, instruction: (e as any).instruction });
+        }
+
+        // Registered as an observer so the read-only guard is O(1) per tool
+        // call, and so a destructive close of the owner can find it.
+        (binder as any).registerObserverSession?.(
+          obs.data.sessionId,
+          derived.config!.observedPath,
+          { ownerSessionId: args.observe_session_id }
+        );
+
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: true,
+          session_id: obs.data.sessionId,
+          instance_id: obs.data.id,
+          isolation: 'observer',
+          created_by: 'mcp',
+          parent_session_id: args.session_id ?? null,
+          observer_of: args.observe_session_id ?? null,
+          observed_path: derived.config!.observedPath,
+          repo_path: derived.config!.repoPath,
+          worktree_path: null,
+          created_at: obs.data.createdAt,
+          watcher_started: false,
+          mcp: { url: deps.mcpUrl?.() ?? null, tool_prefix: 'kit_' },
+          launch: {
+            cwd: derived.config!.observedPath,
+            must_pass_session_id: obs.data.sessionId,
+          },
+          read_only: true,
+          instruction:
+            'This session is READ-ONLY. It borrows a directory it does not own, so ' +
+            'kit_commit, kit_merge, kit_rebase and kit_lock_file will be refused. ' +
+            'Do not edit files here. Report findings with kit_log_activity.',
+        }) }] };
+      }
+
+      const branchName = args.branch_name ?? generateSessionBranchName(agentType);
+
+      // Derive the base branch from the repo rather than hard-defaulting to
+      // 'main'. The wizard shows the user its choice; an agent just gets it,
+      // so guessing wrong silently cuts sessions off the wrong base in every
+      // repo that lives on 'development'.
+      let baseBranch = args.base_branch;
+      if (!baseBranch) {
+        let branches: string[] = [];
+        let currentBranch: string | undefined;
+        try {
+          const listed = await deps.gitService?.listBranchesForRepo?.(repoPath);
+          const data: any = listed?.data ?? listed;
+          branches = data?.branches ?? data?.local ?? [];
+          currentBranch = data?.currentBranch ?? data?.current;
+        } catch {
+          // Fall through to the heuristic default.
+        }
+        baseBranch = pickDefaultBaseBranch({ currentBranch, branches });
+      }
+      baseBranch = String(baseBranch).replace(/^origin\//, '');
+
+      const config: any = {
+        repoPath,
+        agentType,
+        taskDescription: args.task,
+        branchName,
+        baseBranch,
+        useWorktree: true,
+        autoCommit: args.auto_commit ?? true,
+        commitInterval: 30,
+        rebaseFrequency: args.rebase_frequency ?? 'never',
+        systemPrompt: args.system_prompt ?? '',
+        contextPreservation: '',
+        createdBy: 'mcp',
+        parentSessionId: args.session_id,
+      };
+
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: true, dry_run: true,
+            plan: { repo_path: repoPath, branch: branchName, base_branch: baseBranch, agent_type: agentType, task: args.task, parent_session_id: args.session_id ?? null },
+          }) }],
+        };
+      }
+
+      const result = await deps.sessionOrchestrator.startSession(config);
+
+      if (!result?.success || !result.data) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Session creation failed' };
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false, error_code: err.code, message: err.message,
+            retryable: err.code === 'SESSION_LIMIT_REACHED',
+            details: (err as any).details, instruction: (err as any).instruction,
+          }) }],
+        };
+      }
+
+      const inst = result.data;
+      const mcpUrl = deps.mcpUrl?.() ?? null;
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: true,
+          session_id: inst.sessionId,
+          instance_id: inst.id,
+          status: inst.status,
+          created_by: 'mcp',
+          parent_session_id: args.session_id ?? null,
+          repo_path: repoPath,
+          worktree_path: inst.worktreePath ?? repoPath,
+          branch: branchName,
+          base_branch: baseBranch,
+          agent_type: agentType,
+          task: args.task,
+          created_at: inst.createdAt,
+          worktree_status: inst.worktreeStatus ?? null,
+          watcher_started: true,
+          mcp: { url: mcpUrl, config_path: inst.worktreePath ? join(inst.worktreePath, '.mcp.json') : null, tool_prefix: 'kit_' },
+          launch: {
+            cwd: inst.worktreePath ?? repoPath,
+            must_pass_session_id: inst.sessionId,
+            suggested_command: `cd "${inst.worktreePath ?? repoPath}" && ${agentType}`,
+          },
+          ...((args.include_prompt ?? true) ? { prompt: inst.prompt } : {}),
+          // Non-fatal problems provisioning the worktree. These were previously
+          // swallowed to console.warn where no headless caller could see them.
+          warnings: inst.worktreeWarnings ?? [],
+        }) }],
+      };
+    })
+  );
+
+  srv.tool(
+    'kit_close_session',
+    'Close a KIT session. SAFE by default: stops the watcher, unbinds MCP, marks the session closed, and KEEPS the worktree and branch. Deleting the worktree or branches requires explicit flags and is refused when there is uncommitted or unpushed work unless forced.',
+    {
+      session_id: z.string().describe('The session to close. This is the TARGET — pass your own id as caller_session_id.'),
+      caller_session_id: z.string().optional().describe('YOUR session id. Used for the ownership check: you may always close yourself or a session you spawned.'),
+      reason: z.string().optional().describe('Why it is being closed. Recorded on the session and shown in KIT.'),
+      delete_worktree: z.boolean().optional().describe('DESTRUCTIVE. Also remove the worktree directory. Refused if it has uncommitted changes unless force_dirty is set.'),
+      delete_local_branch: z.boolean().optional().describe('DESTRUCTIVE. Also delete the local branch. Refused if it has unpushed commits unless force_unpushed is set.'),
+      delete_remote_branch: z.boolean().optional().describe('DESTRUCTIVE. Also delete the branch on origin. Only when the work is merged or abandoned.'),
+      force_dirty: z.boolean().optional().describe('DISCARDS UNCOMMITTED WORK. Only set after the user explicitly authorised it.'),
+      force_unpushed: z.boolean().optional().describe('DISCARDS COMMITS THAT EXIST NOWHERE ELSE. Only set after the user explicitly authorised it.'),
+      allow_foreign: z.boolean().optional().describe("Permit closing another agent's session. Never permits closing a session a human created in the KIT UI."),
+    },
+    withCallLog('kit_close_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.closeSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.closeSession(args.session_id, {
+        reason: args.reason,
+        deleteWorktree: args.delete_worktree,
+        deleteLocalBranch: args.delete_local_branch,
+        deleteRemoteBranch: args.delete_remote_branch,
+        forceDirty: args.force_dirty,
+        forceUnpushed: args.force_unpushed,
+        allowForeign: args.allow_foreign,
+        callerSessionId: args.caller_session_id,
+      });
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Close failed' };
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false, error_code: err.code, message: err.message,
+            retryable: false, details: err.details,
+            instruction: err.instruction,
+            retry_with: err.details?.retry_with,
+          }) }],
+        };
+      }
+
+      const d = result.data;
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: true,
+          session_id: d.sessionId,
+          already_closed: d.alreadyClosed,
+          previous_status: d.previousStatus ?? null,
+          actions: {
+            watcher_stopped: d.actions.watchersStopped,
+            rebase_watcher_stopped: d.actions.rebaseWatcherStopped,
+            mcp_unregistered: d.actions.mcpUnregistered,
+            aliases_unregistered: d.actions.aliasesUnregistered,
+            status_set: d.actions.statusSet ?? null,
+            worktree_deleted: d.actions.worktreeDeleted,
+            local_branch_deleted: d.actions.localBranchDeleted,
+            remote_branch_deleted: d.actions.remoteBranchDeleted,
+          },
+          preserved: d.preserved ?? null,
+          warnings: d.actions.errors ?? [],
+        }) }],
+      };
+    })
+  );
+
+  // ── M5: control tools ──────────────────────────────────────────────────
+  srv.tool(
+    'kit_restart_session',
+    'Restart a KIT session: stop it, re-create its worktree from the current base, and bring the watcher back up. The session keeps working under its ORIGINAL id as well as a new one, so a subagent already launched with the old id keeps working. Use when a session is wedged; use kit_close_session when the work is finished.',
+    {
+      target_session_id: z.string().describe('The session to restart. This is the TARGET — pass your own id as caller_session_id.'),
+      caller_session_id: z.string().optional().describe('YOUR session id.'),
+      commit_changes: z.boolean().optional().describe('Commit any uncommitted work before restarting. Default true — setting this false risks losing it.'),
+    },
+    withCallLog('kit_restart_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.restartSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.restartSession(
+        args.target_session_id,
+        undefined,
+        args.commit_changes !== false
+      );
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Restart failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message, retryable: false,
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        session_id: result.data?.sessionId,
+        previous_session_id: args.target_session_id,
+        instance_id: result.data?.id,
+        worktree_path: result.data?.worktreePath ?? null,
+        branch: result.data?.config?.branchName,
+        note: 'The previous session id still resolves for MCP calls, so a subagent launched with it keeps working.',
+      }) }] };
+    })
+  );
+
+  srv.tool(
+    'kit_adopt_session',
+    'Bring an EXISTING branch or worktree under KIT management without creating anything. Use when work already exists — a branch a human made, or one from a session KIT has lost track of. The adopted session is recorded as human-owned: you can manage it, but you can never destructively close it.',
+    {
+      repo_path: z.string().describe('Absolute path to the repository.'),
+      branch_name: z.string().describe('The existing branch to adopt.'),
+      base_branch: z.string().optional().describe('What this branch merges back into. Defaults to development.'),
+      worktree_path: z.string().optional().describe('Where the branch is checked out, if not the repo root. Adopted as-is; no worktree is created.'),
+      agent_type: z.string().optional().describe('Agent working in it. Defaults to claude.'),
+      task: z.string().optional().describe('What this session is for.'),
+      caller_session_id: z.string().optional().describe('YOUR session id, recorded as the parent.'),
+      if_exists: z.enum(['refuse', 'take_over']).optional().describe('What to do when a live session already owns the branch. Default refuse. take_over works only on agent-created sessions — never on a human\'s.'),
+    },
+    withCallLog('kit_adopt_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.adoptSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.adoptSession({
+        repoPath: args.repo_path,
+        branchName: args.branch_name,
+        baseBranch: args.base_branch,
+        worktreePath: args.worktree_path,
+        agentType: args.agent_type,
+        task: args.task,
+        callerSessionId: args.caller_session_id,
+        ifExists: args.if_exists,
+      });
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Adopt failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message, retryable: false,
+          instruction: err.instruction,
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        session_id: result.data?.sessionId,
+        instance_id: result.data?.id,
+        worktree_path: result.data?.worktreePath ?? null,
+        branch: result.data?.config?.branchName,
+        created_by: 'adopted',
+        note: 'Recorded as adopted, not agent-created. You may close it safely, but never destructively — the branch belongs to a human.',
+      }) }] };
+    })
+  );
+
+  srv.tool(
+    'kit_update_session',
+    "Change a live session's settings. Turning auto_commit on or off starts or stops its file watcher, and rebase_frequency starts or stops its rebase watcher, so these take effect immediately. The branch name cannot be changed — close the session and start a new one instead.",
+    {
+      target_session_id: z.string().describe('The session to update. This is the TARGET — pass your own id as caller_session_id.'),
+      caller_session_id: z.string().optional().describe('YOUR session id.'),
+      task: z.string().optional().describe('New task description.'),
+      base_branch: z.string().optional().describe('New base branch to merge back into.'),
+      auto_commit: z.boolean().optional().describe('Start or stop the auto-commit file watcher.'),
+      rebase_frequency: z.enum(['never', 'daily', 'weekly', 'on-demand']).optional().describe('Start, stop or re-schedule the rebase watcher.'),
+      system_prompt: z.string().optional().describe('New system prompt.'),
+      ttl_minutes: z.number().optional().describe('New lifetime from creation, in minutes. Also resets the expiry deadline.'),
+    },
+    withCallLog('kit_update_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.updateSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.updateSession(args.target_session_id, {
+        taskDescription: args.task,
+        baseBranch: args.base_branch,
+        autoCommit: args.auto_commit,
+        rebaseFrequency: args.rebase_frequency,
+        systemPrompt: args.system_prompt,
+        ttlMinutes: args.ttl_minutes,
+      });
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Update failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message, retryable: false,
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true, session_id: result.data?.sessionId, updated: result.data?.updated ?? [],
+      }) }] };
+    })
+  );
+
+  srv.tool(
+    'kit_extend_session',
+    'Push a session\'s expiry deadline out so the reaper does not clean it up while it is still working. Capped at one extension of up to 4 hours per window — if you need longer than that, the session should probably be finished and a new one started.',
+    {
+      target_session_id: z.string().describe('The session to extend. This is the TARGET — pass your own id as caller_session_id.'),
+      caller_session_id: z.string().optional().describe('YOUR session id.'),
+      minutes: z.number().describe('How much longer it needs, in minutes. Maximum 240.'),
+    },
+    withCallLog('kit_extend_session', async (args: any) => {
+      if (!deps.sessionOrchestrator?.extendSession) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.extendSession(args.target_session_id, {
+        minutes: args.minutes,
+      });
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Extend failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: err.code, message: err.message,
+          retryable: err.code === 'EXTENSION_LIMIT_REACHED',
+        }) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        session_id: result.data?.sessionId,
+        expires_at: result.data?.expiresAt,
+        extensions_used: result.data?.extensionsUsed,
+      }) }] };
+    })
+  );
+
+  srv.tool(
+    'kit_close_sessions',
+    'Close many KIT sessions at once — typically everything you spawned. Same SAFE default and same per-session refusals as kit_close_session; failures are reported per session and never abort the batch. Requires a scope: session_ids, parent_session_id or repo_path.',
+    {
+      session_ids: z.array(z.string()).optional().describe('Explicit list of sessions to close.'),
+      parent_session_id: z.string().optional().describe('Close the children of this session. Pass your own id here AND as caller_session_id to clean up everything you spawned — the selector finds them, caller_session_id is what authorises closing them. Restart-predecessor ids are matched too.'),
+      include_descendants: z.boolean().optional().describe('With parent_session_id, also close grandchildren. Default true.'),
+      repo_path: z.string().optional().describe('Only sessions in this repository.'),
+      created_by: z.enum(['mcp', 'ui', 'adopted', 'any']).optional().describe('Only sessions created this way. Defaults to "mcp" so a bulk close can never sweep up sessions a human created.'),
+      status: z.array(z.string()).optional().describe('Only sessions currently in one of these statuses, e.g. ["waiting"] to reap agents that never connected.'),
+      older_than_minutes: z.number().optional().describe('Only sessions created more than N minutes ago.'),
+      exclude_session_ids: z.array(z.string()).optional().describe('Never close these. Your own id is always excluded.'),
+      limit: z.number().optional().describe('Cap on how many to close in one call. Default 50; extras are reported as skipped and has_more is set.'),
+      dry_run: z.boolean().optional().describe('Return exactly which sessions WOULD be closed without closing anything. Do this first with a broad selector.'),
+      caller_session_id: z.string().optional().describe('YOUR session id, for ownership checks and self-exclusion.'),
+      reason: z.string().optional().describe('Recorded on every closed session.'),
+      delete_worktree: z.boolean().optional().describe('DESTRUCTIVE, applied per session.'),
+      delete_local_branch: z.boolean().optional().describe('DESTRUCTIVE, applied per session.'),
+      delete_remote_branch: z.boolean().optional().describe('DESTRUCTIVE, applied per session.'),
+      force_dirty: z.boolean().optional().describe('DISCARDS UNCOMMITTED WORK in every matched session.'),
+      force_unpushed: z.boolean().optional().describe('DISCARDS UNPUSHED COMMITS in every matched session.'),
+      allow_foreign: z.boolean().optional().describe("Permit closing other agents' sessions. Never permits closing a human's."),
+    },
+    withCallLog('kit_close_sessions', async (args: any) => {
+      if (!deps.sessionOrchestrator?.closeSessions) return notAvailable('sessionOrchestrator');
+
+      const result = await deps.sessionOrchestrator.closeSessions(
+        {
+          sessionIds: args.session_ids,
+          parentSessionId: args.parent_session_id,
+          includeDescendants: args.include_descendants,
+          repoPath: args.repo_path,
+          createdBy: args.created_by,
+          status: args.status,
+          olderThanMinutes: args.older_than_minutes,
+          excludeSessionIds: args.exclude_session_ids,
+          limit: args.limit,
+          dryRun: args.dry_run,
+        },
+        {
+          reason: args.reason,
+          deleteWorktree: args.delete_worktree,
+          deleteLocalBranch: args.delete_local_branch,
+          deleteRemoteBranch: args.delete_remote_branch,
+          forceDirty: args.force_dirty,
+          forceUnpushed: args.force_unpushed,
+          allowForeign: args.allow_foreign,
+          callerSessionId: args.caller_session_id,
+        }
+      );
+
+      if (!result?.success) {
+        const err = result?.error ?? { code: 'INTERNAL', message: 'Bulk close failed' };
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error_code: err.code, message: err.message }) }] };
+      }
+
+      const d = result.data;
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: true,
+          dry_run: d.dryRun,
+          matched: d.matched,
+          has_more: d.hasMore,
+          closed_count: d.closed.length,
+          closed: d.closed.map((c: any) => ({ session_id: c.sessionId, branch: c.branch, worktree_deleted: c.worktreeDeleted })),
+          skipped: d.skipped.map((x: any) => ({ session_id: x.sessionId, reason_code: x.reasonCode })),
+          failed: d.failed.map((f: any) => ({ session_id: f.sessionId, error_code: f.errorCode, message: f.message })),
+        }) }],
+      };
+    })
+  );
+
+  srv.tool(
+    'kit_list_sessions',
+    'List KIT sessions with lineage, origin and runtime state. Use it to find what you spawned, or to re-adopt after a restart.',
+    {
+      repo_path: z.string().optional().describe('Only sessions in this repository.'),
+      parent_session_id: z.string().optional().describe('Only children of this session (restart-predecessor ids are matched too).'),
+      include_descendants: z.boolean().optional().describe('With parent_session_id, include the whole subtree. Default false.'),
+      created_by: z.enum(['mcp', 'ui', 'adopted', 'any']).optional().describe('Filter by who created the session. Default any.'),
+      status: z.array(z.string()).optional().describe('Only these statuses.'),
+      include_closed: z.boolean().optional().describe('Include closed/completed/failed sessions. Default false.'),
+      limit: z.number().optional().describe('Maximum sessions returned. Default 100.'),
+    },
+    withCallLog('kit_list_sessions', async (args: any) => {
+      if (!deps.sessionOrchestrator?.listSessions) return notAvailable('sessionOrchestrator');
+
+      const createdBy = args.created_by ?? 'any';
+      const includeClosed = args.include_closed ?? false;
+      const limit = args.limit ?? 100;
+
+      const subtree = args.parent_session_id
+        ? new Set(
+            args.include_descendants
+              ? deps.sessionOrchestrator.descendantSessionIds(args.parent_session_id)
+              : (deps.sessionOrchestrator as any).directChildSessionIds?.(args.parent_session_id) ?? []
+          )
+        : undefined;
+
+      const all = deps.sessionOrchestrator.listSessions().filter((inst: any) => {
+        if (!inst.sessionId) return false;
+        if (subtree && !subtree.has(inst.sessionId)) return false;
+        if (args.repo_path && inst.config?.repoPath !== args.repo_path) return false;
+        const origin = inst.config?.createdBy ?? 'ui';
+        if (createdBy !== 'any' && origin !== createdBy) return false;
+        if (args.status && !args.status.includes(inst.status)) return false;
+        if (!includeClosed && ['closed', 'completed', 'failed'].includes(inst.status)) return false;
+        return true;
+      });
+
+      const sessions = all.slice(0, limit).map((inst: any) => ({
+        session_id: inst.sessionId,
+        instance_id: inst.id,
+        status: inst.status,
+        created_by: inst.config?.createdBy ?? 'ui',
+        parent_session_id: inst.config?.parentSessionId ?? null,
+        predecessor_session_ids: inst.predecessorSessionIds ?? [],
+        agent_type: inst.config?.agentType,
+        repo_path: inst.config?.repoPath,
+        worktree_path: inst.worktreePath ?? null,
+        worktree_status: inst.worktreeStatus ?? null,
+        branch: inst.config?.branchName,
+        base_branch: inst.config?.baseBranch,
+        task: inst.config?.taskDescription,
+        created_at: inst.createdAt,
+        closed_at: inst.closedAt ?? null,
+        close_reason: inst.closeReason ?? null,
+        // The reaper's deadline. Without it an agent cannot tell whether it is
+        // about to be cleaned up, so it cannot know to call kit_extend_session.
+        expires_at: inst.expiresAt ?? null,
+        pinned: Boolean(inst.pinned),
+        // Together these expose the leak class this epic closed: a binder entry
+        // with no watcher, or a watcher with no binder entry.
+        mcp_registered: Boolean(binder.getSession?.(inst.sessionId)),
+      }));
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: true, count: sessions.length, truncated: all.length > limit, sessions,
+        }) }],
+      };
+    })
+  );
+
+  srv.tool(
+    'kit_get_session_status',
+    'Full state of one KIT session: config, lineage, git state and runtime health.',
+    {
+      session_id: z.string().describe('KIT session id. Restart-predecessor ids resolve too.'),
+      include_git: z.boolean().optional().describe('Include local git state for the worktree. Default true. Local only — no network.'),
+      include_remote: z.boolean().optional().describe('ALSO contact the remote to compute unpushed commits and whether the branch exists on origin. SLOW: two 15-second fetches plus an untimed ls-remote. Default false. Only worth it before a destructive close.'),
+      include_children: z.boolean().optional().describe('Include the sessions spawned from this one. Default true.'),
+    },
+    withCallLog('kit_get_session_status', async (args: any) => {
+      if (!deps.sessionOrchestrator?.listSessions) return notAvailable('sessionOrchestrator');
+
+      const aliases = deps.sessionOrchestrator.expandSessionAliases(args.session_id);
+      const inst = deps.sessionOrchestrator
+        .listSessions()
+        .find((i: any) => aliases.includes(i.sessionId));
+
+      if (!inst) {
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: false, error_code: 'NOT_FOUND',
+          message: `No session ${args.session_id}. It may have been deleted; kit_list_sessions(include_closed=true) shows closed ones.`,
+        }) }] };
+      }
+
+      const worktree = inst.worktreePath ?? inst.config?.repoPath;
+      const out: any = {
+        ok: true,
+        session_id: inst.sessionId,
+        instance_id: inst.id,
+        status: inst.status,
+        created_by: inst.config?.createdBy ?? 'ui',
+        agent_type: inst.config?.agentType,
+        task: inst.config?.taskDescription,
+        repo_path: inst.config?.repoPath,
+        worktree_path: inst.worktreePath ?? null,
+        worktree_status: inst.worktreeStatus ?? null,
+        branch: inst.config?.branchName,
+        base_branch: inst.config?.baseBranch,
+        created_at: inst.createdAt,
+        closed_at: inst.closedAt ?? null,
+        close_reason: inst.closeReason ?? null,
+        // The reaper's deadline. Without it an agent cannot tell whether it is
+        // about to be cleaned up, so it cannot know to call kit_extend_session.
+        expires_at: inst.expiresAt ?? null,
+        pinned: Boolean(inst.pinned),
+        lineage: {
+          parent: inst.config?.parentSessionId ?? null,
+          predecessors: inst.predecessorSessionIds ?? [],
+          aliases,
+        },
+        runtime: {
+          mcp_registered: Boolean(binder.getSession?.(inst.sessionId)),
+          stale_rebase: inst.staleRebase ?? null,
+        },
+        warnings: inst.worktreeWarnings ?? [],
+      };
+
+      if (args.include_children ?? true) {
+        const childIds = (deps.sessionOrchestrator as any).directChildSessionIds?.(inst.sessionId) ?? [];
+        out.lineage.children = deps.sessionOrchestrator
+          .listSessions()
+          .filter((i: any) => childIds.includes(i.sessionId))
+          .map((i: any) => ({ session_id: i.sessionId, status: i.status, branch: i.config?.branchName }));
+      }
+
+      if ((args.include_git ?? true) && worktree && deps.gitService?.getRepoStatus) {
+        try {
+          const st: any = await deps.gitService.getRepoStatus(worktree);
+          const data = st?.data ?? st;
+          out.git = {
+            current_branch: data?.branch ?? null,
+            on_expected_branch: data?.branch ? data.branch === inst.config?.branchName : null,
+            uncommitted: data?.uncommitted ?? null,
+          };
+        } catch (err) {
+          out.git = { error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+
+      // Off by default and gated explicitly, because this is the expensive part:
+      // two 15-second fetches plus an untimed ls-remote. An orchestrator polling
+      // twenty children would otherwise stall for minutes.
+      if (args.include_remote && deps.sessionOrchestrator) {
+        try {
+          const safety: any = await (deps.agentInstanceService as any)?.getDeleteSafetyInfo?.(inst.sessionId);
+          const info = safety?.data ?? {};
+          out.remote = {
+            unpushed_commits: info.unpushedCommitCount ?? null,
+            has_remote_branch: info.hasRemoteBranch ?? null,
+            uncommitted_changes: info.hasUncommittedChanges ?? null,
+          };
+        } catch (err) {
+          out.remote = { error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify(out) }] };
     })
   );
 
@@ -1389,6 +2327,10 @@ export function registerTools(
     {
       repo_path: z.string().describe('Absolute repo path'),
       mode: z.enum(['in-place', 'worktree']).describe('worktree = default; in-place = Single-Session Mode'),
+      // Present ONLY so the central observer guard in withCallLog can identify
+      // the caller. Without it this tool resolves to 'unknown' and a throwaway
+      // read-only inspector could flip a repo-wide policy for everybody.
+      session_id: z.string().optional().describe('YOUR session id. Observer sessions may not change repo policy.'),
     },
     withCallLog('kit_set_repo_worktree_mode', async ({ repo_path, mode }) => {
       if (!deps.configService?.setRepoWorktreeMode) return notAvailable('configService');

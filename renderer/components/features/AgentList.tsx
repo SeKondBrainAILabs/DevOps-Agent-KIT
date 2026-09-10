@@ -98,10 +98,36 @@ export function AgentList(): React.ReactElement {
   const selectedSessionId = useAgentStore((state) => state.selectedSessionId);
   const setSelectedSession = useAgentStore((state) => state.setSelectedSession);
 
+  // Closed but still holding a worktree. A SAFE close deliberately KEEPS the
+  // worktree and branch, so these are real directories with real work in them.
+  // They are pulled OUT of the tree — leaving them in shows a closed session
+  // sitting among live ones, which at agent fan-out fills the sidebar with
+  // sessions that look alive and are not — and surfaced in their own group.
+  const retainedSessions = useMemo(
+    () =>
+      Array.from(reportedSessions.values()).filter(
+        (session) => session.status === 'closed' && Boolean(session.worktreePath)
+      ),
+    [reportedSessions]
+  );
+
+  // Sessions where an agent has said the work is ready (KIT-PR-P5). Before
+  // this, kit_request_review wrote a flag nothing read — an agent finishing
+  // its work announced itself into a void.
+  const awaitingReview = useMemo(
+    () =>
+      Array.from(reportedSessions.values()).filter(
+        (session) => Boolean(session.reviewRequest) && session.status !== 'closed'
+      ),
+    [reportedSessions]
+  );
+
   // Build tree: Repo → AgentType → Sessions
   const repoGroups = useMemo(() => {
     const repos = new Map<string, RepoGroup>();
-    const sessions = Array.from(reportedSessions.values());
+    const sessions = Array.from(reportedSessions.values()).filter(
+      (session) => session.status !== 'closed'
+    );
 
     for (const session of sessions) {
       const agentType = (session.agentType || 'custom') as AgentType;
@@ -155,7 +181,11 @@ export function AgentList(): React.ReactElement {
 
   const totalSessions = repoGroups.reduce((sum, r) => sum + r.totalSessions, 0);
 
-  if (reportedSessions.size === 0 || repoGroups.length === 0) {
+  if (
+    (reportedSessions.size === 0 || repoGroups.length === 0) &&
+    retainedSessions.length === 0 &&
+    awaitingReview.length === 0
+  ) {
     return (
       <div className="text-center py-10">
         <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-surface-tertiary flex items-center justify-center">
@@ -182,6 +212,55 @@ export function AgentList(): React.ReactElement {
         </span>
       </div>
 
+      {awaitingReview.length > 0 && (
+        <div className="mb-3 rounded-md border border-violet-500/30 bg-violet-500/5">
+          <p className="px-3 pt-2 text-[10px] font-mono uppercase tracking-[0.14em] text-violet-700">
+            {awaitingReview.length} ready for review
+          </p>
+          <div className="px-3 pb-2 pt-1 space-y-1.5">
+            {awaitingReview.map((session) => (
+              <div key={session.sessionId} className="text-xs">
+                <button
+                  onClick={() =>
+                    setSelectedSession(
+                      selectedSessionId === session.sessionId ? null : session.sessionId
+                    )
+                  }
+                  className="w-full text-left hover:underline text-text-primary truncate"
+                  title={session.branchName}
+                >
+                  {session.branchName || session.sessionId}
+                </button>
+                <p className="text-[11px] text-text-secondary leading-snug mt-0.5">
+                  {session.reviewRequest?.summary}
+                </p>
+                {session.reviewRequest?.prUrl ? (
+                  <a
+                    href={session.reviewRequest.prUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-kanvas-blue hover:underline"
+                  >
+                    View pull request
+                    {session.reviewRequest.prNumber ? ` #${session.reviewRequest.prNumber}` : ''}
+                  </a>
+                ) : (
+                  // Say WHY there is no link rather than showing nothing —
+                  // "no GitHub remote" and "gh is logged out" are different
+                  // problems with different fixes.
+                  <p className="text-[11px] text-text-secondary/70">
+                    No pull request
+                    {session.reviewRequest?.prStatus
+                      ? ` (${String(session.reviewRequest.prStatus).replace(/_/g, ' ')})`
+                      : ''}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Repo tree */}
       <div className="space-y-1">
         {repoGroups.map((repo) => (
@@ -195,6 +274,40 @@ export function AgentList(): React.ReactElement {
           />
         ))}
       </div>
+
+      {retainedSessions.length > 0 && (
+        <details className="mt-2 rounded-md border border-[rgba(0,0,0,0.10)]">
+          <summary className="px-3 py-2 text-xs text-text-secondary cursor-pointer select-none">
+            {retainedSessions.length} closed &middot; worktree retained
+          </summary>
+          <div className="px-3 pb-2 space-y-1">
+            <p className="text-[11px] text-text-secondary/80 leading-snug">
+              These sessions were closed safely, so their worktree and branch are
+              still on disk. Delete them from the session view when the work is
+              merged or abandoned.
+            </p>
+            {retainedSessions.map((session) => (
+              <button
+                key={session.sessionId}
+                onClick={() =>
+                  setSelectedSession(
+                    selectedSessionId === session.sessionId ? null : session.sessionId
+                  )
+                }
+                className="w-full flex items-center justify-between gap-2 text-xs py-0.5 text-left hover:bg-surface-tertiary rounded px-1"
+                title={session.worktreePath}
+              >
+                <span className="truncate text-text-secondary">
+                  {session.branchName || session.sessionId}
+                </span>
+                <span className="shrink-0 text-[10px] text-text-secondary/70">
+                  {session.agentType ?? 'agent'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -426,6 +539,18 @@ function SessionRow({
       >
         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusColor}`} />
         <span className="text-xs truncate flex-1">{index}-{suffix}</span>
+        {session.reviewRequest && (
+          <span
+            className="shrink-0 text-[9px] px-1 py-0.5 rounded-full bg-violet-500/15 text-violet-700"
+            title={
+              session.reviewRequest.prUrl
+                ? `Review requested — ${session.reviewRequest.prUrl}`
+                : 'Review requested'
+            }
+          >
+            review
+          </span>
+        )}
         {newCommits > 0 && (
           <span className="text-[10px] font-medium text-green-600 flex-shrink-0">
             +{newCommits}

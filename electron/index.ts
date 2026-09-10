@@ -11,6 +11,7 @@ import { initializeServices, disposeServices, type Services } from './services';
 import { startMemoryProbe } from './diagnostics/MemoryProbe';
 
 import { IPC } from '../shared/ipc-channels';
+import type { ExpiredAgentSessionInfo } from '../shared/types';
 
 // One-time data-dir migration from the legacy "sekondbrain-kanvas" userData
 // directory to the current "kit-for-devops" one. Must run before any service
@@ -64,6 +65,8 @@ let mainWindow: BrowserWindow | null = null;
 let services: Services | null = null;
 // Stored so it can be cleared on window close / recreate — prevents stacking intervals
 let updateCheckInterval: NodeJS.Timeout | null = null;
+/** Agent-session reaper pass (R1). Cleared and re-armed on window reload. */
+let agentReapInterval: NodeJS.Timeout | null = null;
 
 /**
  * Check for orphaned sessions and notify the renderer
@@ -101,6 +104,62 @@ async function checkForOrphanedSessions(svc: Services | null): Promise<void> {
  *   - risky  (has unmerged commits) → surfaced to the renderer for confirmation
  */
 const STALE_SESSION_DAYS = 14;
+
+/**
+ * One agent-session reaper pass (R1), plus the notification the user sees.
+ *
+ * Deliberately narrow next to `checkForStaleSessions`: that scan covers ALL
+ * sessions on a 14-day clock and is the only thing that eventually cleans up a
+ * worktree a safe close retained. This one only ever touches sessions an agent
+ * created, on a 4-hour idle clock, and never touches a closed one.
+ */
+async function runAgentSessionReaper(svc: Services | null): Promise<void> {
+  if (!svc?.sessionOrchestrator) return;
+  try {
+    const result = await svc.sessionOrchestrator.reapExpiredAgentSessions();
+    if (result.skippedBecauseRunning) return;
+
+    if (result.failed.length > 0) {
+      console.warn('[Main] Agent reaper: failures', result.failed);
+    }
+    if (result.reaped.length === 0) return;
+
+    console.log(
+      `[Main] Agent reaper: acted on ${result.reaped.length} session(s)`,
+      result.reaped.map((r) => `${r.sessionId}:${r.action}`).join(', ')
+    );
+
+    const instances = svc.agentInstance.listInstances();
+    const byId = new Map(
+      (instances.success && instances.data ? instances.data : []).map((i) => [i.sessionId, i])
+    );
+
+    const payload: ExpiredAgentSessionInfo[] = result.reaped.map((r) => {
+      const inst = byId.get(r.sessionId);
+      return {
+        sessionId: r.sessionId,
+        branchName: inst?.config?.branchName,
+        repoPath: inst?.config?.repoPath,
+        worktreePath: inst?.worktreePath,
+        taskDescription: inst?.config?.taskDescription,
+        reasonCode: r.reasonCode,
+        action: r.action,
+        detail: r.detail,
+        idleMinutes: r.idleMinutes,
+        snapshotRef: r.snapshotRef,
+        worktreeDeleted: r.worktreeDeleted,
+        localBranchDeleted: r.localBranchDeleted,
+      };
+    });
+
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(IPC.AGENT_SESSIONS_EXPIRED, payload);
+    }
+  } catch (err) {
+    console.warn('[Main] Agent reaper pass failed:', err);
+  }
+}
 
 async function checkForStaleSessions(svc: Services | null): Promise<void> {
   if (!svc || !mainWindow) return;
@@ -342,6 +401,17 @@ async function createWindow(): Promise<void> {
         });
       }
     }, 30 * 60 * 1000);
+
+    // Agent-session reaper (R1). Five minutes is well under the 4h idle TTL,
+    // so the cost is one cheap in-memory scan that usually finds nothing; the
+    // git probe only runs for sessions that have already expired. The pass has
+    // its own re-entrancy guard, so a slow pass cannot stack.
+    if (agentReapInterval) {
+      clearInterval(agentReapInterval);
+    }
+    agentReapInterval = setInterval(() => {
+      void runAgentSessionReaper(services);
+    }, 5 * 60 * 1000);
   });
 
   // Load the app
@@ -389,6 +459,10 @@ async function createWindow(): Promise<void> {
   // Handle window close — clear the periodic update interval so it doesn't
   // keep firing after the window is gone or stack up on recreate
   mainWindow.on('closed', () => {
+    if (agentReapInterval) {
+      clearInterval(agentReapInterval);
+      agentReapInterval = null;
+    }
     if (updateCheckInterval) {
       clearInterval(updateCheckInterval);
       updateCheckInterval = null;

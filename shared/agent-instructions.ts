@@ -18,11 +18,92 @@ export interface InstructionVars {
   mcpUrl?: string;
   /** Stateless JSON-RPC endpoint for Codex / type:"http" clients (/rpc) */
   rpcUrl?: string;
+  /**
+   * 'observer' sessions borrow a directory they do not own and every write
+   * tool refuses for them. The prompt must say so up front — an observer that
+   * does not know it is read-only spends its turn planning edits it cannot
+   * make, then reports a wall of tool failures.
+   */
+  isolation?: 'worktree' | 'observer';
   // Custom agent MCP opt-in
   customMcpEnabled?: boolean;
   // Multi-repo fields
   multiRepoEntries?: RepoEntry[];
   commitScope?: 'all' | 'per-repo';
+}
+
+/**
+ * The session-lifecycle tool block (KIT-MCP epic).
+ *
+ * Shared by every agent prompt rather than duplicated, because the tool set is
+ * the same regardless of agent type and duplicating it is how the older list
+ * drifted into naming three tools that never existed.
+ */
+function getSessionToolsSection(vars: InstructionVars): string {
+  if (!vars.mcpUrl) return '';
+
+  if (vars.isolation === 'observer') {
+    return `
+## 👁 YOU ARE AN OBSERVER SESSION — READ ONLY
+
+You are borrowing a working directory that belongs to ANOTHER session. You do
+not own it and you must not write to it.
+
+These tools will REFUSE for you, by design:
+\`kit_commit\`, \`kit_commit_all\`, \`kit_merge\`, \`kit_rebase\`,
+\`kit_request_review\`, \`kit_lock_file\`, \`kit_unlock_file\`,
+\`kit_set_repo_worktree_mode\`, \`kit_start_session\`, \`kit_adopt_session\`,
+\`kit_restart_session\`
+
+Do not attempt them and do not work around them with bash — the directory is
+another agent's live workspace and writing into it corrupts their work.
+
+You CAN read anything, and you can use \`kit_log_activity\`,
+\`kit_get_session_info\`, \`kit_list_sessions\` and \`kit_get_repo_status\`.
+Report findings to the user rather than acting on them.
+`;
+  }
+
+  return `
+## 🧬 SPAWNING AND CLEANING UP SESSIONS
+
+You can create KIT sessions for subagents and tear them down when done. Each
+gets its own branch, worktree and auto-commit watcher.
+
+- \`kit_start_session\` — create one. Pass \`session_id="${vars.sessionId}"\`
+  (YOUR id) so the new session is recorded as your child. You get back its
+  \`session_id\` and \`worktree_path\` — hand BOTH to the subagent, it must run
+  in that directory and pass that session id.
+- \`kit_list_sessions\` / \`kit_get_session_status\` — see what exists and
+  whether it is still alive.
+- \`kit_close_session\` — close ONE. Safe by default: it stops the watcher and
+  marks the session closed but KEEPS the worktree and branch.
+- \`kit_close_sessions\` — close everything you spawned in one call. Pass
+  \`parent_session_id="${vars.sessionId}"\` AND
+  \`caller_session_id="${vars.sessionId}"\`. The first finds them; the second
+  is what authorises closing them. Run with \`dry_run: true\` first.
+- \`kit_restart_session\` — restart a wedged session. It keeps working under
+  its original id too, so a subagent already launched does not break.
+- \`kit_adopt_session\` — bring an EXISTING branch under KIT management. It is
+  recorded as human-owned: you can manage it, never destructively close it.
+- \`kit_update_session\` — change task, base branch, auto-commit or TTL.
+- \`kit_extend_session\` — push your expiry out if you need longer.
+
+**Clean up after yourself.** Sessions you leave behind keep a worktree on disk.
+When your work is done, close what you spawned.
+
+**Deleting is opt-in and gated.** \`delete_worktree\` / \`delete_local_branch\`
+are refused when there is uncommitted or unpushed work. If you get
+\`DIRTY_REFUSED\` or \`UNPUSHED_REFUSED\`, the session is untouched — commit
+the work with \`kit_commit\` and retry. Only pass \`force_dirty\` /
+\`force_unpushed\` if the user has explicitly told you to discard that work.
+
+**Sessions expire.** After 4 hours with no tool calls KIT closes yours
+automatically. If it had uncommitted work the worktree is kept and a snapshot
+pinned, but the session ends. Call \`kit_extend_session\` before that if you
+are on something long-running — \`kit_get_session_status\` reports your
+\`expires_at\`.
+`;
 }
 
 /**
@@ -75,7 +156,7 @@ You should have these MCP tools available:
 
 **⚠️ These are MCP protocol tools, NOT bash commands. Do NOT try to run them in a terminal.**
 **If you do NOT see these tools in your available tools list, the MCP connection failed — use the FALLBACK instructions in each section below.**
-` : ''}
+` : ''}${getSessionToolsSection(vars)}
 ## MANDATORY FIRST RESPONSE${vars.mcpUrl ? `
 🛑 **Step 0 — REGISTER YOUR CONNECTION (do this FIRST, before pwd, before anything else):**
 Call the MCP tool \`kit_log_activity\` with:
@@ -214,8 +295,8 @@ EOF
 ### Available MCP Tools
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| \`kit_commit\` | session_id, message, **cwd**, push (optional) | Stage + commit + record + push |
-| \`kit_commit_all\` | session_id, message, **cwd**, push (optional) | Commit across all repos (multi-repo) |
+| \`kit_commit\` | session_id, message, **cwd**, push (default true) | Stage + commit + push (default). Pass push=false for local-only WIP. |
+| \`kit_commit_all\` | session_id, message, **cwd**, push (default true) | Commit + push across all repos (multi-repo). |
 | \`kit_get_session_info\` | session_id | Session config and metadata |
 | \`kit_log_activity\` | session_id, type, message | Log to KIT dashboard timeline |
 | \`kit_lock_file\` | session_id, files, **cwd** | Declare file edit intent |
@@ -326,7 +407,7 @@ Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\
 **⚠️ These are MCP protocol tools — NOT bash commands. Do not run them in a terminal.**
 
 🛑 **REGISTER FIRST**: Before any setup steps, call the MCP tool \`kit_log_activity\` with \`session_id="${vars.sessionId}"\`, \`type="session"\`, \`message="Session connected — starting setup"\`. The KIT dashboard stays on "Waiting for agent to connect…" until this lands. Seeing the tool listed is not enough — you must invoke it.
-` : ''}
+` : ''}${getSessionToolsSection(vars)}
 ## 🛑 MERGE POLICY — MAIN IS PROTECTED (S9N-6394)
 **You may NEVER merge into \`main\` / \`master\` (direct push OR PR) unless CI is green.**
 
@@ -1157,9 +1238,9 @@ Connect your agent to KIT's MCP server for full dashboard integration:
 
 Configure your agent to use this MCP server URL. Once connected the following
 tools become available:
-- \`kit_log_commit\` — record commits with context
-- \`kit_get_session\` — read current session state
-- \`kit_update_status\` — push status updates to KIT dashboard
+- \`kit_commit\` — commit changes with context
+- \`kit_get_session_info\` — read current session state
+- \`kit_log_activity\` — push status updates to the KIT dashboard
 ` : '';
 
   return `## Custom Agent Setup for ${vars.repoName}

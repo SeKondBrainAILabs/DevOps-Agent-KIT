@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { AppConfig, AgentType, RepoVersionInfo, RepoVersionSettings, AppUpdateInfo } from '../../../shared/types';
 import { useAgentStore } from '../../store/agentStore';
+import { formatDateTimeShort } from '../../../shared/format-datetime';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -941,7 +942,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-gray-300">Started</span>
                       <span className="text-sm text-gray-200">
-                        {new Date(mcpStatus.startedAt).toLocaleTimeString()}
+                        {formatDateTimeShort(mcpStatus.startedAt)}
                       </span>
                     </div>
                   )}

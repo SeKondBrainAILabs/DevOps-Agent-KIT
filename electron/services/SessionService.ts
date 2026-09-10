@@ -151,8 +151,10 @@ export class SessionService extends BaseService {
       // Stop watcher if running
       await this.watcherService.stop(request.sessionId);
 
-      // Release file locks
-      await this.lockService.releaseFiles(request.sessionId);
+      // Release file locks. Keyed by repo root — see LockService.declareFiles.
+      if (session.repoPath) {
+        await this.lockService.releaseFiles(session.repoPath, request.sessionId);
+      }
 
       // Merge if requested
       if (request.merge && request.mergeTarget) {

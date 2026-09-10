@@ -53,7 +53,6 @@ export class LockService extends BaseService {
   private hasWarnedOverflow: Set<string> = new Set();
 
   // Legacy session-based locks (for backwards compatibility)
-  private sessionLocks: Map<string, FileLock> = new Map();
 
   async initialize(): Promise<void> {
     // Clean up stale session lock files from crashed sessions
@@ -459,7 +458,25 @@ export class LockService extends BaseService {
 
   // ==================== Legacy API (backwards compatibility) ====================
 
+  /**
+   * Declare an intent to edit files, so other sessions see the conflict.
+   *
+   * THIS USED TO DO NOTHING OBSERVABLE (story KIT-MCP-H6). It wrote a FileLock
+   * into an in-memory `sessionLocks` map that `checkConflicts` never read —
+   * `checkConflicts` reads `locksByRepo`, loaded from
+   * `<repo>/.S9N_KIT_DevOpsAgent/locks.json`. The two stores never intersected,
+   * so cross-session locking was a complete no-op: `kit_lock_file` always
+   * reported "no conflicts" no matter who else held the file.
+   *
+   * It now writes into the same repo-keyed, persisted store the watcher's
+   * auto-locks use, which is the only store anything reads.
+   *
+   * `repoPath` must be the SOURCE REPO ROOT, not a worktree. The watcher keys
+   * its auto-locks by repo root, so a worktree-keyed declaration would land in
+   * a second file that nothing consults — the same class of bug this fixes.
+   */
   async declareFiles(
+    repoPath: string,
     sessionId: string,
     files: string[],
     operation: 'edit' | 'read' | 'delete',
@@ -468,27 +485,58 @@ export class LockService extends BaseService {
     reason?: string
   ): Promise<IpcResult<void>> {
     return this.wrap(async () => {
-      const lock: FileLock = {
-        sessionId,
-        agentType,
-        files,
-        operation,
-        declaredAt: new Date().toISOString(),
-        estimatedDuration,
-        reason,
-      };
-      this.sessionLocks.set(sessionId, lock);
+      const normalizedRepo = path.resolve(repoPath);
+      await this.loadLocks(normalizedRepo);
+
+      let repoLocks = this.locksByRepo.get(normalizedRepo);
+      if (!repoLocks) {
+        repoLocks = new Map();
+        this.locksByRepo.set(normalizedRepo, repoLocks);
+      }
+
+      const now = new Date().toISOString();
+      for (const file of files) {
+        const relativePath = path.isAbsolute(file)
+          ? path.relative(normalizedRepo, file)
+          : file;
+        repoLocks.set(relativePath, {
+          filePath: relativePath,
+          sessionId,
+          agentType,
+          lockedAt: now,
+          lastModified: now,
+          declared: true,
+          operation,
+          reason,
+          estimatedDuration,
+        } as AutoFileLock);
+      }
+
+      this.scheduleSave(normalizedRepo);
     }, 'LOCK_DECLARE_FAILED');
   }
 
-  async releaseFiles(sessionId: string): Promise<IpcResult<void>> {
+  /**
+   * Release every lock a session holds in a repo.
+   *
+   * Takes a repoPath for the same reason declareFiles does. Callers that have
+   * only a sessionId should go through `releaseSessionLocks`.
+   */
+  async releaseFiles(repoPath: string, sessionId: string): Promise<IpcResult<void>> {
     return this.wrap(async () => {
-      this.sessionLocks.delete(sessionId);
+      const result = await this.releaseSessionLocks(path.resolve(repoPath), sessionId);
+      void result;
     }, 'LOCK_RELEASE_FAILED');
   }
 
-  async listDeclarations(): Promise<IpcResult<FileLock[]>> {
-    return this.success(Array.from(this.sessionLocks.values()));
+  /** Every declared (non-auto) lock currently held in a repo. */
+  async listDeclarations(repoPath: string): Promise<IpcResult<AutoFileLock[]>> {
+    const normalizedRepo = path.resolve(repoPath);
+    await this.loadLocks(normalizedRepo);
+    const repoLocks = this.locksByRepo.get(normalizedRepo) || new Map();
+    return this.success(
+      Array.from(repoLocks.values()).filter((l: any) => l.declared === true)
+    );
   }
 
   // ==================== Private helpers ====================
@@ -610,7 +658,6 @@ export class LockService extends BaseService {
       await this.saveLocksNow(repoPath);
     }
     this.locksByRepo.clear();
-    this.sessionLocks.clear();
     this.hasWarnedOverflow.clear();
   }
 }

@@ -103,8 +103,39 @@ export interface SessionReport {
   task: string;
   branchName: string;
   baseBranch: string; // The branch this session was created from (merge target)
-  worktreePath: string;
+  /**
+   * Optional as of the MCP session-lifecycle epic.
+   *
+   * An observer session (A2) owns no worktree — it borrows another session's
+   * directory or a plain checkout. Writing the borrowed path here would be
+   * actively dangerous: `deleteInstanceWithCleanup` takes `hints.worktreePath`
+   * straight from the renderer and feeds it to `git worktree remove --force`,
+   * so a ghost-mode delete of an observer would destroy the OWNER's worktree.
+   * Absent means "this session has no worktree of its own".
+   */
+  worktreePath?: string;
   repoPath: string;
+  /** Who created the session. Absent means a pre-upgrade record, i.e. 'ui'. */
+  createdBy?: 'ui' | 'mcp' | 'adopted';
+  /** The session that spawned this one, when an agent did. */
+  parentSessionId?: string;
+  /** 'observer' sessions borrow a path and may not write. */
+  isolation?: 'worktree' | 'observer';
+  /**
+   * Populated when an agent has called `kit_request_review` (KIT-PR-P5). Drives
+   * the review card; absent means no review is outstanding.
+   */
+  reviewRequest?: {
+    summary: string;
+    requestedAt: string;
+    prUrl?: string;
+    prNumber?: number;
+    prStatus?: string;
+  };
+  /** The directory an observer borrows. Never a worktree it owns. */
+  observedPath?: string;
+  /** How the worktree was obtained; 'failed' means it is running in the source repo. */
+  worktreeStatus?: 'created' | 'reused' | 'legacy' | 'observer' | 'failed';
   status: SessionStatus;
   created: string;
   updated: string;

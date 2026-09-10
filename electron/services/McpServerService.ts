@@ -16,6 +16,7 @@ import { randomUUID } from 'crypto';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import type { InstanceStatus } from '../../shared/types';
 import { homedir } from 'os';
 import type { Server } from 'http';
 import { BaseService } from './BaseService';
@@ -58,7 +59,7 @@ async function getSseTransport() {
 export interface McpServiceDeps {
   gitService?: {
     commit: (sessionId: string, message: string, repoName?: string) => Promise<any>;
-    push: (sessionId: string, repoName?: string) => Promise<any>;
+    push: (sessionId: string, repoName?: string, options?: { forceWithLease?: boolean }) => Promise<any>;
     getStatus: (sessionId: string) => Promise<any>;
     getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number) => Promise<any>;
     // Current branch of a worktree path, TRI-STATE: branch name | 'HEAD' (detached)
@@ -77,15 +78,66 @@ export interface McpServiceDeps {
   };
   lockService?: {
     checkConflicts: (repoPath: string, files: string[], excludeSessionId?: string) => Promise<any>;
-    declareFiles: (sessionId: string, files: string[], operation: 'edit' | 'read' | 'delete') => Promise<any>;
-    releaseFiles: (sessionId: string) => Promise<any>;
+    declareFiles: (repoPath: string, sessionId: string, files: string[], operation: 'edit' | 'read' | 'delete') => Promise<any>;
+    releaseFiles: (repoPath: string, sessionId: string) => Promise<any>;
     forceReleaseLock: (repoPath: string, filePath: string) => Promise<any>;
+  };
+  /**
+   * Session lifecycle. Both the IPC layer and this one go through the same
+   * orchestrator, so the MCP tools cannot drift from what the UI does.
+   */
+  /** The server's own public URL, for the launch block kit_start_session returns. */
+  mcpUrl?: () => string | null;
+  sessionOrchestrator?: {
+    startSession: (config: any) => Promise<any>;
+    listSessions: () => any[];
+    expandSessionAliases: (sessionId: string) => string[];
+    teardownSession: (sessionId: string, opts?: { unbindMcp?: boolean }) => Promise<any>;
+    resolveSessionId: (instanceOrSessionId: string) => string | undefined;
+    closeSession: (sessionId: string, opts?: any) => Promise<any>;
+    descendantSessionIds: (sessionId: string) => string[];
+    closeSessions: (selector: any, opts?: any) => Promise<any>;
+    directChildSessionIds: (sessionId: string) => string[];
+    // M5 — control tools.
+    restartSession: (sessionId: string, sessionData?: any, commitChanges?: boolean) => Promise<any>;
+    adoptSession: (input: any) => Promise<any>;
+    updateSession: (sessionId: string, patch: any) => Promise<any>;
+    extendSession: (sessionId: string, opts: { minutes: number }) => Promise<any>;
+  };
+  /** KIT-PR-P4 — pull request creation for kit_request_review. */
+  githubService?: {
+    ensurePullRequest: (session: {
+      sessionId: string;
+      branchName: string;
+      baseBranch: string;
+      taskDescription: string;
+      worktreePath: string;
+    }) => Promise<{
+      status: string;
+      url?: string;
+      number?: number;
+      reason?: string;
+      message?: string;
+    }>;
   };
   agentInstanceService?: {
     listInstances: () => { success: boolean; data?: any[] };
     // R1 + C5 additions — count / mode queries per repo path.
     getActiveSessionCountForRepo?: (repoPath: string) => { success: boolean; data?: number };
     getActiveSessionsForRepo?: (repoPath: string) => any[];
+    /**
+     * Flip an instance's status. Takes an INSTANCE id (`inst_*`), not a
+     * session id — the two id spaces never collide, so passing the wrong one
+     * silently matches nothing. Was called by tools.ts without being declared
+     * here at all, which is the same shape of type lie that let recordCommit's
+     * arguments sit swapped.
+     */
+    updateInstanceStatus?: (instanceId: string, status: InstanceStatus, error?: string) => void;
+    /** KIT-PR-P5 — record an outstanding review request. */
+    setReviewRequest?: (
+      sessionId: string,
+      review: { summary: string; prUrl?: string; prNumber?: number; prStatus?: string }
+    ) => { success: boolean; error?: { code: string; message: string } };
   };
   // C5 Single-Session Mode per-repo settings + O5 telemetry toggle live here.
   configService?: {
@@ -107,9 +159,45 @@ export interface McpServiceDeps {
     add: (input: { name: string; repoPaths: string[]; color?: string }) => any;
   };
   databaseService?: {
-    recordCommit: (sessionId: string, hash: string, message: string, filesChanged: number) => void;
-    recordSessionEvent: (sessionId: string, type: string, data: Record<string, unknown>) => void;
+    /**
+     * Matches DatabaseService.recordCommit exactly: (hash, sessionId, ...).
+     *
+     * This declaration previously read (sessionId, hash, message, filesChanged)
+     * — wrong order AND wrong arity. Every call site already passed the real
+     * five-argument shape, so the mismatch was invisible until the deps object
+     * became a narrowed façade that had to implement the declaration literally.
+     */
+    recordCommit: (
+      hash: string,
+      sessionId: string,
+      message: string,
+      timestamp: string,
+      stats?: {
+        filesChanged?: number;
+        additions?: number;
+        deletions?: number;
+        author?: string;
+        repoName?: string;
+      }
+    ) => void;
+    recordSessionEvent: (
+      sessionId: string,
+      type: string,
+      details?: Record<string, unknown>,
+      commitHash?: string
+    ) => void;
     getSetting: (key: string, defaultValue?: any) => any;
+    /**
+     * Read-only. There is deliberately NO setSetting / setSessionLimits here:
+     * exposing a writer would let an agent raise its own concurrency cap or
+     * re-enable the kill switch the user just turned off. Writes go through
+     * IPC from the UI only.
+     */
+    getSessionLimits?: () => {
+      enabled: boolean;
+      maxConcurrentGlobal: number;
+      maxConcurrentPerRepo: number;
+    };
   };
   contractDetectionService?: {
     analyzeCommit: (worktreePath: string, commitHash: string) => Promise<any>;
@@ -123,7 +211,14 @@ export interface McpServiceDeps {
    * required — omitting it just means MCP commits skip the post-commit
    * remote sync (same behavior as pre-v2.6.92). Wired in services/index.ts.
    */
-  postCommitRebase?: (sessionId: string, repoName?: string) => Promise<void>;
+  postCommitRebase?: (sessionId: string, repoName?: string) => Promise<{
+    ok: boolean;
+    rewrote: boolean;     // true when the rebase added replayed commits (needs force-with-lease)
+    commitsIntegrated: number;
+    baseBranch?: string;
+    message: string;      // human-readable summary for the activity feed / agent response
+    conflictFiles?: string[]; // when ok=false due to conflicts
+  }>;
   /** v2.6.95 — expose merge to agents. Same code path as the UI merge modal,
    *  same S9N-6394 CI gate. force=true maps to skipCiGate=true and requires
    *  the agent to have explicit user authorization (per the prompt rule). */
@@ -245,6 +340,18 @@ export class McpServerService extends BaseService {
 
   setAgentInstanceService(svc: McpServiceDeps['agentInstanceService']): void {
     this.deps.agentInstanceService = svc;
+  }
+
+  setMcpUrlProvider(fn: () => string | null): void {
+    this.deps.mcpUrl = fn;
+  }
+
+  setGitHubService(svc: McpServiceDeps['githubService']): void {
+    this.deps.githubService = svc;
+  }
+
+  setSessionOrchestrator(svc: McpServiceDeps['sessionOrchestrator']): void {
+    this.deps.sessionOrchestrator = svc;
   }
 
   setDatabaseService(svc: McpServiceDeps['databaseService']): void {

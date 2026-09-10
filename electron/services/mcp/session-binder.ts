@@ -8,6 +8,15 @@ export interface BoundSession {
   kitSessionId: string;
   worktreePath: string;              // Primary repo worktree (backward compat default)
   registeredAt: string;
+  /**
+   * 'observer' sessions borrow `worktreePath` from someone else and may not
+   * write. Held here rather than looked up from the instance list because
+   * `isObserver()` runs on EVERY tool call, and `expectedBranchFor` already
+   * does a full list scan per call — a cost not worth doubling.
+   */
+  isolation?: 'worktree' | 'observer';
+  /** Observer only: the session whose worktree is being borrowed, if any. */
+  ownerSessionId?: string;
   // Multi-repo support
   repoPaths?: Map<string, string>;   // repoName → worktreePath/submodulePath
   primaryRepoName?: string;          // Which repoName is the primary
@@ -30,6 +39,44 @@ export class McpSessionBinder {
       worktreePath,
       registeredAt: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Register a read-only observer against a directory it does not own.
+   *
+   * Deliberately shares a path with an existing registration — that is the
+   * whole feature. What must NOT happen is two WRITERS on one directory, which
+   * `registerSession` guards separately.
+   */
+  registerObserverSession(
+    kitSessionId: string,
+    observedPath: string,
+    opts: { ownerSessionId?: string } = {}
+  ): void {
+    this.sessions.set(kitSessionId, {
+      kitSessionId,
+      worktreePath: observedPath,
+      registeredAt: new Date().toISOString(),
+      isolation: 'observer',
+      ownerSessionId: opts.ownerSessionId,
+    });
+  }
+
+  /** True when the session is a read-only observer. O(1) — runs per tool call. */
+  isObserver(kitSessionId: string): boolean {
+    return this.sessions.get(kitSessionId)?.isolation === 'observer';
+  }
+
+  /**
+   * Every live observer attached to a session.
+   *
+   * Used before a destructive close: removing a worktree out from under an
+   * observer whose agent has its cwd inside it is not recoverable by retrying.
+   */
+  getObserversOf(ownerSessionId: string): BoundSession[] {
+    return Array.from(this.sessions.values()).filter(
+      (s) => s.isolation === 'observer' && s.ownerSessionId === ownerSessionId
+    );
   }
 
   /**

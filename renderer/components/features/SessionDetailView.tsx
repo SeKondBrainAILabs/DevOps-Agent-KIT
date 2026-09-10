@@ -10,6 +10,7 @@ import { FixedSizeList as List } from 'react-window';
 import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentInstance, ContractType, Contract, ActivityLogEntry, DiscoveredFeature } from '../../../shared/types';
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
+import { formatDateTime } from '../../../shared/format-datetime';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
@@ -134,6 +135,13 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [showRestartConfirm, setShowRestartConfirm] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
+  // v2.7.2 — Push button state. `unpushedCount` is the ahead-of-upstream count
+  // from `git rev-list --left-right --count origin/<branch>...HEAD` (via the
+  // existing getStatus IPC). Cached against the LOCAL origin/<branch> ref, so
+  // the number can lag behind a background push — a fresh Sync refreshes it.
+  const [unpushedCount, setUnpushedCount] = useState<number>(0);
+  const [pushing, setPushing] = useState(false);
+  const [pushResult, setPushResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showErrorPopup, setShowErrorPopup] = useState(false);
   // Prompt shown before sync/rebase when the worktree has uncommitted changes.
   const [dirtyRebasePrompt, setDirtyRebasePrompt] = useState<{ count: number; repoPath: string; baseBranch: string } | null>(null);
@@ -227,6 +235,44 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
       clearTimeout(safetyTimer);
       setRestartError(error instanceof Error ? error.message : 'Failed to restart session');
       setRestarting(false);
+    }
+  };
+
+  // Poll the ahead-of-upstream count so the Push button label stays fresh.
+  // 15s interval strikes a balance between responsiveness after a `kit_commit`
+  // and not spamming git. Refreshes immediately on session change.
+  useEffect(() => {
+    if (!session.sessionId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const r = await window.api?.git?.getStatus?.(session.sessionId);
+        if (cancelled || !r?.success) return;
+        setUnpushedCount(r.data?.ahead ?? 0);
+      } catch { /* silent — button just shows 0 */ }
+    };
+    refresh();
+    const interval = setInterval(refresh, 15_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [session.sessionId]);
+
+  const handlePush = async () => {
+    if (pushing || unpushedCount === 0) return;
+    setPushing(true);
+    setPushResult(null);
+    try {
+      const r = await window.api?.git?.push?.(session.sessionId);
+      if (r?.success) {
+        setPushResult({ success: true, message: `Pushed ${unpushedCount} commit${unpushedCount === 1 ? '' : 's'}` });
+        setUnpushedCount(0);
+      } else {
+        setPushResult({ success: false, message: r?.error?.message || 'Push failed' });
+      }
+    } catch (err) {
+      setPushResult({ success: false, message: err instanceof Error ? err.message : 'Push failed' });
+    } finally {
+      setPushing(false);
+      setTimeout(() => setPushResult(null), 3000);
     }
   };
 
@@ -595,17 +641,27 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             {/* Base Branch Selector + Sync Button */}
             <div className="flex items-center gap-1">
               {editingBaseBranch ? (
-                <>
                   <select
                     value={session.baseBranch || 'main'}
                     onChange={(e) => {
                       if (e.target.value === '__advanced__') {
+                        // Open the full-branch dialog and leave inline-edit mode.
+                        // The dialog is rendered OUTSIDE this block (below), so it
+                        // is not torn down when editingBaseBranch flips to false.
+                        setEditingBaseBranch(false);
                         setShowAdvancedBranches(true);
                       } else {
                         handleBaseBranchChange(e.target.value);
                       }
                     }}
-                    onBlur={() => setEditingBaseBranch(false)}
+                    onBlur={() => {
+                      // Defer the close so a click on an <option> (which fires
+                      // onChange, then blurs the native select) is not swallowed
+                      // by an immediate unmount. Without this, choosing a branch —
+                      // or "Advanced…" — could close the editor before the change
+                      // was applied.
+                      setTimeout(() => setEditingBaseBranch(false), 200);
+                    }}
                     autoFocus
                     className="px-2 py-1.5 rounded-full text-xs font-mono bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
                   >
@@ -615,24 +671,6 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                     <option disabled>──────────</option>
                     <option value="__advanced__">Advanced…</option>
                   </select>
-                  {/* Advanced branch dialog */}
-                  {showAdvancedBranches && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={() => setShowAdvancedBranches(false)}>
-                      <div className="bg-white rounded-2xl shadow-xl border border-[rgba(0,0,0,0.10)] p-4 w-72 max-h-96 overflow-y-auto" onClick={e => e.stopPropagation()}>
-                        <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">All branches</p>
-                        {allBranches.map(branch => (
-                          <button
-                            key={branch}
-                            onClick={() => { setShowAdvancedBranches(false); handleBaseBranchChange(branch); }}
-                            className="w-full text-left px-3 py-2 text-sm font-mono rounded-lg hover:bg-surface-secondary transition-colors text-text-primary"
-                          >
-                            {branch}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
 
               ) : (
                 <button
@@ -646,6 +684,31 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                   </svg>
                 </button>
+              )}
+              {/* Advanced branch dialog — rendered independently of inline-edit
+                  mode so the native <select> blur cannot unmount it before it
+                  appears. Reachable via the "Advanced…" option or the current
+                  branches list; lists ALL local branches, not just primaries. */}
+              {showAdvancedBranches && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={() => setShowAdvancedBranches(false)}>
+                  <div className="bg-white rounded-2xl shadow-xl border border-[rgba(0,0,0,0.10)] p-4 w-72 max-h-96 overflow-y-auto" onClick={e => e.stopPropagation()}>
+                    <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">All branches</p>
+                    {allBranches.length === 0 && (
+                      <p className="text-sm text-text-secondary px-1 py-2">No other local branches found.</p>
+                    )}
+                    {allBranches.map(branch => (
+                      <button
+                        key={branch}
+                        onClick={() => { setShowAdvancedBranches(false); handleBaseBranchChange(branch); }}
+                        className={`w-full text-left px-3 py-2 text-sm font-mono rounded-lg hover:bg-surface-secondary transition-colors ${
+                          branch === (session.baseBranch || 'main') ? 'text-blue-600 font-semibold' : 'text-text-primary'
+                        }`}
+                      >
+                        {branch}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
               <button
                 onClick={handleSync}
@@ -663,6 +726,37 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                 </svg>
                 {syncing ? 'Syncing...' : 'Sync (rebase)'}
               </button>
+              {/* v2.7.2 / 2.7.3 — Push button always visible so the feature
+                  is discoverable. Disabled when count is 0 (nothing to push).
+                  Shows count in brackets when there is work to send. */}
+              <button
+                onClick={handlePush}
+                disabled={pushing || unpushedCount === 0}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors
+                  ${pushing
+                    ? 'bg-blue-500 text-white cursor-wait'
+                    : unpushedCount === 0
+                      ? 'bg-surface-secondary text-text-secondary/60 cursor-not-allowed'
+                      : 'bg-surface-secondary text-text-primary hover:bg-blue-50 hover:text-blue-600'
+                  }`}
+                title={
+                  pushing
+                    ? 'Pushing…'
+                    : unpushedCount === 0
+                      ? 'Nothing to push — session branch is up to date with origin'
+                      : `Push ${unpushedCount} commit${unpushedCount === 1 ? '' : 's'} to origin`
+                }
+              >
+                <svg className={`w-4 h-4 ${pushing ? 'animate-pulse' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                </svg>
+                {pushing ? 'Pushing…' : `Push${unpushedCount > 0 ? ` (${unpushedCount})` : ''}`}
+              </button>
+              {pushResult && (
+                <span className={`text-xs max-w-[200px] truncate ${pushResult.success ? 'text-green-600' : 'text-red-500'}`} title={pushResult.message}>
+                  {pushResult.message}
+                </span>
+              )}
             </div>
 
             {onRestart && !showRestartConfirm && !restarting && (
@@ -1043,13 +1137,7 @@ function ActivityTab({ sessionId, repoPath, baseBranch, branchName }: { sessionI
   // Legacy: for display calculations
   const allActivity = historicalLogs;
 
-  const formatTime = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  };
+  const formatTime = (timestamp: string): string => formatDateTime(timestamp);
 
   const formatDate = (timestamp: string): string => {
     return new Date(timestamp).toLocaleDateString('en-US', {
@@ -1648,13 +1736,7 @@ function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
     }
   };
 
-  const formatTime = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  };
+  const formatTime = (timestamp: string): string => formatDateTime(timestamp);
 
   // Group files by git state
   const uncommittedFiles = gitFiles.filter(f => f.gitState !== 'committed');
@@ -1994,6 +2076,10 @@ function ContractsTab({ session }: { session: SessionReport }): React.ReactEleme
   const setIsGenerating = useContractStore((state) => state.setIsGenerating);
   const generationProgress = useContractStore((state) => state.generationProgress);
   const generationResult = useContractStore((state) => state.generationResult);
+  // Pre-existing bug, surfaced by scripts/typecheck-gate.sh: handleDiscoverFeatures
+  // calls setGenerationResult, which was never selected from the store — so
+  // "Discover features" threw a ReferenceError before it did anything.
+  const setGenerationResult = useContractStore((state) => state.setGenerationResult);
   const activityLogs = useContractStore((state) => state.activityLogs);
   const [showActivityLog, setShowActivityLog] = useState(true);
   const [expandedFeature, setExpandedFeature] = useState<string | null>(null);
@@ -5320,8 +5406,8 @@ function TerminalTab({ sessionId }: { sessionId: string }): React.ReactElement {
                   <div className={`flex items-start gap-2 py-1 hover:bg-gray-800 rounded px-1 ${
                     isHistorical ? 'opacity-60' : ''
                   }`}>
-                    <span className="text-gray-500 flex-shrink-0 w-20">
-                      {new Date(log.timestamp).toLocaleTimeString()}
+                    <span className="text-gray-500 flex-shrink-0 w-36">
+                      {formatDateTime(log.timestamp)}
                     </span>
                     <span className={`flex-shrink-0 w-5 h-5 rounded flex items-center justify-center text-xs font-bold ${style.bg} ${style.text}`}>
                       {style.icon}
@@ -5356,7 +5442,7 @@ function TerminalTab({ sessionId }: { sessionId: string }): React.ReactElement {
                       <div className="flex items-center gap-2">
                         <div className="flex-1 h-px bg-kanvas-blue/50" />
                         <span className="text-xs text-kanvas-blue font-medium px-2">
-                          Session resumed {new Date(sessionResumeTime).toLocaleTimeString()}
+                          Session resumed {formatDateTime(sessionResumeTime)}
                         </span>
                         <div className="flex-1 h-px bg-kanvas-blue/50" />
                       </div>

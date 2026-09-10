@@ -8,6 +8,7 @@ import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { useAgentStore } from '../../store/agentStore';
 import type { AgentInfo } from '../../../shared/agent-protocol';
 import type { AppUpdateInfo } from '../../../shared/types';
+import { formatDateTimeShort } from '../../../shared/format-datetime';
 
 interface RegisteredAgent extends AgentInfo {
   isAlive: boolean;
@@ -294,7 +295,7 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
                     `URL: ${mcpStatus.url}`,
                     `Port: ${mcpStatus.port}`,
                     `Connections: ${mcpStatus.connectionCount}`,
-                    mcpStatus.startedAt ? `Up since: ${new Date(mcpStatus.startedAt).toLocaleTimeString()}` : null,
+                    mcpStatus.startedAt ? `Up since: ${formatDateTimeShort(mcpStatus.startedAt)}` : null,
                     'Click to copy URL',
                   ].filter(Boolean).join(' · ')
                 : 'MCP Server: Down · Agents cannot use MCP tools'

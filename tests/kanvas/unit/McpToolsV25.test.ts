@@ -285,4 +285,96 @@ describe('MCP v2.5 tools', () => {
       expect(mockGuardResult).toHaveBeenCalledWith('/my/wt');
     });
   });
+
+  // ===========================================================================
+  // Regression: git tools (kit_merge / kit_rebase) must resolve a session's
+  // branch/repo the SAME way the worktree tools do — including predecessor
+  // session ids. After a KIT restart the agent keeps calling with its original
+  // (now-predecessor) id; the binder resolves it, but kit_merge/kit_rebase used
+  // an exact `sessionId` match on listInstances() and returned "Could not
+  // resolve source branch or repo path" for a session every other tool
+  // resolved fine.
+  // ===========================================================================
+  describe('predecessor-aware session resolution (git tools must not drift)', () => {
+    const CURRENT = 'sess_current_999';
+    const PRED = 'sess_pred_111';        // the id the restarted agent still holds
+    const WT = '/tmp/worktree-multi';
+    const REPO = '/tmp/repo-main';
+    const SRC = 'claude-session-xyz';
+    const BASE = 'integration/all-work-v3';
+
+    let mergeService: any;
+    let rebaseWatcherService: any;
+
+    beforeEach(() => {
+      registeredTools.clear();
+      binder = new McpSessionBinder();
+      // Multi-repo session registered under BOTH ids (binder aliases predecessors).
+      binder.registerMultiRepoSession(CURRENT, [
+        { repoName: 'primary', worktreePath: WT, role: 'primary' },
+      ]);
+      binder.registerMultiRepoSession(PRED, [
+        { repoName: 'primary', worktreePath: WT, role: 'primary' },
+      ]);
+
+      mergeService = {
+        executeMerge: (jest.fn() as any).mockResolvedValue({
+          success: true,
+          data: { success: true, message: 'merged', mergeCommitHash: 'deadbeef', filesChanged: 3 },
+        }),
+      };
+      rebaseWatcherService = {
+        performRebaseForPath: (jest.fn() as any).mockResolvedValue({
+          success: true, message: 'rebased', incomingCommits: 8, commitsAdded: 9,
+        }),
+      };
+
+      // The instance is keyed by the CURRENT id; PRED is only a predecessor.
+      const instance = {
+        sessionId: CURRENT,
+        predecessorSessionIds: [PRED],
+        config: { branchName: SRC, repoPath: REPO, baseBranch: BASE },
+      };
+      const gitDeps = {
+        ...deps,
+        agentInstanceService: {
+          listInstances: (jest.fn() as any).mockReturnValue({ success: true, data: [instance] }),
+        },
+        mergeService,
+        rebaseWatcherService,
+      };
+      registerTools(mockMcpServer as any, binder, gitDeps);
+    });
+
+    it('kit_merge resolves branch+repo from a PREDECESSOR id (was: could not resolve)', async () => {
+      const r = parseResult(await callTool('kit_merge', { session_id: PRED, cwd: WT }));
+      expect(r.error).toBeUndefined();
+      expect(mergeService.executeMerge).toHaveBeenCalledWith(
+        REPO, SRC, BASE, expect.objectContaining({ worktreePath: WT, skipCiGate: false }),
+      );
+      expect(r.source).toBe(SRC);
+      expect(r.target).toBe(BASE);
+    });
+
+    it('kit_rebase resolves repo+base from a PREDECESSOR id', async () => {
+      const r = parseResult(await callTool('kit_rebase', { session_id: PRED, cwd: WT }));
+      expect(r.error).toBeUndefined();
+      expect(rebaseWatcherService.performRebaseForPath).toHaveBeenCalledWith(PRED, REPO, BASE);
+      expect(r.baseBranch).toBe(BASE);
+    });
+
+    it('resolves the CURRENT id identically (no drift between the two)', async () => {
+      const merged = parseResult(await callTool('kit_merge', { session_id: CURRENT, cwd: WT }));
+      expect(merged.source).toBe(SRC);
+      expect(mergeService.executeMerge).toHaveBeenCalledWith(
+        REPO, SRC, BASE, expect.objectContaining({ worktreePath: WT }),
+      );
+    });
+
+    it('kit_get_session_info returns branchName for a predecessor id too', async () => {
+      const r = parseResult(await callTool('kit_get_session_info', { session_id: PRED }));
+      expect(r.branchName).toBe(SRC);
+      expect(r.baseBranch).toBe(BASE);
+    });
+  });
 });

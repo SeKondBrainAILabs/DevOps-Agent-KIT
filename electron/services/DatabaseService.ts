@@ -13,6 +13,11 @@ import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { BaseService } from './BaseService';
 import type { ActivityLogEntry, LogType, TerminalLogEntry, TerminalLogLevel, IpcResult } from '../../shared/types';
+import {
+  readSessionLimits,
+  SESSION_LIMIT_SETTING_KEYS,
+  type SessionLimits,
+} from '../../shared/session-admission';
 
 // Database file location
 const getDbPath = (): string => {
@@ -198,6 +203,15 @@ export class DatabaseService extends BaseService {
 
       CREATE INDEX IF NOT EXISTS idx_mcp_calls_session ON mcp_calls(session_id);
       CREATE INDEX IF NOT EXISTS idx_mcp_calls_timestamp ON mcp_calls(timestamp);
+
+      -- Composite indexes for the reaper's liveness query (R1), which is
+      -- MAX(timestamp) WHERE session_id IN (...). The single-column indexes
+      -- above locate the rows but still require scanning them for the max;
+      -- these answer it from the index directly. The reaper runs every few
+      -- minutes over every agent session, so this is the difference between
+      -- an index lookup and a scan of a session's entire call history.
+      CREATE INDEX IF NOT EXISTS idx_mcp_calls_session_ts ON mcp_calls(session_id, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_activity_session_ts ON activity_logs(session_id, timestamp);
     `);
 
     console.log('[DatabaseService] Tables created/verified');
@@ -524,6 +538,44 @@ export class DatabaseService extends BaseService {
     `);
 
     stmt.run(key, JSON.stringify(value));
+  }
+
+  /**
+   * The agent-session policy: kill switch plus the two concurrency caps.
+   *
+   * Read through `readSessionLimits`, which defaults per key — an install that
+   * has only ever toggled the switch has no cap keys stored at all, and those
+   * must come back as the documented defaults rather than undefined.
+   */
+  getSessionLimits(): SessionLimits {
+    return readSessionLimits((key, dflt) => this.getSetting(key, dflt));
+  }
+
+  /**
+   * Update the agent-session policy. Only supplied fields change.
+   *
+   * Reachable from IPC (the Settings and MCP tabs) but deliberately NOT from
+   * the MCP tool layer — an agent must not be able to raise its own cap or
+   * switch its own kill switch back on. See McpServiceDeps.databaseService,
+   * which exposes getSessionLimits and no setter.
+   */
+  setSessionLimits(patch: Partial<SessionLimits>): SessionLimits {
+    if (patch.enabled !== undefined) {
+      this.setSetting(SESSION_LIMIT_SETTING_KEYS.enabled, patch.enabled);
+    }
+    if (patch.maxConcurrentGlobal !== undefined) {
+      this.setSetting(
+        SESSION_LIMIT_SETTING_KEYS.maxConcurrentGlobal,
+        patch.maxConcurrentGlobal
+      );
+    }
+    if (patch.maxConcurrentPerRepo !== undefined) {
+      this.setSetting(
+        SESSION_LIMIT_SETTING_KEYS.maxConcurrentPerRepo,
+        patch.maxConcurrentPerRepo
+      );
+    }
+    return this.getSessionLimits();
   }
 
   /**
@@ -1011,6 +1063,103 @@ export class DatabaseService extends BaseService {
   /**
    * Clean up old data (older than specified days)
    */
+  /**
+   * Age out orphaned HISTORY rows — `commits` and `session_history`.
+   *
+   * Deliberately separate from `cleanupOldData`, which sweeps telemetry on a
+   * plain timestamp. History cannot be swept that way:
+   *
+   *   - `commits` is the only KIT-side hash -> session link.
+   *   - `backfillMcpCallsByLineage` exists specifically to RESCUE rows whose
+   *     session id changed across a restart, so a timestamp-only sweep works
+   *     directly against it.
+   *
+   * On an install used for a year, a naive 30-day sweep would delete nearly
+   * everything on the first launch after upgrade. So a row is only a candidate
+   * when it is old AND belongs to no session KIT still knows about — including
+   * predecessor ids, which is exactly the set the naive rule would miss.
+   *
+   * SHIPS IN DRY-RUN MODE. It reports what it would remove and deletes
+   * nothing. The selection needs to be observed against real installs before it
+   * is trusted to delete history that cannot be regenerated; flip `apply` on in
+   * a later release once the logs show it is picking the right rows.
+   */
+  sweepOrphanedHistory(
+    liveSessionIds: string[],
+    opts: { daysToKeep?: number; apply?: boolean } = {}
+  ): { commits: number; sessionHistory: number; applied: boolean } {
+    const empty = { commits: 0, sessionHistory: 0, applied: false };
+    if (!this.db) return empty;
+
+    const daysToKeep = opts.daysToKeep ?? 30;
+    const apply = opts.apply ?? false;
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - daysToKeep);
+    const cutoffStr = cutoff.toISOString();
+
+    try {
+      // An empty live set means every row looks orphaned. That is reachable —
+      // a fresh store, a failed load — and deleting all history on the strength
+      // of it would be catastrophic and unrecoverable. Refuse instead.
+      if (liveSessionIds.length === 0) {
+        console.warn(
+          '[DatabaseService] sweepOrphanedHistory: no live session ids supplied; ' +
+            'refusing to treat every row as orphaned.'
+        );
+        return empty;
+      }
+
+      const placeholders = liveSessionIds.map(() => '?').join(',');
+      const count = (table: string): number =>
+        (
+          this.db!
+            .prepare(
+              `SELECT COUNT(*) AS n FROM ${table} ` +
+                `WHERE timestamp < ? AND session_id NOT IN (${placeholders})`
+            )
+            .get(cutoffStr, ...liveSessionIds) as { n: number }
+        ).n;
+
+      const result = {
+        commits: count('commits'),
+        sessionHistory: count('session_history'),
+        applied: apply,
+      };
+
+      if (!apply) {
+        if (result.commits > 0 || result.sessionHistory > 0) {
+          console.log(
+            `[DatabaseService] sweepOrphanedHistory DRY RUN: would remove ` +
+              `${result.commits} commits and ${result.sessionHistory} session_history ` +
+              `rows older than ${daysToKeep}d belonging to no known session. ` +
+              'Nothing deleted.'
+          );
+        }
+        return result;
+      }
+
+      const del = this.db.transaction(() => {
+        for (const table of ['commits', 'session_history']) {
+          this.db!
+            .prepare(
+              `DELETE FROM ${table} WHERE timestamp < ? AND session_id NOT IN (${placeholders})`
+            )
+            .run(cutoffStr, ...liveSessionIds);
+        }
+      });
+      del();
+      console.log(
+        `[DatabaseService] sweepOrphanedHistory removed ${result.commits} commits ` +
+          `and ${result.sessionHistory} session_history rows.`
+      );
+      return result;
+    } catch (error) {
+      console.error('[DatabaseService] sweepOrphanedHistory failed:', error);
+      return empty;
+    }
+  }
+
   cleanupOldData(daysToKeep = 30): { activitiesDeleted: number; terminalLogsDeleted: number } {
     if (!this.db) return { activitiesDeleted: 0, terminalLogsDeleted: 0 };
 
@@ -1124,6 +1273,109 @@ export class DatabaseService extends BaseService {
    * stranded under an earlier sessionId by previous releases that didn't
    * include mcp_calls in `transferSessionData`.
    */
+  /**
+   * Delete a session's disposable telemetry when the session itself is deleted.
+   *
+   * Telemetry goes: `activity_logs`, `terminal_logs`, `mcp_calls`.
+   * History stays: `commits` and `session_history`. `commits` is the only
+   * KIT-side hash -> session link, and `backfillMcpCallsByLineage` exists
+   * specifically to rescue history across restarts, so a blanket purge would
+   * be working against it. Ageing those two out is a separate story (H4b) and
+   * needs a dry run first — on a long-lived install a naive 30-day sweep would
+   * remove nearly everything on the first launch after upgrade.
+   *
+   * Pass EVERY id the session has answered to, including
+   * `predecessorSessionIds`: rows written before a restart are keyed to the old
+   * id, and purging only the live one orphans them permanently.
+   *
+   * Called on DELETE, not on a safe close. A safe close marks the session
+   * closed without removing it, and the session reaper (R1) reads `mcp_calls`
+   * to decide liveness — purging there would blind it.
+   *
+   * All three deletes run in one transaction so a failure cannot leave a
+   * session half-purged.
+   */
+  /**
+   * Most recent sign of life across a set of session ids, ISO-8601.
+   *
+   * Returns null ONLY when the session genuinely has no recorded activity.
+   * A query failure throws — see the catch block for why the two must not be
+   * conflated.
+   *
+   * The caller passes EVERY alias of a session (current id plus predecessors).
+   * A session that has survived a restart carries its history under the old
+   * ids, so keying liveness on the current id alone would report "never did
+   * anything" for a session that has been busy all day — and the reaper would
+   * delete a live agent's worktree.
+   *
+   * Reads both `mcp_calls` (tool traffic) and `activity_logs` (commits, locks,
+   * everything the watcher records) and takes the later. Deliberately NOT
+   * heartbeats: `HeartbeatService.startMonitoring` has no callers, so heartbeat
+   * liveness is not actually running today and would read as universally dead.
+   */
+  getLastActivityAt(sessionIds: string[]): string | null {
+    if (!this.db || sessionIds.length === 0) return null;
+    const ids = sessionIds.filter((id) => typeof id === 'string' && id.length > 0);
+    if (ids.length === 0) return null;
+
+    const placeholders = ids.map(() => '?').join(',');
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT MAX(ts) AS last FROM (
+             SELECT MAX(timestamp) AS ts FROM mcp_calls WHERE session_id IN (${placeholders})
+             UNION ALL
+             SELECT MAX(timestamp) AS ts FROM activity_logs WHERE session_id IN (${placeholders})
+           )`
+        )
+        .get(...ids, ...ids) as { last?: string | null } | undefined;
+      return row?.last ?? null;
+    } catch (err) {
+      // THROW rather than return null. Liveness is a safety input, and null
+      // means "this session has never done anything" — which makes the reaper
+      // measure idleness from createdAt and delete an old session's worktree.
+      // A failed query must not be indistinguishable from a silent session, so
+      // it propagates and the caller records the session as failed instead.
+      console.warn('[DatabaseService] getLastActivityAt failed:', err);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  purgeSessionTelemetry(sessionIds: string[]): {
+    activity: number;
+    terminal: number;
+    mcp: number;
+  } {
+    const empty = { activity: 0, terminal: 0, mcp: 0 };
+    // Guard the empty case explicitly: a carelessly built `IN ()` can degrade
+    // into a full-table delete.
+    if (!this.db || sessionIds.length === 0) return empty;
+
+    try {
+      const placeholders = sessionIds.map(() => '?').join(',');
+      const del = (table: string): number =>
+        this.db!
+          .prepare(`DELETE FROM ${table} WHERE session_id IN (${placeholders})`)
+          .run(...sessionIds).changes;
+
+      const run = this.db.transaction(() => ({
+        activity: del('activity_logs'),
+        terminal: del('terminal_logs'),
+        mcp: del('mcp_calls'),
+      }));
+
+      const result = run();
+      console.log(
+        `[DatabaseService] Purged telemetry for ${sessionIds.length} session id(s): ` +
+          `${result.activity} activity, ${result.terminal} terminal, ${result.mcp} mcp_calls`
+      );
+      return result;
+    } catch (error) {
+      console.error('[DatabaseService] Failed to purge session telemetry:', error);
+      return empty;
+    }
+  }
+
   transferMcpCalls(oldSessionId: string, newSessionId: string): number {
     if (!this.db) return 0;
     try {

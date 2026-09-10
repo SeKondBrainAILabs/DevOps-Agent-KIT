@@ -9,6 +9,12 @@ import { AgentTypeSelector } from './AgentTypeSelector';
 import { InstructionsModal } from './InstructionsModal';
 import { KanvasLogo } from '../ui/KanvasLogo';
 import type { AgentType, RepoValidation, AgentInstance, AgentInstanceConfig, RebaseFrequency, MultiRepoConfig, RepoEntry } from '../../../shared/types';
+import {
+  generateSessionBranchName,
+  isSessionOrRemoteBranch,
+  pickDefaultBaseBranch,
+  PRIMARY_BRANCHES,
+} from '../../../shared/branch-naming';
 import { generateSecondaryBranchName } from '../../../shared/types';
 
 interface CreateAgentWizardProps {
@@ -365,9 +371,7 @@ export function CreateAgentWizard({ onClose, initialRepoPath, initialTask }: Cre
     setAgentType(type);
     setError(null);
     // Generate unique branch name with date + short random suffix to avoid collisions
-    const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const uniqueSuffix = Math.random().toString(36).substring(2, 6);
-    setSettings(s => ({ ...s, branchName: `${type}-session-${timestamp}-${uniqueSuffix}` }));
+    setSettings(s => ({ ...s, branchName: generateSessionBranchName(type) }));
     setTimeout(() => setCurrentStep('multi-repo'), 300);
   };
 
@@ -1198,7 +1202,6 @@ function OptionButton({
 /**
  * Smart branch picker — shows a curated short list with an "Other…" escape hatch.
  */
-const PRIMARY_BRANCHES = ['main', 'master', 'development', 'develop', 'dev'];
 
 /** Branches that should never appear as a merge-target choice */
 /**
@@ -1206,34 +1209,6 @@ const PRIMARY_BRANCHES = ['main', 'master', 'development', 'develop', 'dev'];
  * Never returns a detached-HEAD/"HEAD" sentinel: prefers the current branch when
  * it's a real branch, otherwise the first primary that exists, otherwise 'main'.
  */
-function pickDefaultBaseBranch(validation: { currentBranch?: string; branches?: string[] }): string {
-  const current = validation.currentBranch;
-  if (current && !isSessionOrRemoteBranch(current)) return current;
-  const branches = validation.branches ?? [];
-  const primary = PRIMARY_BRANCHES.find(b => branches.includes(b));
-  if (primary) return primary;
-  const firstReal = branches.find(b => !isSessionOrRemoteBranch(b));
-  return firstReal ?? 'main';
-}
-
-function isSessionOrRemoteBranch(b: string): boolean {
-  return (
-    b.startsWith('origin/') ||
-    b.startsWith('remotes/') ||
-    // Detached-HEAD pseudo-entries ("(HEAD detached at <tag>)") and the bare
-    // "HEAD" sentinel are never valid base branches to commit onto.
-    b.startsWith('(') ||
-    b.includes('HEAD detached') ||
-    b === 'HEAD' ||
-    /^codex-session-/.test(b) ||
-    /^cursor-session-/.test(b) ||
-    /^copilot-session-/.test(b) ||
-    /^aider-session-/.test(b) ||
-    /^warp-session-/.test(b) ||
-    /^cline-session-/.test(b)
-  );
-}
-
 function BaseBranchPicker({
   branches,
   currentBranch,

@@ -7,6 +7,7 @@
 import React from 'react';
 import type { LogType } from '../../../shared/types';
 import type { AgentActivityReport } from '../../../shared/agent-protocol';
+import { formatDateTime } from '../../../shared/format-datetime';
 
 interface ActivityLogProps {
   entries: AgentActivityReport[];
@@ -80,13 +81,7 @@ function LogIcon({ type }: { type: LogType }): React.ReactElement {
 }
 
 export function ActivityLog({ entries }: ActivityLogProps): React.ReactElement {
-  const formatTime = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  };
+  const formatTime = (timestamp: string): string => formatDateTime(timestamp);
 
   if (entries.length === 0) {
     return (
@@ -170,12 +165,7 @@ export function ActivityLog({ entries }: ActivityLogProps): React.ReactElement {
  * ActivityLogCompact - Smaller version for tight spaces
  */
 export function ActivityLogCompact({ entries }: ActivityLogProps): React.ReactElement {
-  const formatTime = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
+  const formatTime = (timestamp: string): string => formatDateTime(timestamp);
 
   if (entries.length === 0) {
     return (

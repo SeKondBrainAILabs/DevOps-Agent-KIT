@@ -9,6 +9,7 @@ import { useAgentStore } from '../../store/agentStore';
 import type { SessionReport } from '../../../shared/agent-protocol';
 import type { GitCommitWithFiles, CommitDiffDetail } from '../../../shared/types';
 import { DiffViewer, DiffSummary } from '../ui/DiffViewer';
+import { formatDateTimeShort } from '../../../shared/format-datetime';
 
 interface UniversalCommit extends GitCommitWithFiles {
   sessionId: string;
@@ -243,10 +244,8 @@ export function UniversalCommitsView(): React.ReactElement {
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffHours < 24) return `${diffHours}h ago`;
 
-    return date.toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    // Older than a day — show the date (with time) so it's unambiguous.
+    return formatDateTimeShort(date);
   };
 
   if (loading) {
