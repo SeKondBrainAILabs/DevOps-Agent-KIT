@@ -1959,6 +1959,25 @@ const api = {
   // ==========================================================================
   // MERGE WORKFLOW API
   // ==========================================================================
+  pr: {
+    /** Every pull request this branch has had, newest first (KIT-PR-P11). */
+    list: (worktreePath: string, branchName: string): Promise<IpcResult<Array<{
+      number: number; url: string; state: string; title: string; createdAt: string; isDraft: boolean;
+    }>>> => ipcRenderer.invoke(IPC.PR_LIST, worktreePath, branchName),
+
+    /** GitHub refuses self-approval; this says whether the button can work. */
+    canApprove: (worktreePath: string, prNumber: number): Promise<IpcResult<{ allowed: boolean; reason?: string }>> =>
+      ipcRenderer.invoke(IPC.PR_CAN_APPROVE, worktreePath, prNumber),
+
+    review: (
+      worktreePath: string,
+      prNumber: number,
+      action: 'approve' | 'request-changes' | 'comment',
+      body?: string
+    ): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.PR_REVIEW, worktreePath, prNumber, action, body),
+  },
+
   merge: {
     preview: (repoPath: string, sourceBranch: string, targetBranch: string): Promise<IpcResult<{
       sourceBranch: string;

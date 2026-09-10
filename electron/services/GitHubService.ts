@@ -190,3 +190,148 @@ export async function ensurePullRequest(
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
+
+// ─── Review actions and history (KIT-PR-P11) ─────────────────────────────────
+
+export interface PrReviewDeps {
+  gh: GhRunner;
+}
+
+export interface PrSummary {
+  number: number;
+  url: string;
+  state: string;
+  title: string;
+  createdAt: string;
+  isDraft: boolean;
+}
+
+/**
+ * Every pull request this branch has ever had, newest first.
+ *
+ * `--state all` deliberately: the point of history is what happened to this
+ * branch before, including the PR that was closed without merging.
+ *
+ * Never throws. PR history is decoration on a tab whose primary content — the
+ * agent's handover summary — works with no network at all.
+ */
+export async function listPullRequests(
+  deps: PrReviewDeps,
+  worktreePath: string,
+  branchName: string
+): Promise<PrSummary[]> {
+  try {
+    const r = await deps.gh(
+      [
+        'pr', 'list',
+        '--head', branchName,
+        '--state', 'all',
+        '--limit', '20',
+        '--json', 'number,url,state,title,createdAt,isDraft',
+      ],
+      worktreePath
+    );
+    if (!r.ok || !r.stdout.trim()) return [];
+    const parsed = JSON.parse(r.stdout);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Can this user approve this pull request?
+ *
+ * GitHub refuses self-approval. KIT opens these PRs through `gh`, i.e. as the
+ * user running KIT, so for the ordinary case the answer is no — and a UI that
+ * offers an Approve button anyway is offering one that always errors. The UI
+ * shows it disabled with this reason instead, which is less confusing than
+ * silently omitting it.
+ */
+export async function canApprove(
+  deps: PrReviewDeps,
+  worktreePath: string,
+  prNumber: number
+): Promise<{ allowed: boolean; reason?: string }> {
+  try {
+    const pr = await deps.gh(['pr', 'view', String(prNumber), '--json', 'author'], worktreePath);
+    if (!pr.ok) {
+      return { allowed: false, reason: 'Could not determine who opened this pull request.' };
+    }
+    const author = JSON.parse(pr.stdout)?.author?.login;
+
+    const me = await deps.gh(['api', 'user', '--jq', '.login'], worktreePath);
+    const viewer = me.ok ? me.stdout.trim().replace(/^"|"$/g, '') : null;
+    if (!author || !viewer) {
+      return { allowed: false, reason: 'Could not determine the current GitHub user.' };
+    }
+
+    if (author === viewer) {
+      return {
+        allowed: false,
+        reason:
+          'GitHub does not allow approving your own pull request. This one was opened ' +
+          'under your account, so it needs a review from someone else — or you can ' +
+          'merge it directly.',
+      };
+    }
+    return { allowed: true };
+  } catch {
+    return { allowed: false, reason: 'Could not determine whether approval is possible.' };
+  }
+}
+
+export type PrReviewAction = 'approve' | 'request-changes' | 'comment';
+
+export async function reviewPullRequest(
+  deps: PrReviewDeps,
+  worktreePath: string,
+  prNumber: number,
+  action: PrReviewAction,
+  body?: string
+): Promise<{ ok: boolean; message?: string }> {
+  // GitHub rejects a request-changes or comment review with no body. Catch it
+  // here so the user gets a sentence rather than a GraphQL error.
+  if ((action === 'request-changes' || action === 'comment') && !body?.trim()) {
+    return {
+      ok: false,
+      message:
+        action === 'request-changes'
+          ? 'Requesting changes needs a comment saying what should change.'
+          : 'A comment review needs a comment.',
+    };
+  }
+
+  const flag =
+    action === 'approve' ? '--approve'
+      : action === 'request-changes' ? '--request-changes'
+        : '--comment';
+
+  const args = ['pr', 'review', String(prNumber), flag];
+  if (body?.trim()) args.push('--body', body.trim());
+
+  const r = await deps.gh(args, worktreePath);
+  if (r.ok) return { ok: true };
+
+  const failure = classifyGhFailure(r);
+  if (failure === 'not_installed' || failure === 'not_authenticated') {
+    return {
+      ok: false,
+      message:
+        failure === 'not_installed'
+          ? 'The GitHub CLI (`gh`) is not installed, so reviews cannot be submitted from KIT.'
+          : 'The GitHub CLI is not authenticated. Run `gh auth login`.',
+    };
+  }
+
+  if (/approve your own pull request/i.test(r.stderr)) {
+    return {
+      ok: false,
+      message:
+        'GitHub does not allow approving your own pull request. Merge it directly, ' +
+        'or have someone else review it.',
+    };
+  }
+
+  return { ok: false, message: r.stderr.trim() || 'The review could not be submitted.' };
+}

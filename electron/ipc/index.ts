@@ -6,6 +6,8 @@
 import { ipcMain, BrowserWindow, dialog, app } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import type { Services } from '../services';
+import { listPullRequests, canApprove, reviewPullRequest, type PrReviewAction } from '../services/GitHubService';
+import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from '../services/DatabaseService';
 import { isActiveInstance } from '../../shared/instance-status';
 
@@ -501,6 +503,31 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   });
 
   // R2 — pin a session so the reaper skips it, whatever its age.
+  // KIT-PR-P11 — pull request history and review actions for the Review tab.
+  ipcMain.handle(IPC.PR_LIST, async (_e: unknown, worktreePath: string, branchName: string) => {
+    try {
+      const prs = await listPullRequests({ gh: createGhRunner() }, worktreePath, branchName);
+      return { success: true, data: prs };
+    } catch (err) {
+      return { success: false, error: { code: 'PR_LIST_FAILED', message: String(err) } };
+    }
+  });
+
+  ipcMain.handle(IPC.PR_CAN_APPROVE, async (_e: unknown, worktreePath: string, prNumber: number) => {
+    const r = await canApprove({ gh: createGhRunner() }, worktreePath, prNumber);
+    return { success: true, data: r };
+  });
+
+  ipcMain.handle(
+    IPC.PR_REVIEW,
+    async (_e: unknown, worktreePath: string, prNumber: number, action: PrReviewAction, body?: string) => {
+      const r = await reviewPullRequest({ gh: createGhRunner() }, worktreePath, prNumber, action, body);
+      return r.ok
+        ? { success: true, data: undefined }
+        : { success: false, error: { code: 'PR_REVIEW_FAILED', message: r.message } };
+    }
+  );
+
   ipcMain.handle(IPC.INSTANCE_SET_PINNED, async (_e: unknown, sessionId: string, pinned: boolean) => {
     return services.agentInstance.setSessionPinned(sessionId, pinned);
   });
