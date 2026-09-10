@@ -17,7 +17,7 @@ import { useConflictStore } from '../../store/conflictStore';
 import { CommitsTab } from './CommitsTab';
 import { McpTab } from './McpTab';
 
-type DetailTab = 'prompt' | 'activity' | 'commits' | 'files' | 'contracts' | 'terminal' | 'mcp';
+type DetailTab = 'prompt' | 'review' | 'activity' | 'commits' | 'files' | 'contracts' | 'terminal' | 'mcp';
 
 // Threshold for switching to virtualized rendering
 const VIRTUALIZATION_LINE_THRESHOLD = 100;
@@ -822,17 +822,27 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
 
         {/* Tabs */}
         <div className="flex gap-2 flex-wrap">
-          {(['prompt', 'activity', 'commits', 'terminal', 'files', 'contracts', 'mcp'] as DetailTab[]).map((tab) => (
+          {(['prompt', 'review', 'activity', 'commits', 'terminal', 'files', 'contracts', 'mcp'] as DetailTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-3 py-1 text-sm font-medium transition-colors
+              className={`px-3 py-1 text-sm font-medium transition-colors inline-flex items-center gap-1.5
                 ${activeTab === tab
                   ? 'bg-black text-white rounded-full'
                   : 'text-text-secondary hover:text-black rounded-full hover:bg-[rgba(0,0,0,0.04)]'
                 }`}
             >
               {tab === 'mcp' ? 'MCP' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {/* An outstanding review is the one thing on this bar that is
+                  waiting on the user, so it gets a dot rather than relying on
+                  them opening the tab to find out. */}
+              {tab === 'review' && session.reviewRequest && (
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    activeTab === tab ? 'bg-white' : 'bg-violet-500'
+                  }`}
+                />
+              )}
             </button>
           ))}
         </div>
@@ -853,6 +863,9 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             onCopyInstructions={handleCopyInstructions}
             copySuccess={copySuccess}
           />
+        )}
+        {activeTab === 'review' && (
+          <ReviewTab session={session} />
         )}
         {activeTab === 'activity' && (
           <ActivityTab
@@ -1346,6 +1359,132 @@ function ActivityTab({ sessionId, repoPath, baseBranch, branchName }: { sessionI
  * Combines git diff data with real-time file watcher events
  * Includes git status (staged/unstaged/committed) and manual commit button
  */
+/**
+ * ReviewTab — what an agent handed over, and the pull request for it.
+ *
+ * This lived in the sidebar first, which was wrong twice over: the summary is
+ * agent-written prose of arbitrary length being squeezed into a ~200px column,
+ * and a pull request is something you sit and read rather than something you
+ * glance at while scanning a session tree. The sidebar keeps a badge so you can
+ * see WHICH sessions are waiting; the content lives here where there is room.
+ */
+function ReviewTab({ session }: { session: SessionReport }): React.ReactElement {
+  const review = session.reviewRequest;
+
+  if (!review) {
+    return (
+      <div className="h-full overflow-y-auto p-6">
+        <div className="text-center py-10">
+          <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-surface-tertiary flex items-center justify-center">
+            <svg className="w-6 h-6 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+            </svg>
+          </div>
+          <h3 className="text-sm font-medium text-text-primary mb-1">No review requested</h3>
+          <p className="text-xs text-text-secondary max-w-sm mx-auto">
+            When the agent finishes it calls <code>kit_request_review</code>, which opens a
+            pull request and shows the handover here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const requestedAgo = (() => {
+    const t = Date.parse(review.requestedAt);
+    if (!Number.isFinite(t)) return null;
+    const mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = mins / 60;
+    if (hrs < 48) return `${hrs.toFixed(1)}h ago`;
+    return `${(hrs / 24).toFixed(1)}d ago`;
+  })();
+
+  // Only 'created' and 'updated' mean there is a PR. Everything else is a
+  // reason there isn't one, and saying which matters — "no GitHub remote" and
+  // "gh is logged out" need completely different fixes.
+  const NO_PR_REASON: Record<string, string> = {
+    no_remote: 'This repository has no `origin` remote, so there is nothing to open a pull request against.',
+    not_github: 'The origin remote is not a GitHub repository. KIT opens pull requests through the GitHub CLI.',
+    gh_unavailable: 'The GitHub CLI is unavailable — either not installed, or not authenticated. Run `gh auth login`.',
+    push_failed: 'The branch could not be pushed, so no pull request was opened.',
+    unavailable: 'GitHub integration is not configured for this session.',
+    failed: 'Opening the pull request failed.',
+  };
+
+  return (
+    <div className="h-full overflow-y-auto p-6 space-y-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-violet-700">
+            Ready for review
+          </p>
+          <h3 className="text-base font-semibold text-text-primary mt-0.5 truncate">
+            {session.branchName}
+          </h3>
+          {requestedAgo && (
+            <p className="text-xs text-text-secondary mt-0.5">Requested {requestedAgo}</p>
+          )}
+        </div>
+        {review.prUrl && (
+          <a
+            href={review.prUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="btn-primary text-sm px-3 py-1.5 shrink-0 no-underline"
+          >
+            Open pull request{review.prNumber ? ` #${review.prNumber}` : ''}
+          </a>
+        )}
+      </div>
+
+      <div>
+        <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)] mb-2">
+          What the agent says it did
+        </p>
+        {/* whitespace-pre-wrap + break-words: this is agent prose of arbitrary
+            length and may contain paths and identifiers with no break points. */}
+        <div className="rounded-[10px] border border-[rgba(0,0,0,0.10)] bg-[#FAFAF7] p-3">
+          <p className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap break-words">
+            {review.summary}
+          </p>
+        </div>
+      </div>
+
+      {!review.prUrl && (
+        <div className="rounded-[10px] border border-amber-500/30 bg-amber-500/5 p-3">
+          <p className="text-xs font-medium text-amber-800 mb-1">No pull request</p>
+          <p className="text-xs text-text-secondary leading-snug">
+            {NO_PR_REASON[String(review.prStatus)] ??
+              'No pull request was opened for this review.'}
+          </p>
+          <p className="text-[11px] text-text-secondary/70 mt-1.5">
+            The review itself is still recorded — the handover above is what the agent reported.
+          </p>
+        </div>
+      )}
+
+      <div>
+        <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)] mb-2">
+          Branch
+        </p>
+        <div className="rounded-[10px] border border-[rgba(0,0,0,0.10)] overflow-hidden text-sm">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-[rgba(0,0,0,0.06)]">
+            <span className="text-text-secondary">Source</span>
+            <code className="text-text-primary truncate ml-3">{session.branchName}</code>
+          </div>
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-text-secondary">Merges into</span>
+            <code className="text-text-primary truncate ml-3">{session.baseBranch}</code>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FilesTab({ session }: { session: SessionReport }): React.ReactElement {
   const [gitFiles, setGitFiles] = useState<Array<{
     path: string;

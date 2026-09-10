@@ -5,6 +5,7 @@
 
 import { BaseService } from './BaseService';
 import { createGhRunner, classifyGhFailure, describeGhFailure } from '../../shared/github-cli';
+import { resolveMergeStrategy, type MergeVia } from '../../shared/merge-strategy';
 import type { IpcResult, MergePreview, MergeResult } from '../../shared/types';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -63,6 +64,8 @@ export class MergeService extends BaseService {
   private mergeConflictService: any = null;
   private rebaseWatcher: any = null;
   private agentInstanceService: any = null;
+  /** KIT-PR-P10 - used to deliver a merge as a pull request. */
+  private githubService: any = null;
   private lockService: any = null;
   private activityService: any = null;
   private debugLog: { warn: (source: string, message: string, details?: unknown) => void } | null = null;
@@ -81,6 +84,10 @@ export class MergeService extends BaseService {
 
   setAgentInstanceService(service: any): void {
     this.agentInstanceService = service;
+  }
+
+  setGitHubService(service: any): void {
+    this.githubService = service;
   }
 
   setActivityService(service: any): void {
@@ -443,6 +450,103 @@ export class MergeService extends BaseService {
       );
     } catch (err) {
       console.warn('[MergeService] sanitizeKitBookkeepingForMerge non-fatal failure:', err);
+    }
+  }
+
+  /**
+   * Can a pull request be opened from this working directory at all?
+   *
+   * A GitHub remote plus a usable gh. Anything else and the PR route is not
+   * available, which changes what `auto` resolves to.
+   */
+  private async canOpenPullRequest(cwd: string): Promise<boolean> {
+    try {
+      const remote = await this.git(['remote', 'get-url', 'origin'], cwd);
+      if (remote.exitCode !== 0 || !/github\.com/i.test(remote.stdout)) return false;
+      const gh = createGhRunner();
+      const probe = await gh(['auth', 'status'], cwd);
+      return classifyGhFailure(probe) === null;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Deliver the change as a pull request instead of merging (KIT-PR-P10).
+   *
+   * Nothing is merged locally here, deliberately. Merging first and opening a
+   * PR afterwards would present a reviewer with a change that has already been
+   * applied on someone's machine, and leave the local target diverged if the
+   * PR is then closed rather than merged.
+   */
+  private async deliverAsPullRequest(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+    options: { worktreePath?: string },
+    reason: string
+  ): Promise<MergeResult> {
+    const cwd = options.worktreePath || repoPath;
+
+    const push = await this.git(['push', '-u', 'origin', sourceBranch], cwd);
+    if (push.exitCode !== 0) {
+      return {
+        success: false,
+        message:
+          `Could not push '${sourceBranch}' to origin, so no pull request was opened:\n\n` +
+          push.stderr.trim(),
+      } as MergeResult;
+    }
+
+    if (!this.githubService) {
+      return {
+        success: false,
+        message:
+          `'${targetBranch}' needs a pull request, but GitHub integration is not ` +
+          `configured. Open one manually from '${sourceBranch}'.`,
+      } as MergeResult;
+    }
+
+    const instance = this.findInstanceForBranch(sourceBranch);
+    const result = await this.githubService.ensurePullRequest({
+      sessionId: instance?.sessionId ?? sourceBranch,
+      branchName: sourceBranch,
+      baseBranch: targetBranch,
+      taskDescription: instance?.config?.taskDescription ?? `Merge ${sourceBranch} into ${targetBranch}`,
+      worktreePath: cwd,
+    });
+
+    if (result.status !== 'created' && result.status !== 'updated') {
+      return {
+        success: false,
+        gateReason: 'PR_UNAVAILABLE',
+        message:
+          `'${targetBranch}' needs a pull request and one could not be opened ` +
+          `(${result.status}). ${result.message ?? ''}`.trim(),
+      } as MergeResult;
+    }
+
+    return {
+      success: true,
+      deliveredVia: 'pr',
+      pullRequestUrl: result.url,
+      message:
+        `${reason}\n\n` +
+        `Pull request ${result.status}: ${result.url}\n\n` +
+        `Nothing was merged locally. Review and merge it on GitHub, where branch ` +
+        `protection can be satisfied.`,
+    } as MergeResult;
+  }
+
+  /** Resolve the KIT instance owning a branch, for PR metadata. */
+  private findInstanceForBranch(branchName: string): any | undefined {
+    if (!this.agentInstanceService) return undefined;
+    try {
+      const listed = this.agentInstanceService.listInstances();
+      if (!listed?.success || !Array.isArray(listed.data)) return undefined;
+      return listed.data.find((i: any) => i?.config?.branchName === branchName);
+    } catch {
+      return undefined;
     }
   }
 
@@ -871,6 +975,14 @@ export class MergeService extends BaseService {
        *  carries WIP/[Kanvas] auto-checkpoint commits. Surfaced in the UI as
        *  an explicit "Merge without CI check" secondary button. */
       skipCiGate?: boolean;
+      /**
+       * How to deliver the merge (KIT-PR-P10).
+       *   'auto'   - pull request for protected targets, direct otherwise
+       *   'pr'     - always open a pull request, never push the target
+       *   'direct' - always merge locally and push (the historical behaviour)
+       * Defaults to 'auto'.
+       */
+      via?: MergeVia;
     } = {}
   ): Promise<IpcResult<MergeResult>> {
     return this.wrap(async () => {
@@ -902,6 +1014,37 @@ export class MergeService extends BaseService {
       // Only applies to main/master/production — feature-branch merges are
       // unaffected. Users can override by passing options.skipCiGate=true,
       // which the UI surfaces as an explicit "merge without CI check" button.
+      // KIT-PR-P10 - decide HOW to deliver before doing anything.
+      //
+      // Merging locally and pushing a protected branch does not work: GitHub
+      // rejects the push, the local target keeps the merge commit, and the two
+      // diverge. A pull request is the only route that satisfies required
+      // reviews, required checks and merge queues.
+      const canOpenPr = await this.canOpenPullRequest(options.worktreePath || repoPath);
+      const strategy = resolveMergeStrategy({
+        targetBranch,
+        via: options.via,
+        canOpenPr,
+        force: options.skipCiGate,
+      });
+
+      if (strategy.refused) {
+        return {
+          success: false,
+          gateReason: strategy.refusalCode,
+          message: strategy.reason,
+        } as MergeResult;
+      }
+
+      if (strategy.mode === 'pr') {
+        // Nothing is merged locally on this path. The source branch is pushed
+        // and a pull request opened; a human merges it through GitHub, where
+        // branch protection can actually be satisfied.
+        return this.deliverAsPullRequest(
+          repoPath, sourceBranch, targetBranch, options, strategy.reason
+        );
+      }
+
       const isProtectedTarget = ['main', 'master', 'production', 'release'].includes(targetBranch);
       if (isProtectedTarget && !options.skipCiGate) {
         const gateResult = await this.checkMergeGate(
@@ -1402,8 +1545,31 @@ export class MergeService extends BaseService {
       const filesChangedMatch = diffStatOutput.match(/(\d+) files? changed/);
       const filesChanged = filesChangedMatch ? parseInt(filesChangedMatch[1], 10) : 0;
 
-      // Push merged changes
-      await this.git(['push', 'origin', targetBranch], mergeWorkdir);
+      // Push merged changes.
+      //
+      // The exit code is CHECKED. It was not before: this.git uses
+      // `reject: false`, so a push rejected by branch protection returned a
+      // non-zero code that nothing looked at — the merge reported success while
+      // origin had received nothing and the local target had silently diverged.
+      const pushResult = await this.git(['push', 'origin', targetBranch], mergeWorkdir);
+      if (pushResult.exitCode !== 0) {
+        const rejected = /protected branch|GH006|required status check|pull request is required|not permitted/i.test(
+          pushResult.stderr
+        );
+        return {
+          success: false,
+          gateReason: rejected ? 'PUSH_REJECTED' : undefined,
+          message: rejected
+            ? `Merged locally, but origin rejected the push to '${targetBranch}':\n\n` +
+              `${pushResult.stderr.trim()}\n\n` +
+              `'${targetBranch}' is protected. Re-run with via: 'pr' to deliver this as a ` +
+              `pull request instead, which is the only route that satisfies required ` +
+              `reviews and checks.\n\n` +
+              `Your local '${targetBranch}' now contains the merge commit and origin does ` +
+              `not — reset it with \`git reset --hard origin/${targetBranch}\` before retrying.`
+            : `Merged locally, but the push to '${targetBranch}' failed:\n\n${pushResult.stderr.trim()}`,
+        } as MergeResult;
+      }
 
       // Auto-pop stash if we stashed files before merge
       let stashRecovered: boolean | undefined;
