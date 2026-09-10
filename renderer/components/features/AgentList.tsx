@@ -213,52 +213,23 @@ export function AgentList(): React.ReactElement {
       </div>
 
       {awaitingReview.length > 0 && (
-        <div className="mb-3 rounded-md border border-violet-500/30 bg-violet-500/5">
-          <p className="px-3 pt-2 text-[10px] font-mono uppercase tracking-[0.14em] text-violet-700">
-            {awaitingReview.length} ready for review
-          </p>
-          <div className="px-3 pb-2 pt-1 space-y-1.5">
-            {awaitingReview.map((session) => (
-              <div key={session.sessionId} className="text-xs">
-                <button
-                  onClick={() =>
-                    setSelectedSession(
-                      selectedSessionId === session.sessionId ? null : session.sessionId
-                    )
-                  }
-                  className="w-full text-left hover:underline text-text-primary truncate"
-                  title={session.branchName}
-                >
-                  {session.branchName || session.sessionId}
-                </button>
-                <p className="text-[11px] text-text-secondary leading-snug mt-0.5">
-                  {session.reviewRequest?.summary}
-                </p>
-                {session.reviewRequest?.prUrl ? (
-                  <a
-                    href={session.reviewRequest.prUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[11px] text-kanvas-blue hover:underline"
-                  >
-                    View pull request
-                    {session.reviewRequest.prNumber ? ` #${session.reviewRequest.prNumber}` : ''}
-                  </a>
-                ) : (
-                  // Say WHY there is no link rather than showing nothing —
-                  // "no GitHub remote" and "gh is logged out" are different
-                  // problems with different fixes.
-                  <p className="text-[11px] text-text-secondary/70">
-                    No pull request
-                    {session.reviewRequest?.prStatus
-                      ? ` (${String(session.reviewRequest.prStatus).replace(/_/g, ' ')})`
-                      : ''}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <button
+          onClick={() =>
+            setSelectedSession(
+              selectedSessionId === awaitingReview[0].sessionId
+                ? null
+                : awaitingReview[0].sessionId
+            )
+          }
+          className="w-full mb-3 flex items-center gap-2 px-3 py-2 rounded-md border border-violet-500/30 bg-violet-500/5 text-left hover:bg-violet-500/10 transition-colors"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />
+          <span className="text-xs text-violet-800 flex-1 truncate">
+            {awaitingReview.length === 1
+              ? `${awaitingReview[0].branchName || 'A session'} is ready for review`
+              : `${awaitingReview.length} sessions ready for review`}
+          </span>
+        </button>
       )}
 
       {/* Repo tree */}
