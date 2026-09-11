@@ -1370,28 +1370,91 @@ function ActivityTab({ sessionId, repoPath, baseBranch, branchName }: { sessionI
  */
 function ReviewTab({ session }: { session: SessionReport }): React.ReactElement {
   const review = session.reviewRequest;
+  const worktree = session.worktreePath || session.repoPath;
 
-  if (!review) {
-    return (
-      <div className="h-full overflow-y-auto p-6">
-        <div className="text-center py-10">
-          <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-surface-tertiary flex items-center justify-center">
-            <svg className="w-6 h-6 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
-            </svg>
-          </div>
-          <h3 className="text-sm font-medium text-text-primary mb-1">No review requested</h3>
-          <p className="text-xs text-text-secondary max-w-sm mx-auto">
-            When the agent finishes it calls <code>kit_request_review</code>, which opens a
-            pull request and shows the handover here.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const [prs, setPrs] = useState<Array<{
+    number: number; url: string; state: string; title: string; createdAt: string; isDraft: boolean;
+  }>>([]);
+  const [approval, setApproval] = useState<{ allowed: boolean; reason?: string } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [changesBody, setChangesBody] = useState('');
+  const [showChanges, setShowChanges] = useState(false);
+
+  const openPr = prs.find((p) => String(p.state).toUpperCase() === 'OPEN');
+
+  const loadPrs = React.useCallback(async () => {
+    if (!worktree || !session.branchName) return;
+    const r = await window.api?.pr?.list?.(worktree, session.branchName);
+    const list = r?.success && r.data ? r.data : [];
+    setPrs(list);
+    // Only ask about approval for an OPEN pull request, and only once — this is
+    // two network calls and the answer does not change while the tab is open.
+    const open = list.find((p) => String(p.state).toUpperCase() === 'OPEN');
+    if (open) {
+      const a = await window.api?.pr?.canApprove?.(worktree, open.number);
+      setApproval(a?.success && a.data ? a.data : null);
+    } else {
+      setApproval(null);
+    }
+  }, [worktree, session.branchName]);
+
+  useEffect(() => {
+    // Fetched on open and on explicit refresh only. Never on a timer: at agent
+    // fan-out, twenty sessions polling `gh` is a rate-limit incident.
+    void loadPrs();
+  }, [loadPrs]);
+
+  const runReview = async (action: 'approve' | 'request-changes', body?: string): Promise<void> => {
+    if (!openPr || !worktree) return;
+    setBusy(action);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await window.api?.pr?.review?.(worktree, openPr.number, action, body);
+      if (r?.success) {
+        setNote(action === 'approve' ? 'Approved.' : 'Changes requested.');
+        setShowChanges(false);
+        setChangesBody('');
+        void loadPrs();
+      } else {
+        setError(r?.error?.message ?? 'The review could not be submitted.');
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runMerge = async (): Promise<void> => {
+    setBusy('merge');
+    setError(null);
+    setNote(null);
+    try {
+      const r = await window.api?.merge?.execute?.(
+        session.repoPath,
+        session.branchName,
+        session.baseBranch,
+        { worktreePath: session.worktreePath }
+      );
+      if (r?.success) {
+        // A protected target returns a pull request rather than a merge, which
+        // is a different outcome and has to read differently.
+        const url = (r.data as any)?.pullRequestUrl;
+        setNote(url ? `Delivered as a pull request: ${url}` : 'Merged.');
+        void loadPrs();
+      } else {
+        setError(r?.error?.message ?? (r as any)?.message ?? 'The merge did not complete.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The merge did not complete.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const requestedAgo = (() => {
+    if (!review) return null;
     const t = Date.parse(review.requestedAt);
     if (!Number.isFinite(t)) return null;
     const mins = Math.round((Date.now() - t) / 60000);
@@ -1402,9 +1465,6 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     return `${(hrs / 24).toFixed(1)}d ago`;
   })();
 
-  // Only 'created' and 'updated' mean there is a PR. Everything else is a
-  // reason there isn't one, and saying which matters — "no GitHub remote" and
-  // "gh is logged out" need completely different fixes.
   const NO_PR_REASON: Record<string, string> = {
     no_remote: 'This repository has no `origin` remote, so there is nothing to open a pull request against.',
     not_github: 'The origin remote is not a GitHub repository. KIT opens pull requests through the GitHub CLI.',
@@ -1414,72 +1474,195 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     failed: 'Opening the pull request failed.',
   };
 
+  const STATE_STYLE: Record<string, string> = {
+    OPEN: 'bg-emerald-500/15 text-emerald-700',
+    MERGED: 'bg-violet-500/15 text-violet-700',
+    CLOSED: 'bg-[rgba(0,0,0,0.06)] text-[rgba(0,0,0,0.55)]',
+  };
+
   return (
     <div className="h-full overflow-y-auto p-6 space-y-5">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-violet-700">
-            Ready for review
-          </p>
-          <h3 className="text-base font-semibold text-text-primary mt-0.5 truncate">
-            {session.branchName}
-          </h3>
-          {requestedAgo && (
-            <p className="text-xs text-text-secondary mt-0.5">Requested {requestedAgo}</p>
+      {review ? (
+        <>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-violet-700">
+                Ready for review
+              </p>
+              <h3 className="text-base font-semibold text-text-primary mt-0.5 truncate">
+                {session.branchName}
+              </h3>
+              {requestedAgo && (
+                <p className="text-xs text-text-secondary mt-0.5">Requested {requestedAgo}</p>
+              )}
+            </div>
+            {openPr && (
+              <a
+                href={openPr.url}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-secondary text-sm px-3 py-1.5 shrink-0 no-underline"
+              >
+                Open on GitHub #{openPr.number}
+              </a>
+            )}
+          </div>
+
+          <div>
+            <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)] mb-2">
+              What the agent says it did
+            </p>
+            <div className="rounded-[10px] border border-[rgba(0,0,0,0.10)] bg-[#FAFAF7] p-3">
+              <p className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap break-words">
+                {review.summary}
+              </p>
+            </div>
+          </div>
+
+          {!openPr && review.prStatus && (
+            <div className="rounded-[10px] border border-amber-500/30 bg-amber-500/5 p-3">
+              <p className="text-xs font-medium text-amber-800 mb-1">No open pull request</p>
+              <p className="text-xs text-text-secondary leading-snug">
+                {NO_PR_REASON[String(review.prStatus)] ??
+                  'No pull request is open for this branch.'}
+              </p>
+            </div>
           )}
-        </div>
-        {review.prUrl && (
-          <a
-            href={review.prUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="btn-primary text-sm px-3 py-1.5 shrink-0 no-underline"
-          >
-            Open pull request{review.prNumber ? ` #${review.prNumber}` : ''}
-          </a>
-        )}
-      </div>
-
-      <div>
-        <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)] mb-2">
-          What the agent says it did
-        </p>
-        {/* whitespace-pre-wrap + break-words: this is agent prose of arbitrary
-            length and may contain paths and identifiers with no break points. */}
-        <div className="rounded-[10px] border border-[rgba(0,0,0,0.10)] bg-[#FAFAF7] p-3">
-          <p className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap break-words">
-            {review.summary}
-          </p>
-        </div>
-      </div>
-
-      {!review.prUrl && (
-        <div className="rounded-[10px] border border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium text-amber-800 mb-1">No pull request</p>
-          <p className="text-xs text-text-secondary leading-snug">
-            {NO_PR_REASON[String(review.prStatus)] ??
-              'No pull request was opened for this review.'}
-          </p>
-          <p className="text-[11px] text-text-secondary/70 mt-1.5">
-            The review itself is still recorded — the handover above is what the agent reported.
+        </>
+      ) : (
+        <div className="text-center py-8">
+          <h3 className="text-sm font-medium text-text-primary mb-1">No review requested</h3>
+          <p className="text-xs text-text-secondary max-w-sm mx-auto">
+            When the agent finishes it calls <code>kit_request_review</code>, which opens a
+            pull request and shows the handover here.
           </p>
         </div>
       )}
 
+      {/* ── Decision ─────────────────────────────────────────────────────── */}
       <div>
         <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)] mb-2">
-          Branch
+          Decision
         </p>
-        <div className="rounded-[10px] border border-[rgba(0,0,0,0.10)] overflow-hidden text-sm">
-          <div className="flex items-center justify-between px-3 py-2 border-b border-[rgba(0,0,0,0.06)]">
-            <span className="text-text-secondary">Source</span>
-            <code className="text-text-primary truncate ml-3">{session.branchName}</code>
+        <div className="rounded-[10px] border border-[rgba(0,0,0,0.10)] p-3 space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => void runMerge()}
+              disabled={busy !== null}
+              className="btn-primary text-sm px-3 py-1.5"
+              title={`Merge ${session.branchName} into ${session.baseBranch}`}
+            >
+              {busy === 'merge' ? 'Merging…' : `Merge into ${session.baseBranch}`}
+            </button>
+
+            <button
+              onClick={() => void runReview('approve')}
+              disabled={busy !== null || !openPr || approval?.allowed !== true}
+              className="btn-secondary text-sm px-3 py-1.5"
+              title={
+                !openPr
+                  ? 'There is no open pull request to approve.'
+                  : approval?.allowed === false
+                    ? approval.reason
+                    : 'Approve this pull request'
+              }
+            >
+              {busy === 'approve' ? 'Approving…' : 'Approve'}
+            </button>
+
+            <button
+              onClick={() => setShowChanges((v) => !v)}
+              disabled={busy !== null || !openPr}
+              className="btn-secondary text-sm px-3 py-1.5"
+            >
+              Request changes
+            </button>
           </div>
-          <div className="flex items-center justify-between px-3 py-2">
-            <span className="text-text-secondary">Merges into</span>
-            <code className="text-text-primary truncate ml-3">{session.baseBranch}</code>
-          </div>
+
+          {/* Approve is shown DISABLED with the reason rather than hidden.
+              Silently omitting it leaves the user wondering where it went; the
+              real answer — GitHub will not let you approve your own PR — is
+              something they need to know to decide what to do instead. */}
+          {openPr && approval?.allowed === false && approval.reason && (
+            <p className="text-[11px] text-text-secondary leading-snug">{approval.reason}</p>
+          )}
+
+          {showChanges && (
+            <div className="space-y-2">
+              <textarea
+                value={changesBody}
+                onChange={(e) => setChangesBody(e.target.value)}
+                placeholder="What needs to change? GitHub requires a comment when requesting changes."
+                rows={3}
+                className="w-full text-sm rounded-[8px] border border-[rgba(0,0,0,0.10)] p-2"
+              />
+              <button
+                onClick={() => void runReview('request-changes', changesBody)}
+                disabled={busy !== null || !changesBody.trim()}
+                className="btn-secondary text-sm px-3 py-1.5"
+              >
+                {busy === 'request-changes' ? 'Submitting…' : 'Submit'}
+              </button>
+            </div>
+          )}
+
+          {note && <p className="text-xs text-emerald-700 break-words">{note}</p>}
+          {error && <p className="text-xs text-red-600 whitespace-pre-wrap break-words">{error}</p>}
+
+          <p className="text-[11px] text-text-secondary/70 leading-snug">
+            Merging into a protected branch ({session.baseBranch}) opens a pull request rather
+            than pushing — a direct push cannot satisfy required reviews or checks.
+          </p>
         </div>
+      </div>
+
+      {/* ── History ──────────────────────────────────────────────────────── */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)]">
+            Pull requests for this branch
+          </p>
+          <button
+            onClick={() => void loadPrs()}
+            className="text-[11px] text-text-secondary hover:text-black"
+          >
+            Refresh
+          </button>
+        </div>
+        {prs.length === 0 ? (
+          <p className="text-xs text-text-secondary">
+            None found. This branch has had no pull requests, or GitHub is unreachable.
+          </p>
+        ) : (
+          <div className="rounded-[10px] border border-[rgba(0,0,0,0.10)] overflow-hidden">
+            {prs.map((pr, i) => (
+              <a
+                key={pr.number}
+                href={pr.url}
+                target="_blank"
+                rel="noreferrer"
+                className={`flex items-center gap-2 px-3 py-2 text-sm no-underline hover:bg-[#FAFAF7] ${
+                  i > 0 ? 'border-t border-[rgba(0,0,0,0.06)]' : ''
+                }`}
+              >
+                <span className="text-text-secondary shrink-0">#{pr.number}</span>
+                <span className="flex-1 truncate text-text-primary">{pr.title}</span>
+                {pr.isDraft && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(0,0,0,0.06)] text-[rgba(0,0,0,0.55)]">
+                    draft
+                  </span>
+                )}
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${
+                    STATE_STYLE[String(pr.state).toUpperCase()] ?? STATE_STYLE.CLOSED
+                  }`}
+                >
+                  {String(pr.state).toLowerCase()}
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

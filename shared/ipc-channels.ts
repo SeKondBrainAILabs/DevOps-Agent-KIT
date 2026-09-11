@@ -396,6 +396,11 @@ export const IPC = {
   MERGE_CLEAN_UNTRACKED: 'merge:clean-untracked',     // Remove untracked files blocking merge
   MERGE_RESOLVE_BRANCH: 'merge:resolve-branch',       // Get actual active branch from worktree path
 
+  // Pull request review from the session's Review tab (KIT-PR-P11)
+  PR_LIST: 'pr:list',
+  PR_CAN_APPROVE: 'pr:can-approve',
+  PR_REVIEW: 'pr:review',
+
   // ==========================================================================
   // COMMIT ANALYSIS CHANNELS
   // AI-powered commit message generation from file diffs
