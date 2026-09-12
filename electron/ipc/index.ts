@@ -690,10 +690,6 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.git.fetchRemote(repoPath, remote);
   });
 
-  ipcMain.handle(IPC.GIT_STASH_POP, async (_, repoPath: string) => {
-    return services.git.stashPop(repoPath);
-  });
-
   ipcMain.handle(IPC.GIT_CHECK_REMOTE, async (_, repoPath: string, branch: string) => {
     return services.git.checkRemoteChanges(repoPath, branch);
   });
@@ -745,6 +741,21 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     }
 
     return result;
+  });
+  ipcMain.handle(IPC.GIT_STASH_LIST, async (_, repoPath: string) => {
+    return services.git.listStashes(repoPath);
+  });
+
+  ipcMain.handle(IPC.GIT_STASH_POP, async (_, repoPath: string, stashRef?: string) => {
+    return services.git.stashPop(repoPath, stashRef);
+  });
+
+  ipcMain.handle(IPC.GIT_STASH_DROP, async (_, repoPath: string, stashRef?: string) => {
+    return services.git.stashDrop(repoPath, stashRef || 'stash@{0}');
+  });
+
+  ipcMain.handle(IPC.GIT_STASH_CLEAR, async (_, repoPath: string) => {
+    return services.git.stashClear(repoPath);
   });
 
   ipcMain.handle(IPC.GIT_LIST_WORKTREES, async (_, repoPath: string) => {

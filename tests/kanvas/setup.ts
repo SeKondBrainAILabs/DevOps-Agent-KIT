@@ -63,9 +63,25 @@ const mockApi = {
       },
     }),
     listBranchesForRepo: createMockFn({ success: true, data: [] }),
+    stashList: createMockFn({ success: true, data: [] }),
+    stashPop: createMockFn({ success: true }),
+    stashDrop: createMockFn({ success: true }),
+    stashClear: createMockFn({ success: true }),
+    getWorktreeSafetyInfo: createMockFn({
+      success: true,
+      data: {
+        worktreePath: '/test/worktree',
+        hasUncommittedChanges: false,
+        uncommittedFiles: [],
+        unmergedCommitCount: 0,
+        mergedIntoBranches: ['main'],
+      },
+    }),
     listWorktrees: createMockFn({ success: true, data: [] }),
     pruneWorktrees: createMockFn({ success: true }),
     removeWorktreeByPath: createMockFn({ success: true }),
+    deleteBranch: createMockFn({ success: true }),
+    performRebase: createMockFn({ success: true, data: { success: true, message: 'ok' } }),
     getWorktreeSafetyInfo: createMockFn({
       success: true,
       data: {

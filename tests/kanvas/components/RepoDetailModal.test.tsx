@@ -30,6 +30,16 @@ describe('RepoDetailModal', () => {
         fetchedAt: '',
       },
     } as never);
+    (mockApi.git.stashList as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [
+        {
+          ref: 'stash@{0}',
+          message: 'WIP on feat/login',
+          createdAt: '2026-05-22T08:00:00.000Z',
+        },
+      ],
+    } as never);
   });
 
   it('renders the repo basename + full path', async () => {
@@ -96,5 +106,65 @@ describe('RepoDetailModal', () => {
       const overview = screen.getByTestId('repo-detail-overview');
       expect(within(overview).getByText(/cannot read git/)).toBeInTheDocument();
     });
+  });
+
+  it('renders stash manager rows from stashList', async () => {
+    render(<RepoDetailModal repoPath="/repo" onClose={() => {}} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-detail-stash-section')).toBeInTheDocument();
+      expect(screen.getByTestId('repo-detail-stash-row-0')).toHaveTextContent('stash@{0}');
+      expect(screen.getByTestId('repo-detail-stash-row-0')).toHaveTextContent('WIP on feat/login');
+    });
+  });
+
+  it('pull current branch calls performRebase and refreshes overview', async () => {
+    const user = userEvent.setup();
+    render(<RepoDetailModal repoPath="/repo" onClose={() => {}} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-detail-pull-current-branch')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('repo-detail-pull-current-branch'));
+    await waitFor(() => {
+      expect(mockApi.git.performRebase).toHaveBeenCalledWith('/repo', 'feat/login');
+      expect(mockApi.git.getRepoStatus).toHaveBeenCalledTimes(2);
+      expect(mockApi.git.stashList).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('stash row actions call pop and drop APIs', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<RepoDetailModal repoPath="/repo" onClose={() => {}} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-detail-stash-pop-0')).toBeInTheDocument();
+      expect(screen.getByTestId('repo-detail-stash-drop-0')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('repo-detail-stash-pop-0'));
+    await waitFor(() => {
+      expect(mockApi.git.stashPop).toHaveBeenCalledWith('/repo', 'stash@{0}');
+    });
+
+    await user.click(screen.getByTestId('repo-detail-stash-drop-0'));
+    await waitFor(() => {
+      expect(mockApi.git.stashDrop).toHaveBeenCalledWith('/repo', 'stash@{0}');
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it('clear all stashes confirms and calls stashClear', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<RepoDetailModal repoPath="/repo" onClose={() => {}} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-detail-stash-clear')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('repo-detail-stash-clear'));
+    await waitFor(() => {
+      expect(mockApi.git.stashClear).toHaveBeenCalledWith('/repo');
+    });
+    confirmSpy.mockRestore();
   });
 });

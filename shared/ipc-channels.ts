@@ -229,6 +229,9 @@ export const IPC = {
   GIT_CHECK_REMOTE: 'git:check-remote',
   GIT_REBASE: 'git:rebase',
   GIT_PERFORM_REBASE: 'git:perform-rebase',
+  GIT_STASH_LIST: 'git:stash-list',
+  GIT_STASH_DROP: 'git:stash-drop',
+  GIT_STASH_CLEAR: 'git:stash-clear',
   GIT_COMMIT_WORKTREE: 'git:commit-worktree', // Path-based commit-all (pre-merge/rebase save)
   GIT_DETECT_TAG_PREFIXES: 'git:detect-tag-prefixes', // Existing version-tag prefixes (wizard)
   GIT_NEXT_VERSION_TAG: 'git:next-version-tag',       // Next version for a prefix
@@ -548,6 +551,10 @@ export const REQUEST_CHANNELS = [
   IPC.GIT_GET_REPO_STATUS,
   IPC.GIT_LIST_BRANCHES_FOR_REPO,
   IPC.GIT_LIST_WORKTREES,
+  IPC.GIT_STASH_LIST,
+  IPC.GIT_STASH_POP,
+  IPC.GIT_STASH_DROP,
+  IPC.GIT_STASH_CLEAR,
   IPC.GIT_PRUNE_WORKTREES,
   IPC.GIT_REMOVE_WORKTREE_PATH,
   IPC.GIT_ANALYZE_STALE_BRANCHES,
