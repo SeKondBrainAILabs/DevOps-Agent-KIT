@@ -320,6 +320,79 @@ describe('WorkspaceBrowserView — happy path', () => {
     clipboardSpy.mockRestore();
   });
 
+  it('repo row stash controls call stash APIs and refresh row status', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    (mockApi.git.getRepoStatus as jest.Mock).mockImplementation(async (repoPath: string) => ({
+      success: true,
+      data: {
+        repoPath,
+        currentBranch: repoPath.endsWith('/alpha') ? 'feature/alpha' : 'main',
+        ahead: 0,
+        behind: 0,
+        modifiedCount: 0,
+        stagedCount: 0,
+        untrackedCount: 0,
+        unmergedCount: 0,
+        stashCount: repoPath.endsWith('/alpha') ? 2 : 1,
+        worktreeCount: 1,
+        fetchedAt: '2026-05-22T00:00:00.000Z',
+      },
+    }));
+    render(<WorkspaceBrowserView />);
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-row-stash-drop-0')).toBeEnabled();
+      expect(screen.getByTestId('repo-row-stash-clear-0')).toBeEnabled();
+    });
+
+    (mockApi.git.getRepoStatus as jest.Mock).mockClear();
+    await user.click(screen.getByTestId('repo-row-stash-drop-0'));
+    await waitFor(() => {
+      expect(mockApi.git.stashDrop).toHaveBeenCalledWith('/Users/me/work/alpha', 'stash@{0}');
+      expect(mockApi.git.getRepoStatus).toHaveBeenCalledWith('/Users/me/work/alpha');
+    });
+
+    await user.click(screen.getByTestId('repo-row-stash-clear-0'));
+    await waitFor(() => {
+      expect(mockApi.git.stashClear).toHaveBeenCalledWith('/Users/me/work/alpha');
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it('shows inline row error when stash action fails', async () => {
+    const user = userEvent.setup();
+    (mockApi.git.getRepoStatus as jest.Mock).mockImplementation(async (repoPath: string) => ({
+      success: true,
+      data: {
+        repoPath,
+        currentBranch: 'main',
+        ahead: 0,
+        behind: 0,
+        modifiedCount: 0,
+        stagedCount: 0,
+        untrackedCount: 0,
+        unmergedCount: 0,
+        stashCount: 1,
+        worktreeCount: 1,
+        fetchedAt: '2026-05-22T00:00:00.000Z',
+      },
+    }));
+    (mockApi.git.stashDrop as jest.Mock).mockResolvedValueOnce({
+      success: false,
+      error: { code: 'X', message: 'drop failed' },
+    } as never);
+
+    render(<WorkspaceBrowserView />);
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-row-stash-drop-0')).toBeEnabled();
+    });
+
+    await user.click(screen.getByTestId('repo-row-stash-drop-0'));
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-row-action-error-0')).toHaveTextContent(/drop failed/i);
+    });
+  });
+
   it('workflow queue primary cleanup action runs and hides item after success', async () => {
     const user = userEvent.setup();
     render(<WorkspaceBrowserView />);
@@ -395,6 +468,134 @@ describe('WorkspaceBrowserView — happy path', () => {
     await user.click(screen.getByTestId('workflow-queue-primary-0'));
     await waitFor(() => {
       expect(screen.getByTestId('workflow-queue-error-0')).toHaveTextContent(/cleanup failed/i);
+    });
+  });
+
+  it('shows a colored branch badge on sync queue cards for behind repos', async () => {
+    const user = userEvent.setup();
+    (mockApi.git.getRepoStatus as jest.Mock).mockImplementation(async (repoPath: string) => {
+      if (repoPath.endsWith('/alpha')) {
+        return {
+          success: true,
+          data: {
+            repoPath,
+            currentBranch: 'hotfix/auth',
+            ahead: 0,
+            behind: 2,
+            modifiedCount: 0,
+            stagedCount: 0,
+            untrackedCount: 0,
+            unmergedCount: 0,
+            stashCount: 0,
+            worktreeCount: 1,
+            fetchedAt: '2026-05-22T00:00:00.000Z',
+          },
+        };
+      }
+      return {
+        success: true,
+        data: {
+          repoPath,
+          currentBranch: 'main',
+          ahead: 0,
+          behind: 0,
+          modifiedCount: 0,
+          stagedCount: 0,
+          untrackedCount: 0,
+          unmergedCount: 0,
+          stashCount: 0,
+          worktreeCount: 1,
+          fetchedAt: '2026-05-22T00:00:00.000Z',
+        },
+      };
+    });
+
+    render(<WorkspaceBrowserView />);
+    await user.click(screen.getByTestId('workspace-tab-workflow'));
+    await waitFor(() => {
+      expect(screen.getByText('alpha is 2 commits behind')).toBeInTheDocument();
+    });
+
+    const syncCard = screen
+      .getByText('alpha is 2 commits behind')
+      .closest('[data-testid^=\"workflow-queue-item-\"]');
+    expect(syncCard).not.toBeNull();
+    const branchBadge = within(syncCard as HTMLElement).getByText('hotfix/auth');
+    expect(branchBadge).toHaveClass('border-rose-500/40');
+  });
+
+  it('pull action rebases current branch and refreshes sync queue item state', async () => {
+    const user = userEvent.setup();
+    let alphaBehind = 4;
+
+    (mockApi.git.getRepoStatus as jest.Mock).mockImplementation(async (repoPath: string) => {
+      if (repoPath.endsWith('/alpha')) {
+        return {
+          success: true,
+          data: {
+            repoPath,
+            currentBranch: 'feature/sync-queue',
+            ahead: 0,
+            behind: alphaBehind,
+            modifiedCount: 0,
+            stagedCount: 0,
+            untrackedCount: 0,
+            unmergedCount: 0,
+            stashCount: 0,
+            worktreeCount: 1,
+            fetchedAt: '2026-05-22T00:00:00.000Z',
+          },
+        };
+      }
+      return {
+        success: true,
+        data: {
+          repoPath,
+          currentBranch: 'main',
+          ahead: 0,
+          behind: 0,
+          modifiedCount: 0,
+          stagedCount: 0,
+          untrackedCount: 0,
+          unmergedCount: 0,
+          stashCount: 0,
+          worktreeCount: 1,
+          fetchedAt: '2026-05-22T00:00:00.000Z',
+        },
+      };
+    });
+
+    (mockApi.git.performRebase as jest.Mock).mockImplementation(async () => {
+      alphaBehind = 0;
+      return {
+        success: true,
+        data: {
+          success: true,
+          message: 'rebased',
+        },
+      };
+    });
+
+    render(<WorkspaceBrowserView />);
+    await user.click(screen.getByTestId('workspace-tab-workflow'));
+    await waitFor(() => {
+      expect(screen.getByText('alpha is 4 commits behind')).toBeInTheDocument();
+    });
+
+    const syncCard = screen
+      .getByText('alpha is 4 commits behind')
+      .closest('[data-testid^=\"workflow-queue-item-\"]');
+    expect(syncCard).not.toBeNull();
+    await user.click(within(syncCard as HTMLElement).getByRole('button', { name: 'Pull' }));
+
+    await waitFor(() => {
+      expect(mockApi.git.performRebase).toHaveBeenCalledWith(
+        '/Users/me/work/alpha',
+        'feature/sync-queue'
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('alpha is 4 commits behind')).not.toBeInTheDocument();
     });
   });
 });

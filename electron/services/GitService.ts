@@ -53,6 +53,15 @@ async function getExeca() {
   return _execa;
 }
 
+function parseUpstreamTrack(track: string): { aheadCount: number; behindCount: number } {
+  const aheadMatch = track.match(/ahead\s+(\d+)/i);
+  const behindMatch = track.match(/behind\s+(\d+)/i);
+  return {
+    aheadCount: aheadMatch ? Number(aheadMatch[1]) : 0,
+    behindCount: behindMatch ? Number(behindMatch[1]) : 0,
+  };
+}
+
 export class GitService extends BaseService {
   /** Optional debug logger — wired in services/index.ts. */
   private debugLog: { warn: (source: string, message: string, details?: unknown) => void } | null = null;
@@ -735,7 +744,10 @@ export class GitService extends BaseService {
         console.warn(`[GitService] fetchRemote skipped — path no longer exists: ${repoPath}`);
         return;
       }
-      await this.git(['fetch', remote, '--prune'], repoPath);
+      await this.git(
+        ['-c', 'fetch.recurseSubmodules=false', 'fetch', '--prune', remote],
+        repoPath
+      );
     }, 'GIT_FETCH_FAILED');
   }
 
@@ -745,7 +757,10 @@ export class GitService extends BaseService {
   async checkRemoteChanges(repoPath: string, branch: string): Promise<IpcResult<{ behind: number; ahead: number }>> {
     return this.wrap(async () => {
       // Fetch first to get latest remote state
-      await this.git(['fetch', 'origin'], repoPath);
+      await this.git(
+        ['-c', 'fetch.recurseSubmodules=false', 'fetch', 'origin'],
+        repoPath
+      );
 
       try {
         const tracking = await this.git(
@@ -777,14 +792,62 @@ export class GitService extends BaseService {
       return true;
     }, 'GIT_STASH_FAILED');
   }
+  /**
+   * List available stashes for a repository.
+   */
+  async listStashes(repoPath: string): Promise<IpcResult<Array<{
+    ref: string;
+    message: string;
+    createdAt: string;
+  }>>> {
+    return this.wrap(async () => {
+      const output = await this.git(
+        ['stash', 'list', '--date=iso-strict', '--format=%gd|%cI|%gs'],
+        repoPath
+      );
+      if (!output.trim()) return [];
+      return output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [ref, createdAt, ...messageParts] = line.split('|');
+          return {
+            ref: ref || 'stash@{0}',
+            createdAt: createdAt || new Date(0).toISOString(),
+            message: messageParts.join('|').trim(),
+          };
+        });
+    }, 'GIT_LIST_STASHES_FAILED');
+  }
 
   /**
    * Pop stashed changes
    */
-  async stashPop(repoPath: string): Promise<IpcResult<void>> {
+  async stashPop(repoPath: string, stashRef?: string): Promise<IpcResult<void>> {
     return this.wrap(async () => {
-      await this.git(['stash', 'pop'], repoPath);
+      const args = ['stash', 'pop'];
+      if (stashRef?.trim()) args.push(stashRef.trim());
+      await this.git(args, repoPath);
     }, 'GIT_STASH_POP_FAILED');
+  }
+
+  /**
+   * Drop a stash entry without applying it.
+   */
+  async stashDrop(repoPath: string, stashRef = 'stash@{0}'): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      await this.git(['stash', 'drop', stashRef], repoPath);
+    }, 'GIT_STASH_DROP_FAILED');
+  }
+
+  /**
+   * Remove all stash entries for a repository.
+   */
+  async stashClear(repoPath: string): Promise<IpcResult<void>> {
+    return this.wrap(async () => {
+      await this.git(['stash', 'clear'], repoPath);
+    }, 'GIT_STASH_CLEAR_FAILED');
   }
 
   /**
@@ -822,7 +885,19 @@ export class GitService extends BaseService {
         }
 
         // Perform the rebase
-        const output = await this.git(['pull', '--rebase', 'origin', targetBranch], repoPath);
+        const output = await this.git(
+          [
+            '-c',
+            'fetch.recurseSubmodules=false',
+            '-c',
+            'submodule.recurse=false',
+            'pull',
+            '--rebase',
+            'origin',
+            targetBranch,
+          ],
+          repoPath
+        );
         console.log(`[GitService] Git pull --rebase output: ${output}`);
 
         // Get HEAD after rebase to verify changes
@@ -943,7 +1018,10 @@ export class GitService extends BaseService {
 
       // 1. Fetch latest - with better error handling
       try {
-        await this.git(['fetch', 'origin', baseBranch], repoPath);
+        await this.git(
+          ['-c', 'fetch.recurseSubmodules=false', 'fetch', 'origin', baseBranch],
+          repoPath
+        );
       } catch (fetchError) {
         const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
         console.error(`[GitService] Fetch failed:`, errorMsg);
@@ -1052,7 +1130,10 @@ export class GitService extends BaseService {
 
       // 1. Fetch latest
       try {
-        await this.git(['fetch', 'origin', baseBranch], repoPath);
+        await this.git(
+          ['-c', 'fetch.recurseSubmodules=false', 'fetch', 'origin', baseBranch],
+          repoPath
+        );
       } catch (fetchError) {
         const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
         console.error(`[GitService] Fetch failed:`, errorMsg);
@@ -1866,7 +1947,7 @@ export class GitService extends BaseService {
           this.git(
             [
               'for-each-ref',
-              '--format=%(refname:short)|%(committerdate:unix)',
+              '--format=%(refname:short)|%(committerdate:unix)|%(upstream:short)|%(upstream:track)',
               'refs/heads',
             ],
             repoPath
@@ -1905,18 +1986,13 @@ export class GitService extends BaseService {
         .map((line) => line.trim())
         .filter(Boolean)
         .map((line) => {
-          const [name, ts] = line.split('|');
+          const [name, ts, upstreamRaw = '', upstreamTrackRaw = ''] = line.split('|');
           const lastCommitMs = Number(ts) > 0 ? Number(ts) * 1000 : 0;
-          // Heuristic: deleted-on-remote = our branch had a tracking remote in
-          // the past (origin/<name> was once a remote), but origin/<name> isn't
-          // present now. We approximate "had remote in the past" by checking
-          // whether origin/<name> is present right now: if NOT present and
-          // origin/HEAD points at <defaultBranch>, only flag user's own
-          // branches that match a known prefix or have no remote at all.
-          // Simplest defensible signal: NOT present in remoteSet AND it's not
-          // the default branch itself.
-          const remoteRef = `origin/${name}`;
-          const deletedOnRemote = !remoteSet.has(remoteRef) && name !== defaultBranch;
+          const upstream = upstreamRaw.trim();
+          const upstreamTrack = upstreamTrackRaw.trim();
+          const { aheadCount, behindCount } = parseUpstreamTrack(upstreamTrack);
+          const hasRemoteTracking = upstream.length > 0 && !upstreamTrack.includes('[gone]');
+          const deletedOnRemote = upstreamTrack.includes('[gone]') || (upstream.length > 0 && !remoteSet.has(upstream));
           return {
             name,
             isCurrent: name === currentBranch,
@@ -1924,6 +2000,10 @@ export class GitService extends BaseService {
             mergedIntoDefault: mergedSet.has(name),
             deletedOnRemote,
             hasWorktree: worktreeBranches.has(name),
+            upstream: upstream || undefined,
+            aheadCount,
+            behindCount,
+            hasRemoteTracking,
           };
         })
         .sort((a, b) => b.lastCommitMs - a.lastCommitMs || a.name.localeCompare(b.name));

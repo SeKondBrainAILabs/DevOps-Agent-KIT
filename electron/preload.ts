@@ -276,6 +276,25 @@ const api = {
     }>> =>
       ipcRenderer.invoke(IPC.GIT_PERFORM_REBASE, repoPath, baseBranch),
 
+    stashList: (repoPath: string): Promise<IpcResult<Array<{
+      ref: string;
+      message: string;
+      createdAt: string;
+    }>>> =>
+      ipcRenderer.invoke(IPC.GIT_STASH_LIST, repoPath),
+
+    stashPop: (repoPath: string, stashRef?: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.GIT_STASH_POP, repoPath, stashRef),
+
+    stashDrop: (repoPath: string, stashRef?: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.GIT_STASH_DROP, repoPath, stashRef),
+
+    stashClear: (repoPath: string): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.GIT_STASH_CLEAR, repoPath),
+
+    deleteBranch: (repoPath: string, branchName: string, deleteRemote?: boolean): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.GIT_DELETE_BRANCH, repoPath, branchName, deleteRemote),
+
     onStatusChanged: (callback: (data: { sessionId: string; status: GitStatus }) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, data: { sessionId: string; status: GitStatus }) => callback(data);
       ipcRenderer.on(IPC.GIT_STATUS_CHANGED, handler);

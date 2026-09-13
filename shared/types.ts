@@ -362,6 +362,14 @@ export interface RepoBranchRow {
   deletedOnRemote: boolean;
   /** True iff a worktree references this branch. */
   hasWorktree: boolean;
+  /** Tracking reference (for example `origin/feature/foo`) when configured. */
+  upstream?: string;
+  /** Commits this branch is ahead of its upstream. */
+  aheadCount?: number;
+  /** Commits this branch is behind its upstream. */
+  behindCount?: number;
+  /** Whether this branch currently has a reachable remote tracking ref. */
+  hasRemoteTracking?: boolean;
 }
 
 /**

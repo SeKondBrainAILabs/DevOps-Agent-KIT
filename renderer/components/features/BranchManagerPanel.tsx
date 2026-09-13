@@ -8,7 +8,7 @@
  * Backend wire: window.api.git.listBranchesForRepo(repoPath)
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RepoBranchRow } from '../../../shared/types';
 import {
   classifyBranch,
@@ -48,30 +48,72 @@ export function BranchManagerPanel({ repoPath }: BranchManagerPanelProps): React
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [chip, setChip] = useState<BranchFilterChip>('all');
+  const [deletingBranchKey, setDeletingBranchKey] = useState<string | null>(null);
+  const [actionErrorsByBranch, setActionErrorsByBranch] = useState<Record<string, string>>({});
+
+  const loadBranches = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await window.api.git.listBranchesForRepo(repoPath);
+      if (result.success && result.data) {
+        setRows(result.data);
+      } else {
+        setError(result.error?.message || 'Failed to list branches');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, [repoPath]);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     void (async () => {
-      try {
-        const result = await window.api.git.listBranchesForRepo(repoPath);
-        if (cancelled) return;
-        if (result.success && result.data) {
-          setRows(result.data);
-        } else {
-          setError(result.error?.message || 'Failed to list branches');
-        }
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      await loadBranches();
+      if (cancelled) return;
     })();
     return () => {
       cancelled = true;
     };
-  }, [repoPath]);
+  }, [loadBranches]);
+
+  const handleDeleteBranch = useCallback(async (
+    row: RepoBranchRow,
+    deleteRemote = false
+  ): Promise<void> => {
+    if (row.isCurrent || row.hasWorktree) return;
+    const scope = deleteRemote ? 'local and remote' : 'local';
+    const confirmed = window.confirm(
+      `Delete ${scope} branch "${row.name}"? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    const actionKey = `${row.name}:${deleteRemote ? 'remote' : 'local'}`;
+    setDeletingBranchKey(actionKey);
+    setActionErrorsByBranch((current) => {
+      if (!(row.name in current)) return current;
+      const next = { ...current };
+      delete next[row.name];
+      return next;
+    });
+
+    try {
+      const result = await window.api.git.deleteBranch(repoPath, row.name, deleteRemote);
+      if (!result.success) {
+        throw new Error(result.error?.message || `Failed to delete ${row.name}`);
+      }
+      await loadBranches();
+    } catch (err) {
+      setActionErrorsByBranch((current) => ({
+        ...current,
+        [row.name]: err instanceof Error ? err.message : 'Branch deletion failed',
+      }));
+    } finally {
+      setDeletingBranchKey((current) => (current === actionKey ? null : current));
+    }
+  }, [loadBranches, repoPath]);
 
   const enriched = useMemo(
     () =>
@@ -145,7 +187,9 @@ export function BranchManagerPanel({ repoPath }: BranchManagerPanelProps): React
               <tr>
                 <th className="text-left p-2">Branch</th>
                 <th className="text-left p-2">Last commit</th>
+                <th className="text-left p-2">Ahead / behind</th>
                 <th className="text-left p-2">Flags</th>
+                <th className="text-left p-2">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -160,6 +204,16 @@ export function BranchManagerPanel({ repoPath }: BranchManagerPanelProps): React
                     {row.name}
                   </td>
                   <td className="p-2 text-text-secondary">{formatRelative(row.lastCommitMs)}</td>
+                  <td className="p-2 text-text-secondary">
+                    <p data-testid={`branch-divergence-${row.name}`}>
+                      {`↑${row.aheadCount ?? 0} · ↓${row.behindCount ?? 0}`}
+                    </p>
+                    <p className="text-[11px] text-text-secondary/80">
+                      {row.deletedOnRemote
+                        ? 'remote gone'
+                        : row.upstream || 'no upstream'}
+                    </p>
+                  </td>
                   <td className="p-2">
                     <div className="flex flex-wrap gap-1">
                       {flags.merged && (
@@ -191,6 +245,46 @@ export function BranchManagerPanel({ repoPath }: BranchManagerPanelProps): React
                         </span>
                       )}
                     </div>
+                  </td>
+                  <td className="p-2">
+                    {row.isCurrent ? (
+                      <span className="text-[11px] text-text-secondary">current branch</span>
+                    ) : row.hasWorktree ? (
+                      <span className="text-[11px] text-text-secondary">in use by worktree</span>
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteBranch(row)}
+                            disabled={deletingBranchKey === `${row.name}:local`}
+                            className="text-[11px] px-2 py-1 rounded border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                            data-testid={`branch-delete-${row.name}`}
+                          >
+                            {deletingBranchKey === `${row.name}:local` ? 'Deleting…' : 'Delete'}
+                          </button>
+                          {row.hasRemoteTracking && !row.deletedOnRemote && (
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteBranch(row, true)}
+                              disabled={deletingBranchKey === `${row.name}:remote`}
+                              className="text-[11px] px-2 py-1 rounded border border-amber-500/40 text-amber-500 hover:bg-amber-500/10 disabled:opacity-50"
+                              data-testid={`branch-delete-remote-${row.name}`}
+                            >
+                              {deletingBranchKey === `${row.name}:remote` ? 'Deleting…' : 'Delete remote'}
+                            </button>
+                          )}
+                        </div>
+                        {actionErrorsByBranch[row.name] && (
+                          <p
+                            className="text-[11px] text-red-500"
+                            data-testid={`branch-action-error-${row.name}`}
+                          >
+                            {actionErrorsByBranch[row.name]}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
