@@ -5,6 +5,12 @@
  */
 
 import { BaseService } from './BaseService';
+import {
+  parseBrokenSubmodulePath,
+  parsePorcelain,
+  planStaging,
+  type StatusEntry,
+} from '../../shared/stage-changes';
 import { IPC } from '../../shared/ipc-channels';
 import type {
   GitStatus,
@@ -26,7 +32,7 @@ import {
   parsePorcelainV2,
 } from '../../shared/repo-status-parser';
 import { promises as fs } from 'fs';
-import { existsSync } from 'fs';
+import { existsSync, statSync, readFileSync } from 'fs';
 import path from 'path';
 
 // Map to track worktree paths by session ID
@@ -307,12 +313,113 @@ export class GitService extends BaseService {
     }, 'GIT_STATUS_FAILED');
   }
 
+  /**
+   * Stage everything, surviving a submodule with a dangling gitdir
+   * (KIT-GIT-S1).
+   *
+   * `git add -A` fails WHOLESALE in that situation: one broken pointer and
+   * nothing stages, including files nowhere near the submodule. Reported from a
+   * real repository where five broken submodules blocked a commit of four
+   * unrelated files with
+   *
+   *   fatal: not a git repository: .../modules/lib/ai-backend/worktrees/ai-backend
+   *
+   * `git add` with explicit paths succeeds on the same tree, so that is the
+   * fallback. The broken submodules are skipped and reported, because staging a
+   * gitlink is exactly what re-enters the broken submodule.
+   *
+   * Returns the submodules it had to skip, so the caller can tell the user its
+   * commit is incomplete rather than letting them assume otherwise.
+   */
+  private async stageAllChanges(cwd: string): Promise<{ skippedSubmodules: string[] }> {
+    const addAll = await this.git(['add', '-A'], cwd).then(
+      (out) => ({ ok: true, stderr: '', out }),
+      (err) => ({ ok: false, stderr: err instanceof Error ? err.message : String(err), out: '' })
+    );
+    if (addAll.ok) return { skippedSubmodules: [] };
+
+    // Only fall back for THIS failure. Any other error is real and must
+    // surface rather than being retried with a weaker command.
+    if (!parseBrokenSubmodulePath(addAll.stderr)) {
+      throw new Error(addAll.stderr || 'git add -A failed');
+    }
+
+    console.warn(
+      `[GitService] 'git add -A' hit a submodule with a dangling gitdir in ${cwd}; ` +
+      'staging changed paths explicitly instead.'
+    );
+
+    const status = await this.git(['status', '--porcelain'], cwd).catch(() => '');
+    const entries = parsePorcelain(status);
+    const broken = await this.findBrokenSubmodules(cwd);
+    const plan = planStaging(entries, broken);
+
+    if (plan.empty) return { skippedSubmodules: plan.skippedSubmodules };
+
+    // In chunks: a large change set can exceed the command-line limit.
+    const CHUNK = 200;
+    for (let i = 0; i < plan.paths.length; i += CHUNK) {
+      await this.git(['add', '--', ...plan.paths.slice(i, i + CHUNK)], cwd);
+    }
+    return { skippedSubmodules: plan.skippedSubmodules };
+  }
+
+  /**
+   * Submodules whose `.git` pointer does not resolve.
+   *
+   * Reads `.gitmodules` rather than `git ls-files --stage`. The index listing
+   * is every file in the repository — 10,081 lines on the repo this was found
+   * on, which overflowed the subprocess buffer with ENOBUFS — while
+   * `.gitmodules` is one line per submodule.
+   */
+  private async findBrokenSubmodules(cwd: string): Promise<Set<string>> {
+    const broken = new Set<string>();
+    let listing = '';
+    try {
+      listing = await this.git(
+        ['config', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$'],
+        cwd
+      );
+    } catch {
+      return broken; // no .gitmodules, or none configured
+    }
+
+    for (const line of listing.split('\n')) {
+      // "submodule.<name>.path <path>"
+      const sm = line.trim().split(/\s+/).slice(1).join(' ').trim();
+      if (!sm) continue;
+
+      const dotGit = path.join(cwd, sm, '.git');
+      if (!existsSync(dotGit)) {
+        // Absent entirely: an uninitialised submodule. `add -A` copes with
+        // that, so it is NOT broken for our purposes.
+        continue;
+      }
+      try {
+        if (statSync(dotGit).isDirectory()) continue; // a real repo, fine
+        const target = readFileSync(dotGit, 'utf-8').trim().replace(/^gitdir:\s*/, '');
+        const abs = path.isAbsolute(target) ? target : path.join(cwd, sm, target);
+        if (!existsSync(abs)) broken.add(sm);
+      } catch {
+        broken.add(sm);
+      }
+    }
+    return broken;
+  }
+
   async commit(sessionId: string, message: string, repoName?: string): Promise<IpcResult<GitCommit>> {
     return this.wrap(async () => {
       const cwd = this.getWorkingDir(sessionId, repoName);
 
-      // Stage all changes
-      await this.git(['add', '-A'], cwd);
+      // Stage all changes. Survives a submodule with a dangling gitdir, which
+      // otherwise fails `add -A` wholesale and blocks unrelated files.
+      const staged = await this.stageAllChanges(cwd);
+      if (staged.skippedSubmodules.length > 0) {
+        console.warn(
+          `[GitService] commit skipped ${staged.skippedSubmodules.length} broken submodule(s): ` +
+          staged.skippedSubmodules.join(', ')
+        );
+      }
 
       // Commit
       await this.git(['commit', '-m', message], cwd);
@@ -431,7 +538,7 @@ export class GitService extends BaseService {
     return this.wrap(async () => {
       const status = await this.git(['status', '--porcelain'], worktreePath);
       if (!status.trim()) return { committed: false };
-      await this.git(['add', '-A'], worktreePath);
+      await this.stageAllChanges(worktreePath);
       await this.git(['commit', '-m', message], worktreePath);
       const hash = (await this.git(['rev-parse', 'HEAD'], worktreePath)).trim();
       return { committed: true, hash };

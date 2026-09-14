@@ -1383,6 +1383,12 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
   const [showChanges, setShowChanges] = useState(false);
 
   const openPr = prs.find((p) => String(p.state).toUpperCase() === 'OPEN');
+  // A review request is a claim made once, when the agent finished. It does not
+  // know what happened afterwards. If the branch has a merged pull request and
+  // nothing open, the work landed — keep offering Merge and the tab is telling
+  // the user something that is no longer true.
+  const mergedPr = prs.find((p) => String(p.state).toUpperCase() === 'MERGED');
+  const landed = Boolean(mergedPr) && !openPr;
 
   const loadPrs = React.useCallback(async () => {
     if (!worktree || !session.branchName) return;
@@ -1487,7 +1493,7 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-violet-700">
-                Ready for review
+                {landed ? 'Merged' : 'Ready for review'}
               </p>
               <h3 className="text-base font-semibold text-text-primary mt-0.5 truncate">
                 {session.branchName}
@@ -1519,7 +1525,19 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
             </div>
           </div>
 
-          {!openPr && review.prStatus && (
+          {landed && (
+            <div className="rounded-[10px] border border-violet-500/30 bg-violet-500/5 p-3">
+              <p className="text-xs font-medium text-violet-800 mb-1">
+                Already merged via #{mergedPr?.number}
+              </p>
+              <p className="text-xs text-text-secondary leading-snug">
+                This branch has a merged pull request and nothing open, so the work has
+                landed. The handover below is kept for reference.
+              </p>
+            </div>
+          )}
+
+          {!openPr && !landed && review.prStatus && (
             <div className="rounded-[10px] border border-amber-500/30 bg-amber-500/5 p-3">
               <p className="text-xs font-medium text-amber-800 mb-1">No open pull request</p>
               <p className="text-xs text-text-secondary leading-snug">
@@ -1548,11 +1566,19 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => void runMerge()}
-              disabled={busy !== null}
+              disabled={busy !== null || landed}
               className="btn-primary text-sm px-3 py-1.5"
-              title={`Merge ${session.branchName} into ${session.baseBranch}`}
+              title={
+                landed
+                  ? `Already merged via #${mergedPr?.number}`
+                  : `Merge ${session.branchName} into ${session.baseBranch}`
+              }
             >
-              {busy === 'merge' ? 'Merging…' : `Merge into ${session.baseBranch}`}
+              {busy === 'merge'
+                ? 'Merging…'
+                : landed
+                  ? 'Already merged'
+                  : `Merge into ${session.baseBranch}`}
             </button>
 
             <button

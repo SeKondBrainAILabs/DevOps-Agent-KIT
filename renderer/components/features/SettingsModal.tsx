@@ -82,6 +82,27 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   } | null>(null);
   const [isInstallingMcp, setIsInstallingMcp] = useState<string | null>(null);
   const [manualSetupOpen, setManualSetupOpen] = useState(false);
+
+  // Agent session policy (KIT-MCP-G2b). The per-repo cap defaulted to 4, which
+  // is the number people hit first when fanning out.
+  const [sessionPolicy, setSessionPolicy] = useState<{
+    enabled: boolean; maxConcurrentGlobal: number; maxConcurrentPerRepo: number;
+  } | null>(null);
+  const [policySaving, setPolicySaving] = useState(false);
+
+  const saveSessionPolicy = async (patch: {
+    enabled?: boolean; maxConcurrentGlobal?: number; maxConcurrentPerRepo?: number;
+  }): Promise<void> => {
+    setPolicySaving(true);
+    try {
+      // The main process clamps and returns what it actually stored, so the
+      // inputs snap to the stored value rather than showing what was typed.
+      const r = await window.api.mcp?.setAgentSessionPolicy?.(patch);
+      if (r?.success && r.data) setSessionPolicy(r.data as any);
+    } finally {
+      setPolicySaving(false);
+    }
+  };
   const [mcpJsonCopied, setMcpJsonCopied] = useState<string | null>(null);
 
   // Version management state
@@ -424,6 +445,9 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
           <button
             onClick={() => {
               setActiveTab('mcp');
+              window.api.mcp?.getAgentSessionCount?.().then((r: any) => {
+                if (r?.success && r.data?.limits) setSessionPolicy(r.data.limits);
+              });
               // Load MCP status when switching to tab
               window.api?.mcp?.status?.().then((result) => {
                 if (result?.success && result.data) setMcpStatus(result.data);
@@ -902,6 +926,73 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
 
           {activeTab === 'mcp' && (
             <>
+              {/* Agent session policy */}
+              <div className="space-y-3 mb-6">
+                <h3 className="text-sm font-medium text-gray-200">Agent-created sessions</h3>
+                <p className="text-xs text-gray-400">
+                  How many KIT sessions an agent may have running at once. Each session is a
+                  git worktree with its own file watcher, so these are machine-protection
+                  limits rather than preferences.
+                </p>
+
+                <div className="bg-surface-tertiary rounded-lg p-3 space-y-3">
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-gray-300">Allow agents to create sessions</span>
+                    <input
+                      type="checkbox"
+                      checked={sessionPolicy?.enabled ?? true}
+                      disabled={!sessionPolicy || policySaving}
+                      onChange={(e) => void saveSessionPolicy({ enabled: e.target.checked })}
+                      className="accent-accent"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-gray-300">
+                      Max per repository
+                      <span className="block text-[11px] text-gray-500">
+                        The one most people hit first. Default 4.
+                      </span>
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={sessionPolicy?.maxConcurrentPerRepo ?? 4}
+                      disabled={!sessionPolicy || policySaving}
+                      onChange={(e) =>
+                        void saveSessionPolicy({ maxConcurrentPerRepo: Number(e.target.value) })
+                      }
+                      className="w-20 text-sm rounded-md border border-[rgba(0,0,0,0.15)] px-2 py-1 text-right"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-gray-300">
+                      Max across all repositories
+                      <span className="block text-[11px] text-gray-500">Default 8.</span>
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={sessionPolicy?.maxConcurrentGlobal ?? 8}
+                      disabled={!sessionPolicy || policySaving}
+                      onChange={(e) =>
+                        void saveSessionPolicy({ maxConcurrentGlobal: Number(e.target.value) })
+                      }
+                      className="w-20 text-sm rounded-md border border-[rgba(0,0,0,0.15)] px-2 py-1 text-right"
+                    />
+                  </label>
+
+                  <p className="text-[11px] text-gray-500 leading-snug">
+                    Values are clamped to 1-200. Zero would refuse every session rather than
+                    meaning unlimited — use the toggle above to stop agents entirely.
+                    Lowering a cap never closes sessions that are already running.
+                  </p>
+                </div>
+              </div>
+
               {/* MCP Server Status */}
               <div className="space-y-3">
                 <h3 className="text-sm font-medium text-gray-200">MCP Server</h3>
