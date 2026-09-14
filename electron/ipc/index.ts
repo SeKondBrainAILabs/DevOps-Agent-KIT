@@ -76,6 +76,21 @@ function lockRootForSession(services: Services, sessionId: string): string | und
   return inst?.config?.repoPath;
 }
 
+/** Resolve the KIT instance owning a branch, for review-state bookkeeping. */
+function findInstanceByBranch(
+  services: Services,
+  branchName: string,
+  repoPath?: string
+): { sessionId?: string } | undefined {
+  const listed = services.agentInstance.listInstances();
+  if (!listed.success || !listed.data) return undefined;
+  return listed.data.find(
+    (i: any) =>
+      i?.config?.branchName === branchName &&
+      (!repoPath || i?.config?.repoPath === repoPath || i?.worktreePath?.startsWith(repoPath))
+  );
+}
+
 export function registerIpcHandlers(services: Services, mainWindow: BrowserWindow): void {
   console.log('[IPC] Registering IPC handlers...');
   // Remove existing handlers first (for HMR support)
@@ -1377,8 +1392,24 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     deleteRemoteBranch?: boolean;
     worktreePath?: string;
     skipCiGate?: boolean;
+    via?: 'auto' | 'pr' | 'direct';
   }) => {
-    return services.merge.executeMerge(repoPath, sourceBranch, targetBranch, options);
+    const result = await services.merge.executeMerge(repoPath, sourceBranch, targetBranch, options);
+
+    // An outstanding review request is answered by the merge. Cleared HERE, at
+    // the single choke point both the Review tab and the merge modal go
+    // through, rather than in either caller — otherwise the card survives a
+    // merge done from the other one.
+    //
+    // NOT cleared when the merge was delivered as a pull request: the review is
+    // still outstanding until someone merges that PR, and clearing would hide
+    // the session precisely when it needs attention.
+    if (result?.success && (result.data as any)?.deliveredVia !== 'pr') {
+      const inst = findInstanceByBranch(services, sourceBranch, repoPath);
+      if (inst?.sessionId) services.agentInstance.clearReviewRequest(inst.sessionId);
+    }
+
+    return result;
   });
 
   ipcMain.handle(IPC.MERGE_ABORT, async (_, repoPath: string) => {

@@ -1040,3 +1040,4 @@ describe('SessionOrchestrator.closeSessions', () => {
     });
   });
 });
+

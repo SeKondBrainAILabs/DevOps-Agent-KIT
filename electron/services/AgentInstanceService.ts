@@ -3851,6 +3851,10 @@ ${DEVOPS_KIT_DIR}/
     instance.status = 'closed' as AgentInstance['status'];
     instance.closedAt = new Date().toISOString();
     if (opts.reason) instance.closeReason = opts.reason;
+    // A closed session has no outstanding review. Leaving the request set keeps
+    // the session in the "ready for review" list forever, asking for a decision
+    // that can no longer be made.
+    delete instance.reviewRequest;
 
     this.saveInstances();
     this.emitStatusChange(instance);

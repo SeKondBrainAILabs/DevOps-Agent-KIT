@@ -60,6 +60,26 @@ export const DEFAULT_SESSION_LIMITS: SessionLimits = {
  * without new plumbing. `setSetting` deliberately is NOT exposed there: an
  * agent must not be able to raise its own cap.
  */
+/**
+ * Bounds for a user-editable concurrency cap (KIT-MCP-G2b).
+ *
+ * `min` is 1, not 0. Zero does not mean "unlimited" — it means every admission
+ * fails, and someone who typed it into a settings box would have no idea why
+ * sessions stopped being created. If they want none, the kill switch says that
+ * explicitly.
+ *
+ * `max` is a typo guard rather than a judgement: each session is a worktree, a
+ * watcher and a chokidar tree, so five figures is a slip, not a capacity plan.
+ */
+export const SESSION_LIMIT_BOUNDS = { min: 1, max: 200 } as const;
+
+/** Coerce a user-supplied cap into something admission can actually use. */
+export function clampSessionLimit(value: number, fallback = 1): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(SESSION_LIMIT_BOUNDS.max, Math.max(SESSION_LIMIT_BOUNDS.min, Math.round(n)));
+}
+
 export const SESSION_LIMIT_SETTING_KEYS = {
   enabled: 'mcp.session_create.enabled',
   maxConcurrentGlobal: 'mcp.session_create.max_concurrent_global',

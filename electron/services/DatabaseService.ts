@@ -16,6 +16,8 @@ import type { ActivityLogEntry, LogType, TerminalLogEntry, TerminalLogLevel, Ipc
 import {
   readSessionLimits,
   SESSION_LIMIT_SETTING_KEYS,
+  clampSessionLimit,
+  DEFAULT_SESSION_LIMITS,
   type SessionLimits,
 } from '../../shared/session-admission';
 
@@ -563,16 +565,19 @@ export class DatabaseService extends BaseService {
     if (patch.enabled !== undefined) {
       this.setSetting(SESSION_LIMIT_SETTING_KEYS.enabled, patch.enabled);
     }
+    // Clamped, because these are user-editable now. An unvalidated 0 does not
+    // mean "unlimited" — it refuses every session, and whoever typed it would
+    // have no way to connect the two.
     if (patch.maxConcurrentGlobal !== undefined) {
       this.setSetting(
         SESSION_LIMIT_SETTING_KEYS.maxConcurrentGlobal,
-        patch.maxConcurrentGlobal
+        clampSessionLimit(patch.maxConcurrentGlobal, DEFAULT_SESSION_LIMITS.maxConcurrentGlobal)
       );
     }
     if (patch.maxConcurrentPerRepo !== undefined) {
       this.setSetting(
         SESSION_LIMIT_SETTING_KEYS.maxConcurrentPerRepo,
-        patch.maxConcurrentPerRepo
+        clampSessionLimit(patch.maxConcurrentPerRepo, DEFAULT_SESSION_LIMITS.maxConcurrentPerRepo)
       );
     }
     return this.getSessionLimits();
