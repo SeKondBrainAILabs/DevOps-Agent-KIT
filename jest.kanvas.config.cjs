@@ -13,8 +13,13 @@ module.exports = {
   testPathIgnorePatterns: [
     '/node_modules/',
     '/dist/',
-    '/.claude/worktrees/',
-    '/.worktrees/',
+    // Anchored to <rootDir>, matching the modulePathIgnorePatterns entries
+    // below. An unanchored '/.claude/worktrees/' matches anywhere in the
+    // absolute path — including when rootDir IS such a worktree, which is
+    // where agents actually run. Every test was then ignored and the run
+    // reported "0 matches" rather than failing.
+    '<rootDir>/.claude/worktrees/',
+    '<rootDir>/.worktrees/',
     '/tests/kanvas/fixtures/',
     // These two integration suites are authored for Vitest (they `import from
     // 'vitest'`), not Jest. Running them under Jest fails at module resolution.
