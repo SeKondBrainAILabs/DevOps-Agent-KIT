@@ -7,6 +7,7 @@
 // ─── Main → Worker Commands ───────────────────────────────────────
 
 export type WorkerCommand =
+  | ConfigureWorkerCommand
   | StartFileMonitorCommand
   | StopFileMonitorCommand
   | StartRebaseMonitorCommand
@@ -18,6 +19,11 @@ export type WorkerCommand =
   | StartKanvasHeartbeatCommand
   | StopKanvasHeartbeatCommand
   | PingCommand;
+
+export interface ConfigureWorkerCommand {
+  type: 'configure';
+  gitPath: string;
+}
 
 export interface StartFileMonitorCommand {
   type: 'start-file-monitor';

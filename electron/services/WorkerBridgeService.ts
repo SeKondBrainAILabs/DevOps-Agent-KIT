@@ -14,6 +14,7 @@
 
 import { utilityProcess, type UtilityProcess } from 'electron';
 import { join } from 'path';
+import { execSync } from 'child_process';
 import { BaseService } from './BaseService';
 import { IPC } from '../../shared/ipc-channels';
 import type { WorkerCommand, WorkerEvent } from '../worker/worker-protocol';
@@ -98,8 +99,23 @@ export class WorkerBridgeService extends BaseService {
 
   // ─── Worker management ────────────────────────────────────────
 
+  /** Resolve the full path to the git binary. Falls back to 'git' if not found. */
+  private resolveGitPath(): string {
+    try {
+      const result = execSync('which git', { encoding: 'utf8' }).trim();
+      if (result) return result;
+    } catch {
+      // which failed — git may not be on PATH
+    }
+    return 'git'; // Fallback — may still fail in utility process
+  }
+
   private spawn(): void {
     if (this.isDisposed) return;
+
+    // Resolve git path in main process (has full PATH) before spawning worker
+    const gitPath = this.resolveGitPath();
+    console.log(`[WorkerBridge] Resolved git binary: ${gitPath}`);
 
     // Resolve worker path relative to this file's compiled location
     // In production: dist/electron/index.js → dist/electron/monitor-worker.js
@@ -122,6 +138,9 @@ export class WorkerBridgeService extends BaseService {
       });
 
       this.startHealthCheck();
+
+      // Send git path configuration as the first command
+      this.sendCommand({ type: 'configure', gitPath });
     } catch (err) {
       console.error('[WorkerBridge] Failed to spawn utility process:', err);
       // Will not retry automatically — this is a fatal setup error
@@ -188,14 +207,15 @@ export class WorkerBridgeService extends BaseService {
         this.restartCount = 0;
         this.lastPongTs = Date.now();
 
-        // Replay active monitor configs
-        this.replayActiveCommands();
-
-        // Flush pending commands
+        // Flush pending commands first (includes 'configure' which must
+        // arrive before any monitor start commands that depend on it)
         for (const cmd of this.pendingCommands) {
           this.sendCommand(cmd);
         }
         this.pendingCommands = [];
+
+        // Replay active monitor configs
+        this.replayActiveCommands();
 
         this.onWorkerReady?.(event.pid);
         this.emitStatusToRenderer();
