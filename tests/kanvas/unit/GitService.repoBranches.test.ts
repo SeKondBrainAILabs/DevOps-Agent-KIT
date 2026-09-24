@@ -32,7 +32,11 @@ describe('GitService.listBranchesForRepo (Day 2)', () => {
     queueOk('origin/main'); // symbolic-ref refs/remotes/origin/HEAD
     queueOk(
       // for-each-ref refs/heads
-      ['main|1700000000', 'feat/login|1700100000', 'feat/old|1640000000'].join('\n')
+      [
+        'main|1700000000||',
+        'feat/login|1700100000|origin/feat/login|[ahead 2, behind 1]',
+        'feat/old|1640000000|origin/feat/old|[gone]',
+      ].join('\n')
     );
     queueOk('feat/login'); // current branch
     queueOk('main\nfeat/old'); // merged into default
@@ -60,22 +64,34 @@ describe('GitService.listBranchesForRepo (Day 2)', () => {
     expect(main.mergedIntoDefault).toBe(true);
     expect(main.deletedOnRemote).toBe(false);
     expect(main.hasWorktree).toBe(true);
+    expect(main.upstream).toBeUndefined();
+    expect(main.aheadCount).toBe(0);
+    expect(main.behindCount).toBe(0);
+    expect(main.hasRemoteTracking).toBe(false);
 
     const featLogin = rows.find((r) => r.name === 'feat/login')!;
     expect(featLogin.isCurrent).toBe(true);
     expect(featLogin.mergedIntoDefault).toBe(false);
     expect(featLogin.deletedOnRemote).toBe(false);
     expect(featLogin.hasWorktree).toBe(true);
+    expect(featLogin.upstream).toBe('origin/feat/login');
+    expect(featLogin.aheadCount).toBe(2);
+    expect(featLogin.behindCount).toBe(1);
+    expect(featLogin.hasRemoteTracking).toBe(true);
 
     const featOld = rows.find((r) => r.name === 'feat/old')!;
     expect(featOld.mergedIntoDefault).toBe(true);
-    expect(featOld.deletedOnRemote).toBe(true); // not in remoteSet, not the default
+    expect(featOld.deletedOnRemote).toBe(true);
     expect(featOld.hasWorktree).toBe(false);
+    expect(featOld.upstream).toBe('origin/feat/old');
+    expect(featOld.aheadCount).toBe(0);
+    expect(featOld.behindCount).toBe(0);
+    expect(featOld.hasRemoteTracking).toBe(false);
   });
 
   it('falls back to "main" as default when origin/HEAD is missing', async () => {
     queueErr('no remote head'); // symbolic-ref fails
-    queueOk('main|1700000000');
+    queueOk('main|1700000000||');
     queueOk('main');
     queueOk('main');
     queueOk('');
@@ -87,7 +103,7 @@ describe('GitService.listBranchesForRepo (Day 2)', () => {
 
   it('still returns rows even when several sub-calls fail', async () => {
     queueOk('origin/main'); // default ok
-    queueOk('feat/x|1700100000\nmain|1700000000'); // for-each-ref ok
+    queueOk('feat/x|1700100000||\nmain|1700000000||'); // for-each-ref ok
     queueErr('detached'); // current
     queueErr('merged-fail'); // merged
     queueErr('remote-fail'); // remote refs
@@ -98,12 +114,13 @@ describe('GitService.listBranchesForRepo (Day 2)', () => {
     // All hygiene flags conservative on failure paths.
     expect(result.data?.[0].isCurrent).toBe(false);
     expect(result.data?.[0].hasWorktree).toBe(false);
+    expect(result.data?.[0].deletedOnRemote).toBe(false);
   });
 
   it('sorts branches by lastCommitMs descending then name asc', async () => {
     queueOk('origin/main');
     queueOk(
-      ['zed|1700000001', 'alpha|1700000001', 'mid|1700000000'].join('\n')
+      ['zed|1700000001||', 'alpha|1700000001||', 'mid|1700000000||'].join('\n')
     );
     queueOk('alpha');
     queueOk('');

@@ -73,6 +73,7 @@ type WorkflowActionKind =
   | 'open-repo-detail'
   | 'open-terminal'
   | 'new-session'
+  | 'pull-current-branch'
   | 'copy-repo-cleanup-command'
   | 'copy-abandoned-worktree-command'
   | 'clean-abandoned-worktree'
@@ -82,6 +83,7 @@ interface WorkflowActionDefinition {
   kind: WorkflowActionKind;
   label: string;
   repoPath?: string;
+  branchName?: string;
   abandonedWorktree?: AbandonedWorktreeEntry;
 }
 
@@ -92,6 +94,7 @@ interface WorkflowQueueItem {
   impactLabel: string;
   score: number;
   category: WorkflowQueueCategory;
+  branchName?: string;
   primaryAction: WorkflowActionDefinition;
   secondaryActions?: WorkflowActionDefinition[];
 }
@@ -419,6 +422,9 @@ interface RepoInsightRowProps {
   openRepoDetail: (path: string) => void;
   openCreateAgentWizardForRepo: (path: string) => void;
   openCreateAgentWizardWithTask: (path: string, task: string) => void;
+  repoAction: string | null;
+  repoActionError: string | undefined;
+  onStashAction: (repoPath: string, action: 'drop-latest' | 'clear-all') => void;
   onOpenBranchCleanup: (repoPath: string) => void;
 }
 
@@ -452,7 +458,8 @@ function parseResolveCommands(text: string): ResolveCommand[] {
 
 function RepoInsightRow({
   repo, index, status, healthSnapshot, isLast,
-  openRepoDetail, openCreateAgentWizardForRepo, openCreateAgentWizardWithTask, onOpenBranchCleanup,
+  openRepoDetail, openCreateAgentWizardForRepo, openCreateAgentWizardWithTask,
+  repoAction, repoActionError, onStashAction, onOpenBranchCleanup,
 }: RepoInsightRowProps): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
   const [resolveOpen, setResolveOpen] = useState(false);
@@ -545,9 +552,10 @@ COMMAND: git <command here>
 COMMAND: git <command here>`;
 
     try {
+      const nowIso = new Date().toISOString();
       const result = await window.api.ai?.chat([
-        { role: 'system', content: systemMessage },
-        { role: 'user', content: userMessage },
+        { id: `resolve-sys-${repo.path}`, role: 'system', content: systemMessage, timestamp: nowIso },
+        { id: `resolve-user-${repo.path}`, role: 'user', content: userMessage, timestamp: nowIso },
       ]);
       if (result?.success) {
         setResolveText(result.data ?? '');
@@ -684,6 +692,25 @@ COMMAND: git <command here>`;
           <button type="button" onClick={() => window.api.shell?.openTerminal?.(repo.path)} className="kb-btn-sm" data-testid={`repo-row-terminal-${index}`}>Terminal</button>
           <button type="button" onClick={() => openCreateAgentWizardForRepo(repo.path)} className="kb-btn-sm" data-testid={`repo-row-session-${index}`}>New session</button>
           <button type="button" onClick={() => onOpenBranchCleanup(repo.path)} className="kb-btn-sm" data-testid={`repo-row-branches-${index}`} title="View and clean up stale branches">Branches</button>
+          <button
+            type="button"
+            onClick={() => onStashAction(repo.path, 'drop-latest')}
+            disabled={stashCount === 0 || repoAction !== null}
+            className="kb-btn-sm disabled:opacity-50"
+            data-testid={`repo-row-stash-drop-${index}`}
+          >
+            {repoAction === 'drop-latest' ? 'Dropping…' : 'Drop stash'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onStashAction(repo.path, 'clear-all')}
+            disabled={stashCount === 0 || repoAction !== null}
+            className="kb-btn-sm disabled:opacity-50"
+            style={{ color: '#dc2626', borderColor: 'rgba(220,38,38,0.4)' }}
+            data-testid={`repo-row-stash-clear-${index}`}
+          >
+            {repoAction === 'clear-all' ? 'Clearing…' : 'Clear stashes'}
+          </button>
           {hasIssues && (
             <button
               type="button"
@@ -706,6 +733,14 @@ COMMAND: git <command here>`;
           >
             {expanded ? '▴' : '▾'}
           </button>
+          {repoActionError && (
+            <p
+              style={{ width: '100%', textAlign: 'right', fontSize: '0.68rem', color: '#dc2626', marginTop: '0.2rem' }}
+              data-testid={`repo-row-action-error-${index}`}
+            >
+              {repoActionError}
+            </p>
+          )}
         </div>
       </div>
 
@@ -881,6 +916,23 @@ COMMAND: git <command here>`;
   );
 }
 
+function workflowBranchBadgeClasses(branchName: string): string {
+  const normalized = branchName.toLowerCase();
+  if (normalized === 'main' || normalized === 'master') {
+    return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500';
+  }
+  if (normalized === 'develop' || normalized === 'development') {
+    return 'border-violet-500/40 bg-violet-500/10 text-violet-500';
+  }
+  if (normalized.startsWith('release/')) {
+    return 'border-amber-500/40 bg-amber-500/10 text-amber-500';
+  }
+  if (normalized.startsWith('hotfix/')) {
+    return 'border-rose-500/40 bg-rose-500/10 text-rose-500';
+  }
+  return 'border-sky-500/40 bg-sky-500/10 text-sky-500';
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -909,6 +961,8 @@ export function WorkspaceBrowserView(): React.ReactElement {
   const [snoozedUntilByWorkflowItemId, setSnoozedUntilByWorkflowItemId] = useState<Record<string, string>>({});
   const [workflowActionInFlightItemId, setWorkflowActionInFlightItemId] = useState<string | null>(null);
   const [workflowActionErrorsByItemId, setWorkflowActionErrorsByItemId] = useState<Record<string, string>>({});
+  const [repoActionInFlightByPath, setRepoActionInFlightByPath] = useState<Record<string, string | null>>({});
+  const [repoActionErrorsByPath, setRepoActionErrorsByPath] = useState<Record<string, string>>({});
   const [workspaceMutationPendingId, setWorkspaceMutationPendingId] = useState<string | null>(null);
   const [workspaceManagerExpanded, setWorkspaceManagerExpanded] = useState(false);
   const [statusByPath, setStatusByPath] = useState<Record<string, RepoStatusBlock>>({});
@@ -1063,6 +1117,70 @@ export function WorkspaceBrowserView(): React.ReactElement {
     return () => { cancelled = true; };
   }, [repos, recentReposFallback, workspaces.length]);
 
+  const refreshRepoStatus = useCallback(async (repoPath: string): Promise<void> => {
+    const statusResult = await window.api.git.getRepoStatus(repoPath);
+    if (!statusResult.success || !statusResult.data) return;
+    const status = statusResult.data;
+    setStatusByPath((current) => ({
+      ...current,
+      [repoPath]: {
+        ...(current[repoPath] ?? {}),
+        currentBranch: status.currentBranch,
+        ahead: status.ahead,
+        behind: status.behind,
+        unmergedCount: status.unmergedCount,
+        modifiedCount: status.modifiedCount,
+        stagedCount: status.stagedCount,
+        untrackedCount: status.untrackedCount,
+        stashCount: status.stashCount,
+        worktreeCount: status.worktreeCount,
+      },
+    }));
+  }, []);
+
+  const handleRepoStashAction = useCallback(async (
+    repoPath: string,
+    action: 'drop-latest' | 'clear-all'
+  ): Promise<void> => {
+    if (action === 'clear-all') {
+      const confirmed = window.confirm('Clear all stashes for this repository? This cannot be undone.');
+      if (!confirmed) return;
+    }
+
+    setRepoActionInFlightByPath((current) => ({ ...current, [repoPath]: action }));
+    setRepoActionErrorsByPath((current) => {
+      if (!(repoPath in current)) return current;
+      const next = { ...current };
+      delete next[repoPath];
+      return next;
+    });
+
+    try {
+      if (action === 'drop-latest') {
+        const dropResult = await window.api.git.stashDrop(repoPath, 'stash@{0}');
+        if (!dropResult.success) {
+          throw new Error(dropResult.error?.message || 'Failed to drop latest stash');
+        }
+      } else {
+        const clearResult = await window.api.git.stashClear(repoPath);
+        if (!clearResult.success) {
+          throw new Error(clearResult.error?.message || 'Failed to clear stashes');
+        }
+      }
+      await refreshRepoStatus(repoPath);
+    } catch (err) {
+      setRepoActionErrorsByPath((current) => ({
+        ...current,
+        [repoPath]: err instanceof Error ? err.message : 'Stash action failed',
+      }));
+    } finally {
+      setRepoActionInFlightByPath((current) => ({ ...current, [repoPath]: null }));
+    }
+  }, [refreshRepoStatus]);
+
+  // When no workspace exists, the recent-repos fallback drives the grid
+  // so the user immediately sees their work — even before they configure
+  // a real workspace folder.
   const showingFallback = workspaces.length === 0 && recentReposFallback.length > 0;
   const sourceRepos = showingFallback ? recentReposFallback : repos;
 
@@ -1497,11 +1615,15 @@ export function WorkspaceBrowserView(): React.ReactElement {
     }
 
     const behindRepos = sourceRepos
-      .map((repo) => ({ repo, behind: statusByPath[repo.path]?.behind ?? 0 }))
+      .map((repo) => ({
+        repo,
+        behind: statusByPath[repo.path]?.behind ?? 0,
+        currentBranch: statusByPath[repo.path]?.currentBranch ?? 'unknown',
+      }))
       .filter((row) => row.behind > 0)
       .sort((a, b) => b.behind - a.behind)
       .slice(0, 4);
-    for (const { repo, behind } of behindRepos) {
+    for (const { repo, behind, currentBranch } of behindRepos) {
       items.push({
         id: `sync:behind:${repo.path}`,
         title: `${repo.name} is ${behind} commit${behind === 1 ? '' : 's'} behind`,
@@ -1509,8 +1631,25 @@ export function WorkspaceBrowserView(): React.ReactElement {
         impactLabel: 'Merge risk reduction',
         score: 170 + Math.min(40, behind * 3),
         category: 'sync',
-        primaryAction: { kind: 'open-repo-detail', label: 'Open repo', repoPath: repo.path },
-        secondaryActions: [{ kind: 'open-terminal', label: 'Open terminal', repoPath: repo.path }],
+        branchName: currentBranch,
+        primaryAction: {
+          kind: 'open-repo-detail',
+          label: 'Open repo',
+          repoPath: repo.path,
+        },
+        secondaryActions: [
+          {
+            kind: 'pull-current-branch',
+            label: 'Pull',
+            repoPath: repo.path,
+            branchName: currentBranch,
+          },
+          {
+            kind: 'open-terminal',
+            label: 'Open terminal',
+            repoPath: repo.path,
+          },
+        ],
       });
     }
 
@@ -1618,6 +1757,17 @@ export function WorkspaceBrowserView(): React.ReactElement {
       } else if (action.kind === 'open-terminal') {
         if (!action.repoPath) throw new Error('No repository selected');
         await window.api.shell?.openTerminal?.(action.repoPath);
+      } else if (action.kind === 'pull-current-branch') {
+        if (!action.repoPath) throw new Error('No repository selected');
+        const targetBranch = action.branchName?.trim();
+        if (!targetBranch || targetBranch === 'unknown') {
+          throw new Error('Cannot pull because current branch is unknown');
+        }
+        const pullResult = await window.api.git.performRebase(action.repoPath, targetBranch);
+        if (!pullResult.success || !pullResult.data?.success) {
+          throw new Error(pullResult.error?.message || pullResult.data?.message || 'Failed to pull latest changes');
+        }
+        await refreshRepoStatus(action.repoPath);
       } else if (action.kind === 'new-session') {
         if (!action.repoPath) throw new Error('No repository selected');
         openCreateAgentWizardForRepo(action.repoPath);
@@ -1654,6 +1804,7 @@ export function WorkspaceBrowserView(): React.ReactElement {
     handleCleanMissingPathWorktreeRefs,
     worktreeSafetyByPath,
     buildAbandonedWorktreeKey,
+    refreshRepoStatus,
   ]);
 
   // ---------------------------------------------------------------------------
@@ -1911,6 +2062,9 @@ export function WorkspaceBrowserView(): React.ReactElement {
                       openRepoDetail={openRepoDetail}
                       openCreateAgentWizardForRepo={openCreateAgentWizardForRepo}
                       openCreateAgentWizardWithTask={openCreateAgentWizardWithTask}
+                      repoAction={repoActionInFlightByPath[repo.path] ?? null}
+                      repoActionError={repoActionErrorsByPath[repo.path]}
+                      onStashAction={handleRepoStashAction}
                       onOpenBranchCleanup={(path) => setStaleBranchesRepoPath(path)}
                     />
                   ))}
@@ -1973,6 +2127,15 @@ export function WorkspaceBrowserView(): React.ReactElement {
                                 {workflowCategoryLabel(item.category)}
                               </span>
                               <span className="text-[0.68rem] text-[rgba(0,0,0,0.45)]">{item.impactLabel}</span>
+                              {item.branchName && (
+                                <span
+                                  className={`text-[0.68rem] px-[0.45rem] py-[0.1rem] rounded-full border font-medium ${workflowBranchBadgeClasses(item.branchName)}`}
+                                  data-testid={`workflow-queue-branch-${index}`}
+                                  title={`Current branch: ${item.branchName}`}
+                                >
+                                  {item.branchName}
+                                </span>
+                              )}
                             </div>
                             <p className="text-[0.875rem] text-black font-semibold">{item.title}</p>
                             <p className="text-[0.75rem] text-[rgba(0,0,0,0.45)]">{item.reason}</p>
