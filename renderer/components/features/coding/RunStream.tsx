@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useRef } from 'react';
-import { describeFrame, storyTimeline, type HarnessFrame } from '../../../../shared/harness-types';
+import { ESCALATION_LABELS, describeFrame, storyTimeline, type HarnessFrame } from '../../../../shared/harness-types';
 import { formatTokens } from './CodingBoard';
 
 export function RoleTimeline({ frames, storyId }: { frames: HarnessFrame[]; storyId: string }): React.ReactElement {
@@ -23,6 +23,15 @@ export function RoleTimeline({ frames, storyId }: { frames: HarnessFrame[]; stor
                 aria-label={step.status}
               />
               <span className="w-28 font-medium">{step.role}</span>
+              {step.escalation && (
+                <span
+                  className="badge badge-warning"
+                  data-testid={`timeline-escalated-${i}`}
+                  title={`Escalated to ${step.escalation.alias}`}
+                >
+                  cloud · {ESCALATION_LABELS[step.escalation.trigger] ?? step.escalation.trigger}
+                </span>
+              )}
               <span className="flex-1 truncate font-mono text-xs text-text-secondary" title={step.model}>
                 {step.served_model || step.model ? (
                   <>

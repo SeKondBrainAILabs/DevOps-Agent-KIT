@@ -1632,6 +1632,16 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return { success: true, data: services.harness.connection() };
   });
 
+  // KC-S1.11.6: the cloud-escalation switch. Saved in the app config; the
+  // harness reads it with the kit_get_harness_policy MCP tool.
+  ipcMain.handle(IPC.HARNESS_GET_ESCALATION, () => {
+    return { success: true, data: services.config.getCloudEscalation() };
+  });
+
+  ipcMain.handle(IPC.HARNESS_SET_ESCALATION, (_, policy: unknown) => {
+    return services.config.setCloudEscalation(policy);
+  });
+
   ipcMain.handle(IPC.HARNESS_LIST_RUNS, () => services.harness.listRuns());
   ipcMain.handle(IPC.HARNESS_GET_RUN, (_, runId: string) => services.harness.getRun(runId));
   ipcMain.handle(IPC.HARNESS_GET_STORY, (_, runId: string, storyId: string) => services.harness.getStory(runId, storyId));

@@ -43,6 +43,7 @@ import { deriveObserverConfig } from '../../../shared/observer-session';
 import { AGENT_TYPES } from '../../../shared/types';
 import type { CommitFile } from '../../../shared/git-name-status';
 import { PROTECTED_PATH, protectedHits, type ProtectedPathHit } from '../../../shared/protected-paths';
+import { normalizeCloudEscalation } from '../../../shared/harness-types';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
@@ -1363,6 +1364,22 @@ export function registerTools(
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'History fetch failed' }) }] };
       }
+    })
+  );
+
+  // --------------------------------------------------------------------------
+  // kit_get_harness_policy — What KIT Harness may do, as set in Kanvas (KC-S1.11.6)
+  // --------------------------------------------------------------------------
+  srv.tool(
+    'kit_get_harness_policy',
+    'Read-only. The KIT Harness policy set in Kanvas Settings: ' +
+    '{cloud_escalation: {enabled, triggers}}, where triggers are "stuck_ladder" (after the builder-large rung fails) ' +
+    'and "size_l_xl" (stories the Planner sizes L or XL). Escalation is off unless enabled is true. ' +
+    'The harness reads this at each story start. Allowed for observer sessions; takes no session.',
+    {},
+    withCallLog('kit_get_harness_policy', async () => {
+      const policy = normalizeCloudEscalation(deps.configService?.getCloudEscalation?.());
+      return { content: [{ type: 'text', text: JSON.stringify({ cloud_escalation: policy }) }] };
     })
   );
 

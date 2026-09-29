@@ -54,6 +54,7 @@ import type {
 } from '../shared/types';
 import type { McpServerStatus } from '../shared/mcp-types';
 import type {
+  CloudEscalationPolicy,
   HarnessClusterStatus,
   HarnessConnection,
   HarnessEventsPage,
@@ -2360,6 +2361,10 @@ const api = {
       ipcRenderer.invoke(IPC.HARNESS_CONNECTION),
     setConnection: (url: string, token?: string): Promise<IpcResult<HarnessConnection>> =>
       ipcRenderer.invoke(IPC.HARNESS_SET_CONNECTION, url, token),
+    escalation: (): Promise<IpcResult<CloudEscalationPolicy>> =>
+      ipcRenderer.invoke(IPC.HARNESS_GET_ESCALATION),
+    setEscalation: (policy: CloudEscalationPolicy): Promise<IpcResult<CloudEscalationPolicy>> =>
+      ipcRenderer.invoke(IPC.HARNESS_SET_ESCALATION, policy),
     listRuns: (): Promise<IpcResult<HarnessRunSummary[]>> =>
       ipcRenderer.invoke(IPC.HARNESS_LIST_RUNS),
     getRun: (runId: string): Promise<IpcResult<HarnessRun>> =>

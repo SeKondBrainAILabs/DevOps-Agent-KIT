@@ -754,6 +754,29 @@ describe('MCP Tools', () => {
     });
   });
 
+  describe('kit_get_harness_policy (KC-S1.11.6 AC2)', () => {
+    it('returns the cloud-escalation policy set in Kanvas', async () => {
+      deps.configService = {
+        getCloudEscalation: jest.fn(() => ({ enabled: true, triggers: ['stuck_ladder'] })),
+      };
+      const result = await callTool('kit_get_harness_policy', {});
+      expect(parseResult(result)).toEqual({ cloud_escalation: { enabled: true, triggers: ['stuck_ladder'] } });
+    });
+
+    it('is off when nothing has been set', async () => {
+      const result = await callTool('kit_get_harness_policy', {});
+      expect(parseResult(result)).toEqual({
+        cloud_escalation: { enabled: false, triggers: ['stuck_ladder', 'size_l_xl'] },
+      });
+    });
+
+    it('is read-only and allowed for observer sessions', () => {
+      const { MCP_OBSERVER_FORBIDDEN_TOOLS, MCP_STATE_CHANGING_TOOLS } = require('../../../shared/mcp-types');
+      expect(MCP_OBSERVER_FORBIDDEN_TOOLS.has('kit_get_harness_policy')).toBe(false);
+      expect(MCP_STATE_CHANGING_TOOLS.has('kit_get_harness_policy')).toBe(false);
+    });
+  });
+
   describe('kit_commit_all', () => {
     it('should register the tool', () => {
       expect(registeredTools.has('kit_commit_all')).toBe(true);

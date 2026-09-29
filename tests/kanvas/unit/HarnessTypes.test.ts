@@ -117,3 +117,28 @@ describe('diff and meters', () => {
     );
   });
 });
+
+describe('cloud escalation policy (KC-S1.11.6)', () => {
+  const { normalizeCloudEscalation, describeFrame } = require('../../../shared/harness-types');
+
+  it('defaults to off and drops unknown triggers', () => {
+    expect(normalizeCloudEscalation(undefined)).toEqual({ enabled: false, triggers: ['stuck_ladder', 'size_l_xl'] });
+    expect(normalizeCloudEscalation({ enabled: 'yes', triggers: ['size_l_xl', 'always'] })).toEqual({
+      enabled: false,
+      triggers: ['size_l_xl'],
+    });
+    expect(normalizeCloudEscalation({ enabled: true, triggers: [] })).toEqual({ enabled: true, triggers: [] });
+  });
+
+  it('describes an escalation in the live stream', () => {
+    const frame = {
+      event: 'feature_bus',
+      data: {
+        event_type: 'kit.story.escalated',
+        payload: { story_id: 'KC-S1', trigger: 'size_l_xl', alias: 'kit-builder@escalate' },
+      },
+    };
+    expect(describeFrame(frame)).toBe('KC-S1: escalated to kit-builder@escalate (size L/XL)');
+  });
+});
+

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Screenshots of the Kanvas Coding tab (KC-S2.1.x visual acceptance criteria).
+ * Screenshots of the Kanvas Coding tab (KC-S2.1.x and KC-S1.11.6 visual acceptance criteria).
  *
  *   npx electron-vite build && node scripts/coding-tab-screenshots.cjs [outDir]
  *
@@ -58,7 +58,29 @@ const diff = [
   'diff --git a/hello.txt b/hello.txt', 'new file mode 100644', 'index 0000000..3b18e51', '--- /dev/null', '+++ b/hello.txt', '@@ -0,0 +1 @@', '+hello world',
   'diff --git a/tests/test_hello.sh b/tests/test_hello.sh', 'new file mode 100755', 'index 0000000..8d2f1c3', '--- /dev/null', '+++ b/tests/test_hello.sh', '@@ -0,0 +1,3 @@', '+#!/bin/sh', "+grep -q 'hello world' hello.txt", '+echo ok',
 ].join('\n');
-const data = { runs, storyDone, storyGated, blocked, visual, events, logo, diff };
+// KC-S1.11.6 AC4: the same run, with the coder escalated to the cloud route after the
+// stuck ladder's builder-large rung, as the harness journals it (kit.story.escalated).
+const eventsEscalated = (() => {
+  const frames = events.frames.map((f) => JSON.parse(JSON.stringify(f)));
+  const lastCoder = [...frames].reverse().find((f) => f.data.event_type === 'kit.story.session' && f.data.payload.role === 'coder' && f.data.payload.story_id === 'KC-S9.9.1');
+  // After that round's CODE phase ends, so the first coder step reads as finished.
+  const at = frames.findIndex((f, i) => i > frames.indexOf(lastCoder) && f.data.event_type === 'kit.phase.end'
+    && f.data.payload.phase === 'CODE' && (f.data.payload.story_id ?? f.data.correlation_id) === 'KC-S9.9.1') + 1;
+  const make = (suffix, eventType, payload) => {
+    const f = JSON.parse(JSON.stringify(lastCoder));
+    f.event_id = f.data.event_id = `${lastCoder.event_id}-${suffix}`;
+    f.data.event_type = eventType;
+    f.data.payload = { story_id: lastCoder.data.payload.story_id, ...payload };
+    return f;
+  };
+  frames.splice(at, 0,
+    make('esc', 'kit.story.escalated', { trigger: 'stuck_ladder', alias: 'kit-builder@escalate' }),
+    make('start', 'kit.phase.start', { phase: 'CODE', status: 'start' }),
+    make('cloud', 'kit.story.session', { role: 'coder', model: 'kit-builder@escalate', served_model: 'moonshotai/kimi-k3', tokens_in: 38400, tokens_out: 7100, seconds: 41.2, cost: 0 }),
+    make('end', 'kit.phase.end', { phase: 'CODE', status: 'end' }));
+  return { ...events, frames };
+})();
+const data = { runs, storyDone, storyGated, blocked, visual, events, eventsEscalated, logo, diff };
 
 const init = ({ data, mode }) => {
   const ok = (d) => Promise.resolve({ success: true, data: d });
@@ -80,7 +102,7 @@ const init = ({ data, mode }) => {
       : ok(data.runs.map((r) => ({ run_id: r.run_id, status: r.status, created_at: r.created_at, stories: {} }))),
     getRun: (id) => ok(data.runs.find((r) => r.run_id === id)),
     getStory: (_r, s) => ok(byStory[s] || { ...data.storyDone, story_id: s }),
-    events: () => ok(data.events),
+    events: () => ok(mode === 'escalated' ? data.eventsEscalated : data.events),
     clusterStatus: () => mode === 'offline'
       ? Promise.resolve({ success: false, error: { code: 'HARNESS_OFFLINE', message: 'unreachable' } })
       : ok({ litellm: { ok: true }, devops_agent: { ok: true, url: 'http://127.0.0.1:39100/mcp' },
@@ -141,6 +163,8 @@ function serve() {
     await p.getByTestId('story-card-KC-S2.1.6').click(); await p.getByAltText('Screenshot for AC2').waitFor();
     await p.getByTestId('evidence-panel').scrollIntoViewIfNeeded(); });
   await shoot('08-offline-bad-url', 'offline', async (p) => { await p.getByTestId('harness-offline').waitFor(); });
+  await shoot('09-escalated-timeline', 'escalated', async (p) => {
+    await p.getByTestId('story-card-KC-S9.9.1').click(); await p.getByTestId(/^timeline-escalated-/).first().waitFor(); });
   await browser.close();
   server.close();
 })();

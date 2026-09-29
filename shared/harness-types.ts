@@ -141,6 +141,47 @@ export interface HarnessConnection {
   hasToken: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Cloud escalation (KC-S1.11.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * When KIT Harness may move a story's builder sessions from local models to a
+ * cloud open-weight model (Core AI Backend DAMA → Vercel AI Gateway):
+ * after the stuck ladder's builder-large rung fails, or from the start for a
+ * story the Planner sizes L or XL.
+ */
+export type EscalationTrigger = 'stuck_ladder' | 'size_l_xl';
+
+export const ESCALATION_TRIGGERS: readonly EscalationTrigger[] = ['stuck_ladder', 'size_l_xl'];
+
+export interface CloudEscalationPolicy {
+  enabled: boolean;
+  triggers: EscalationTrigger[];
+}
+
+/** Off until someone turns it on: escalation spends money. */
+/** Short labels for the timeline and the event stream. */
+export const ESCALATION_LABELS: Record<string, string> = {
+  stuck_ladder: 'stuck ladder',
+  size_l_xl: 'size L/XL',
+};
+
+export const DEFAULT_CLOUD_ESCALATION: CloudEscalationPolicy = {
+  enabled: false,
+  triggers: ['stuck_ladder', 'size_l_xl'],
+};
+
+/** A stored or submitted policy, with anything unknown dropped. Never throws. */
+export function normalizeCloudEscalation(raw: unknown): CloudEscalationPolicy {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_CLOUD_ESCALATION, triggers: [...DEFAULT_CLOUD_ESCALATION.triggers] };
+  const r = raw as { enabled?: unknown; triggers?: unknown };
+  const triggers = Array.isArray(r.triggers)
+    ? ESCALATION_TRIGGERS.filter((t) => (r.triggers as unknown[]).includes(t))
+    : [...DEFAULT_CLOUD_ESCALATION.triggers];
+  return { enabled: r.enabled === true, triggers };
+}
+
 /** Error codes HarnessClientService returns, so the tab can show an offline state instead of failing. */
 export const HARNESS_ERRORS = {
   NOT_CONFIGURED: 'HARNESS_NOT_CONFIGURED',
@@ -242,6 +283,8 @@ export interface TimelineStep {
   tokens_out?: number;
   seconds?: number;
   status: 'running' | 'done';
+  /** Set when the step ran on the cloud escalation route (KC-S1.11.6 AC4). */
+  escalation?: { trigger: string; alias: string };
 }
 
 /**
@@ -251,6 +294,9 @@ export interface TimelineStep {
 export function storyTimeline(frames: HarnessFrame[], storyId: string): TimelineStep[] {
   const steps: TimelineStep[] = [];
   const open = new Map<string, TimelineStep>();
+  // The harness journals `escalated {story, trigger, alias}` before the first
+  // escalated session; sessions that ask for that alias carry it.
+  let escalation: { trigger: string; alias: string } | undefined;
   for (const frame of frames) {
     if (frame.event !== 'feature_bus') continue;
     const d = frame.data;
@@ -267,6 +313,8 @@ export function storyTimeline(frames: HarnessFrame[], storyId: string): Timeline
         step.status = 'done';
         open.delete(p.phase);
       }
+    } else if (d.event_type === 'kit.story.escalated') {
+      escalation = { trigger: String(p.trigger ?? 'escalated'), alias: String(p.alias ?? '') };
     } else if (d.event_type === 'kit.story.session') {
       const role = String(p.role ?? '');
       const step = [...steps].reverse().find((s) => s.role === role) ?? (() => {
@@ -276,6 +324,12 @@ export function storyTimeline(frames: HarnessFrame[], storyId: string): Timeline
       })();
       step.model = p.model ?? step.model;
       step.served_model = p.served_model ?? step.served_model;
+      const model = String(p.model ?? '');
+      if (escalation && model && model === escalation.alias) {
+        step.escalation = escalation;
+      } else if (model.endsWith('@escalate')) {
+        step.escalation = { trigger: String(p.escalation_trigger ?? 'escalated'), alias: model };
+      }
       step.tokens_in = (step.tokens_in ?? 0) + Number(p.tokens_in ?? 0);
       step.tokens_out = (step.tokens_out ?? 0) + Number(p.tokens_out ?? 0);
       step.seconds = (step.seconds ?? 0) + Number(p.seconds ?? 0);
@@ -297,6 +351,8 @@ export function describeFrame(frame: HarnessFrame): string {
       return `${story}: ${PHASE_ROLES[p.phase] ?? p.phase} finished`;
     case 'kit.story.session':
       return `${story}: ${p.role} on ${p.served_model || p.model} (${Number(p.tokens_in ?? 0) + Number(p.tokens_out ?? 0)} tokens)`;
+    case 'kit.story.escalated':
+      return `${story}: escalated to ${p.alias} (${ESCALATION_LABELS[p.trigger] ?? p.trigger})`;
     default: {
       const name = (d.event_type ?? 'event').replace(/^kit\.(story|run)\./, '');
       return story ? `${story}: ${name}` : name;

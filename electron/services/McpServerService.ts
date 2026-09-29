@@ -11,6 +11,7 @@
  * instance to avoid SDK restriction on reusing stateless transports across requests.
  */
 
+import type { CloudEscalationPolicy } from '../../shared/harness-types';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import { readFile, writeFile, mkdir } from 'fs/promises';
@@ -158,6 +159,8 @@ export interface McpServiceDeps {
   configService?: {
     getRepoWorktreeMode: (repoPath: string) => 'in-place' | 'worktree';
     setRepoWorktreeMode: (repoPath: string, mode: 'in-place' | 'worktree') => void;
+    /** KC-S1.11.6: the cloud-escalation policy set in Kanvas Settings. */
+    getCloudEscalation?: () => CloudEscalationPolicy;
   };
   // Epic A — Workspace discovery.
   workspaceService?: {

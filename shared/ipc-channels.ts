@@ -503,6 +503,9 @@ export const IPC = {
   // ==========================================================================
   HARNESS_CONNECTION: 'harness:connection',
   HARNESS_SET_CONNECTION: 'harness:set-connection',
+  // Cloud escalation policy the harness reads (KC-S1.11.6)
+  HARNESS_GET_ESCALATION: 'harness:get-escalation',
+  HARNESS_SET_ESCALATION: 'harness:set-escalation',
   HARNESS_LIST_RUNS: 'harness:list-runs',
   HARNESS_GET_RUN: 'harness:get-run',
   HARNESS_GET_STORY: 'harness:get-story',
@@ -712,6 +715,8 @@ export const REQUEST_CHANNELS = [
   // KIT Harness channels
   IPC.HARNESS_CONNECTION,
   IPC.HARNESS_SET_CONNECTION,
+  IPC.HARNESS_GET_ESCALATION,
+  IPC.HARNESS_SET_ESCALATION,
   IPC.HARNESS_LIST_RUNS,
   IPC.HARNESS_GET_RUN,
   IPC.HARNESS_GET_STORY,

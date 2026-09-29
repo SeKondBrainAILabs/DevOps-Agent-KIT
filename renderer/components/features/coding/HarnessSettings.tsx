@@ -2,9 +2,87 @@
  * HarnessSettings (KC-S2.1.2 AC1): the KIT Harness URL and bearer token, in
  * Settings → Credentials. The token is stored with the other Kanvas
  * credentials and never shown again once saved.
+ *
+ * Also the cloud-escalation switch (KC-S1.11.6 AC1), which the harness reads
+ * over MCP with kit_get_harness_policy.
  */
 
 import React, { useEffect, useState } from 'react';
+import {
+  DEFAULT_CLOUD_ESCALATION,
+  type CloudEscalationPolicy,
+  type EscalationTrigger,
+} from '../../../../shared/harness-types';
+
+const TRIGGER_LABELS: Record<EscalationTrigger, string> = {
+  stuck_ladder: 'When local models get stuck (after the builder-large rung)',
+  size_l_xl: 'For stories the Planner sizes L or XL',
+};
+
+/** "Escalate hard stories to cloud (DAMA → Vercel)": off by default, saved on change. */
+export function CloudEscalationSettings(): React.ReactElement {
+  const [policy, setPolicy] = useState<CloudEscalationPolicy>(DEFAULT_CLOUD_ESCALATION);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.api.harness?.escalation?.().then((res) => {
+      if (res?.success && res.data) setPolicy(res.data);
+    });
+  }, []);
+
+  const save = async (next: CloudEscalationPolicy) => {
+    const previous = policy;
+    setPolicy(next);
+    setError(null);
+    const res = await window.api.harness.setEscalation(next);
+    if (res.success && res.data) {
+      setPolicy(res.data);
+    } else {
+      setPolicy(previous);
+      setError(res.error?.message ?? 'Could not save the escalation setting');
+    }
+  };
+
+  const toggleTrigger = (trigger: EscalationTrigger, on: boolean) => {
+    const triggers = on
+      ? [...new Set([...policy.triggers, trigger])]
+      : policy.triggers.filter((t) => t !== trigger);
+    void save({ ...policy, triggers });
+  };
+
+  return (
+    <div className="space-y-2" data-testid="cloud-escalation-settings">
+      <label className="flex items-center gap-2 text-sm font-medium">
+        <input
+          type="checkbox"
+          data-testid="cloud-escalation-enabled"
+          checked={policy.enabled}
+          onChange={(e) => void save({ ...policy, enabled: e.target.checked })}
+        />
+        Escalate hard stories to cloud (DAMA → Vercel)
+      </label>
+      <div className="pl-6 space-y-1">
+        {(Object.keys(TRIGGER_LABELS) as EscalationTrigger[]).map((trigger) => (
+          <label key={trigger} className="flex items-center gap-2 text-sm text-gray-600">
+            <input
+              type="checkbox"
+              data-testid={`cloud-escalation-${trigger}`}
+              disabled={!policy.enabled}
+              checked={policy.triggers.includes(trigger)}
+              onChange={(e) => toggleTrigger(trigger, e.target.checked)}
+            />
+            {TRIGGER_LABELS[trigger]}
+          </label>
+        ))}
+        <p className="text-xs text-gray-500">
+          Escalated builder sessions run on an open-weight cloud model through Core AI Backend, billed to the KIT
+          tenant. KIT Harness checks this before each story.
+        </p>
+      </div>
+      {error && <p role="alert" className="text-sm text-status-error">{error}</p>}
+    </div>
+  );
+}
 
 export function HarnessSettings(): React.ReactElement {
   const [url, setUrl] = useState('');
@@ -89,6 +167,7 @@ export function HarnessSettings(): React.ReactElement {
       {note && (
         <p role="status" className={`text-sm ${note.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{note.text}</p>
       )}
+      <CloudEscalationSettings />
     </div>
   );
 }
