@@ -726,6 +726,34 @@ describe('MCP Tools', () => {
     });
   });
 
+  describe('mcp tools session diff (KC-S3.1.4)', () => {
+    const diff = {
+      base: 'abc1234',
+      diff: 'diff --git a/src/a.ts b/src/a.ts\n',
+      files: [{ path: 'src/a.ts', status: 'modified', additions: 2, deletions: 1 }],
+      truncated: false,
+    };
+
+    it('kit_get_diff diffs the worktree against the session base branch', async () => {
+      mockGitService.getSessionDiff = (jest.fn() as any).mockResolvedValue({ success: true, data: diff });
+      const result = await callTool('kit_get_diff', { session_id: 'sess_test_123', paths: ['src'], max_bytes: 1024 });
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed).toEqual({ ...diff });
+      expect(mockGitService.getSessionDiff).toHaveBeenCalledWith('/tmp/worktree-test', {
+        baseBranch: 'main',
+        since: undefined,
+        paths: ['src'],
+        maxBytes: 1024,
+      });
+    });
+
+    it('kit_get_diff reports a git failure as an error', async () => {
+      mockGitService.getSessionDiff = (jest.fn() as any).mockResolvedValue({ success: false, error: { message: 'No merge-base with main' } });
+      const result = await callTool('kit_get_diff', { session_id: 'sess_test_123', since: 'deadbeef' });
+      expect(JSON.parse(result.content[0].text).error).toMatch(/merge-base/);
+    });
+  });
+
   describe('kit_commit_all', () => {
     it('should register the tool', () => {
       expect(registeredTools.has('kit_commit_all')).toBe(true);

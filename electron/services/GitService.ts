@@ -12,7 +12,7 @@ import {
   type StatusEntry,
 } from '../../shared/stage-changes';
 import { IPC } from '../../shared/ipc-channels';
-import { parseNameStatus, type CommitFile } from '../../shared/git-name-status';
+import { parseNameStatus, type CommitFile, type SessionDiff, type SessionDiffFile, DEFAULT_DIFF_MAX_BYTES } from '../../shared/git-name-status';
 import type {
   GitStatus,
   GitCommit,
@@ -446,6 +446,69 @@ export class GitService extends BaseService {
 
       return commit;
     }, 'GIT_COMMIT_FAILED');
+  }
+
+  /**
+   * A session's unified diff against its base (KC-S3.1.4): committed and
+   * uncommitted changes to tracked files since the merge-base with baseBranch,
+   * or since a given commit. Read-only: nothing is staged or written.
+   * The diff text is capped at maxBytes on a line boundary; binary files are
+   * listed in files, never inlined.
+   */
+  async getSessionDiff(
+    worktreePath: string,
+    options: { baseBranch?: string; since?: string; paths?: string[]; maxBytes?: number } = {},
+  ): Promise<IpcResult<SessionDiff>> {
+    return this.wrap(async () => {
+      const maxBytes = options.maxBytes && options.maxBytes > 0 ? options.maxBytes : DEFAULT_DIFF_MAX_BYTES;
+      let base = options.since;
+      if (!base) {
+        const branch = options.baseBranch || 'main';
+        for (const candidate of [`origin/${branch}`, branch]) {
+          try {
+            base = await this.git(['merge-base', candidate, 'HEAD'], worktreePath);
+            break;
+          } catch {
+            // try the next candidate
+          }
+        }
+        if (!base) throw new Error(`No merge-base with ${branch} (or origin/${branch}); pass since`);
+      }
+      const scope = ['--', ...(options.paths ?? [])];
+      const nameStatus = parseNameStatus(await this.git(['diff', '--name-status', '-M', base, ...scope], worktreePath));
+      // -z keeps rename paths exact: "add\tdel\tpath\0", or "add\tdel\t\0old\0new\0" for a rename
+      const stats = new Map<string, { additions: number; deletions: number; binary: boolean }>();
+      const tokens = (await this.git(['diff', '--numstat', '-z', '-M', base, ...scope], worktreePath)).split('\0');
+      for (let i = 0; i < tokens.length; i++) {
+        const [add, del, path] = tokens[i].split('\t');
+        if (add === undefined || del === undefined || path === undefined) continue;
+        let target = path;
+        if (path === '') {
+          target = tokens[i + 2] ?? '';
+          i += 2;
+        }
+        stats.set(target, {
+          additions: add === '-' ? 0 : parseInt(add, 10),
+          deletions: del === '-' ? 0 : parseInt(del, 10),
+          binary: add === '-' && del === '-',
+        });
+      }
+      const files: SessionDiffFile[] = nameStatus.map((f) => {
+        const st = stats.get(f.path);
+        const entry: SessionDiffFile = { ...f, additions: st?.additions ?? 0, deletions: st?.deletions ?? 0 };
+        if (st?.binary) entry.binary = true;
+        return entry;
+      });
+      let diff = await this.git(['diff', '-M', '--no-color', base, ...scope], worktreePath);
+      let truncated = false;
+      if (Buffer.byteLength(diff, 'utf8') > maxBytes) {
+        const cut = Buffer.from(diff, 'utf8').subarray(0, maxBytes).toString('utf8');
+        const lastNewline = cut.lastIndexOf('\n');
+        diff = lastNewline > 0 ? cut.slice(0, lastNewline + 1) : cut;
+        truncated = true;
+      }
+      return { base, diff, files, truncated };
+    }, 'GIT_GET_SESSION_DIFF_FAILED');
   }
 
   /**

@@ -93,6 +93,8 @@ export const MCP_TOOLS = {
   COMMIT_ALL: 'kit_commit_all',
   REQUEST_REVIEW: 'kit_request_review',
   GET_COMMIT_HISTORY: 'kit_get_commit_history',
+  // Read-only, allowed for observers (KC-S3.1.4)
+  GET_DIFF: 'kit_get_diff',
   // Session info + activity
   GET_SESSION_INFO: 'kit_get_session_info',
   LOG_ACTIVITY: 'kit_log_activity',

@@ -37,3 +37,22 @@ export function parseNameStatus(output: string): CommitFile[] {
   }
   return files;
 }
+
+/** Default cap on kit_get_diff output (KC-S3.1.4). */
+export const DEFAULT_DIFF_MAX_BYTES = 200 * 1024;
+
+export interface SessionDiffFile extends CommitFile {
+  additions: number;
+  deletions: number;
+  /** Listed, never inlined in the diff text. */
+  binary?: boolean;
+}
+
+export interface SessionDiff {
+  /** The commit the diff is taken against: the merge-base with the base branch, or `since`. */
+  base: string;
+  diff: string;
+  files: SessionDiffFile[];
+  /** True when the diff text was cut at max_bytes. */
+  truncated: boolean;
+}

@@ -1247,6 +1247,52 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
+  // kit_get_diff — The session's unified diff against its base (KC-S3.1.4)
+  // --------------------------------------------------------------------------
+  srv.tool(
+    'kit_get_diff',
+    'Read-only. The session\'s unified diff against its base branch (the merge-base), or since a given commit: ' +
+    'committed and uncommitted changes to tracked files. Returns {diff, files: [{path, status, additions, deletions, binary?}], truncated, base}. ' +
+    'The diff is capped at max_bytes (default 200 KB) with truncated: true; binary files are listed, not inlined. ' +
+    'Allowed for observer sessions, so a reviewer can read the diff it is reviewing.',
+    {
+      session_id: z.string().describe('The KIT session ID'),
+      since: z.string().optional().describe('A commit to diff from instead of the merge-base with the base branch'),
+      paths: z.array(z.string()).optional().describe('Limit the diff to these paths (git pathspecs)'),
+      max_bytes: z.number().int().min(1).optional().describe('Cap on the diff text in bytes (default 204800)'),
+      repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
+    },
+    withCallLog('kit_get_diff', async ({ session_id, since, paths, max_bytes, repo }) => {
+      const worktree = binder.getWorktreePathForRepo(session_id, repo);
+      if (!worktree) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
+      }
+      if (!deps.gitService?.getSessionDiff) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Git service not available' }) }] };
+      }
+      let baseBranch: string | undefined;
+      try {
+        const listed = deps.agentInstanceService?.listInstances?.();
+        const inst = listed?.success && Array.isArray(listed.data)
+          ? listed.data.find((i: any) => i.sessionId === session_id)
+          : undefined;
+        baseBranch = inst?.config?.baseBranch;
+      } catch {
+        baseBranch = undefined;
+      }
+      try {
+        const result = await deps.gitService.getSessionDiff(worktree, { baseBranch, since, paths, maxBytes: max_bytes });
+        if (!result?.success) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: result?.error?.message || 'Diff failed' }) }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ ...result.data, repo: repo || undefined }) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'Diff failed' }) }] };
+      }
+    })
+  );
+
+  // --------------------------------------------------------------------------
   // kit_request_review — Signal work ready for review
   // --------------------------------------------------------------------------
   srv.tool(

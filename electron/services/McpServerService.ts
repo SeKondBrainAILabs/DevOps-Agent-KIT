@@ -67,6 +67,11 @@ export interface McpServiceDeps {
     getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number) => Promise<any>;
     // Paths a commit changed (KC-S3.1.1). Optional so older fakes keep working.
     getCommitFiles?: (repoPath: string, commitHash: string) => Promise<any>;
+    // A session's diff against its base (KC-S3.1.4). Read-only.
+    getSessionDiff?: (
+      worktreePath: string,
+      options?: { baseBranch?: string; since?: string; paths?: string[]; maxBytes?: number },
+    ) => Promise<any>;
     // Current branch of a worktree path, TRI-STATE: branch name | 'HEAD' (detached)
     // | null (couldn't determine). Used by the MCP worktree-divergence guards
     // (injectable so it's mockable in tests). Distinct name from the IpcResult
