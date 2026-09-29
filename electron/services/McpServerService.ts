@@ -68,6 +68,7 @@ export interface McpServiceDeps {
     // Paths a commit changed (KC-S3.1.1). Optional so older fakes keep working.
     getCommitFiles?: (repoPath: string, commitHash: string) => Promise<any>;
     // A session's diff against its base (KC-S3.1.4). Read-only.
+    getPendingChanges?: (worktreePath: string) => Promise<any>;
     getSessionDiff?: (
       worktreePath: string,
       options?: { baseBranch?: string; since?: string; paths?: string[]; maxBytes?: number },
@@ -91,6 +92,10 @@ export interface McpServiceDeps {
     declareFiles: (repoPath: string, sessionId: string, files: string[], operation: 'edit' | 'read' | 'delete') => Promise<any>;
     releaseFiles: (repoPath: string, sessionId: string) => Promise<any>;
     forceReleaseLock: (repoPath: string, filePath: string) => Promise<any>;
+    // Protected paths (KC-S3.1.2)
+    protectPaths?: (repoPath: string, sessionId: string, patterns: string[], reason?: string) => Promise<any>;
+    unprotectPaths?: (repoPath: string, sessionId: string, patterns: string[]) => Promise<any>;
+    listProtections?: (repoPath: string, sessionId?: string) => Promise<any>;
   };
   /**
    * Session lifecycle. Both the IPC layer and this one go through the same

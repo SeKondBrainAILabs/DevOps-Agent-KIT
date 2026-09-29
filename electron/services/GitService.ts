@@ -512,6 +512,27 @@ export class GitService extends BaseService {
   }
 
   /**
+   * Every path the next commit would include: what `add -A` would stage (tracked
+   * changes against HEAD, staged or not, plus untracked files not ignored),
+   * found without staging anything. Renames count as both paths. kit_commit
+   * checks these against the session's protected paths (KC-S3.1.2).
+   */
+  async getPendingChanges(worktreePath: string): Promise<IpcResult<string[]>> {
+    return this.wrap(async () => {
+      let tracked: string;
+      try {
+        tracked = await this.git(['diff', 'HEAD', '--name-only', '--no-renames', '-z'], worktreePath);
+      } catch {
+        // No HEAD yet (first commit): everything staged is new.
+        tracked = await this.git(['diff', '--cached', '--name-only', '--no-renames', '-z'], worktreePath);
+      }
+      const untracked = await this.git(['ls-files', '--others', '--exclude-standard', '-z'], worktreePath);
+      const paths = [...tracked.split('\0'), ...untracked.split('\0')].filter(Boolean);
+      return Array.from(new Set(paths));
+    }, 'GIT_GET_PENDING_CHANGES_FAILED');
+  }
+
+  /**
    * Paths a commit changed and how, read from git itself, so it works for any
    * commit, including ones made before commits recorded their files (KC-S3.1.1).
    */

@@ -15,6 +15,7 @@ import type {
   AgentType,
   IpcResult,
 } from '../../shared/types';
+import type { PathProtection } from '../../shared/protected-paths';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -22,6 +23,9 @@ import os from 'os';
 
 // Store locks per repository in .S9N_KIT_DevOpsAgent/locks.json
 const LOCKS_FILENAME = 'locks.json';
+// Protected paths (KC-S3.1.2) live beside the locks, written on every change
+// (not debounced) so a protection is on disk before kit_lock_file returns.
+const PROTECTED_FILENAME = 'protected.json';
 const KANVAS_DIR = '.S9N_KIT_DevOpsAgent';
 
 // Default lock timeout: 24 hours of inactivity
@@ -51,6 +55,9 @@ export class LockService extends BaseService {
   // Pending debounced writes: repoPath -> setTimeout handle
   private pendingSaves: Map<string, NodeJS.Timeout> = new Map();
   private hasWarnedOverflow: Set<string> = new Set();
+
+  // Protected paths per repo root (KC-S3.1.2): repoPath -> protections
+  private protectionsByRepo: Map<string, PathProtection[]> = new Map();
 
   // Legacy session-based locks (for backwards compatibility)
 
@@ -539,6 +546,95 @@ export class LockService extends BaseService {
     );
   }
 
+  // ==================== Protected paths (KC-S3.1.2) ====================
+
+  /**
+   * Protect paths or globs for a session. kit_commit in that session then
+   * refuses any commit touching them. Idempotent per (pattern, session).
+   */
+  async protectPaths(
+    repoPath: string,
+    sessionId: string,
+    patterns: string[],
+    reason?: string
+  ): Promise<IpcResult<PathProtection[]>> {
+    return this.wrap(async () => {
+      const normalizedRepo = path.resolve(repoPath);
+      const current = await this.loadProtections(normalizedRepo);
+      const now = new Date().toISOString();
+      for (const pattern of patterns) {
+        if (!current.some((p) => p.pattern === pattern && p.sessionId === sessionId)) {
+          current.push({ pattern, sessionId, protectedAt: now, ...(reason ? { reason } : {}) });
+        }
+      }
+      await this.saveProtections(normalizedRepo);
+      return current.filter((p) => p.sessionId === sessionId);
+    }, 'PROTECT_PATHS_FAILED');
+  }
+
+  /**
+   * Lift protections. Only the owning session can lift its own; a pattern held
+   * only by other sessions comes back in `refused` and stays protected.
+   */
+  async unprotectPaths(
+    repoPath: string,
+    sessionId: string,
+    patterns: string[]
+  ): Promise<IpcResult<{ released: string[]; refused: Array<{ pattern: string; ownerSessionId: string }> }>> {
+    return this.wrap(async () => {
+      const normalizedRepo = path.resolve(repoPath);
+      const current = await this.loadProtections(normalizedRepo);
+      const released: string[] = [];
+      const refused: Array<{ pattern: string; ownerSessionId: string }> = [];
+      for (const pattern of patterns) {
+        const own = current.findIndex((p) => p.pattern === pattern && p.sessionId === sessionId);
+        if (own >= 0) {
+          current.splice(own, 1);
+          released.push(pattern);
+          continue;
+        }
+        const other = current.find((p) => p.pattern === pattern);
+        if (other) refused.push({ pattern, ownerSessionId: other.sessionId });
+      }
+      if (released.length > 0) await this.saveProtections(normalizedRepo);
+      return { released, refused };
+    }, 'UNPROTECT_PATHS_FAILED');
+  }
+
+  /** Protections in a repo, optionally only one session's. */
+  async listProtections(repoPath: string, sessionId?: string): Promise<IpcResult<PathProtection[]>> {
+    return this.wrap(async () => {
+      const current = await this.loadProtections(path.resolve(repoPath));
+      return current.filter((p) => !sessionId || p.sessionId === sessionId);
+    }, 'LIST_PROTECTIONS_FAILED');
+  }
+
+  private async loadProtections(repoPath: string): Promise<PathProtection[]> {
+    const cached = this.protectionsByRepo.get(repoPath);
+    if (cached) return cached;
+    const file = path.join(repoPath, KANVAS_DIR, PROTECTED_FILENAME);
+    let loaded: PathProtection[] = [];
+    try {
+      if (existsSync(file)) {
+        const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+        if (Array.isArray(parsed)) loaded = parsed.filter((p) => p && typeof p.pattern === 'string' && typeof p.sessionId === 'string');
+      }
+    } catch (error) {
+      console.warn(`[LockService] Failed to load protected paths for ${repoPath}:`, error);
+    }
+    this.protectionsByRepo.set(repoPath, loaded);
+    return loaded;
+  }
+
+  private async saveProtections(repoPath: string): Promise<void> {
+    const dir = path.join(repoPath, KANVAS_DIR);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, PROTECTED_FILENAME),
+      JSON.stringify(this.protectionsByRepo.get(repoPath) ?? [], null, 2)
+    );
+  }
+
   // ==================== Private helpers ====================
 
   private setFileLock(repoPath: string, filePath: string, lock: AutoFileLock): void {
@@ -658,6 +754,7 @@ export class LockService extends BaseService {
       await this.saveLocksNow(repoPath);
     }
     this.locksByRepo.clear();
+    this.protectionsByRepo.clear();
     this.hasWarnedOverflow.clear();
   }
 }
