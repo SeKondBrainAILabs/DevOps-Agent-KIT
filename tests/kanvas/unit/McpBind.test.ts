@@ -50,10 +50,19 @@ describe('mcp auth (KC-S2.2.2)', () => {
     expect(isMcpRequestAuthorized(lan, '10.0.0.9', 'Basic s3cret')).toBe(false);
     expect(isMcpRequestAuthorized(lan, '10.0.0.9', 'Bearer s3cret')).toBe(true);
     expect(isMcpRequestAuthorized(lan, '::ffff:192.168.1.7', 'bearer s3cret')).toBe(true);
+    expect(isMcpRequestAuthorized(lan, '10.0.0.9', 'Bearer    s3cret  ')).toBe(true);
+    expect(isMcpRequestAuthorized(lan, '10.0.0.9', 'Bearer ')).toBe(false);
   });
 
   it('local agents on a LAN bind keep working without a token', () => {
     expect(isMcpRequestAuthorized(lan, '127.0.0.1', undefined)).toBe(true);
     expect(isMcpRequestAuthorized(lan, '::1', undefined)).toBe(true);
+  });
+
+  it('parses a hostile Authorization header in linear time', () => {
+    const hostile = 'bearer' + ' '.repeat(50_000) + '\n';
+    const started = Date.now();
+    expect(isMcpRequestAuthorized(lan, '10.0.0.9', hostile)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(100);
   });
 });

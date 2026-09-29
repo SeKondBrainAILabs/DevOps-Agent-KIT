@@ -83,10 +83,13 @@ export function isMcpRequestAuthorized(
 ): boolean {
   if (!config.lan || !config.token) return true;
   if (isLoopbackAddress(remoteAddress)) return true;
-  const header = Array.isArray(authorization) ? authorization[0] : authorization;
-  const match = /^Bearer\s+(.+)$/i.exec(header ?? '');
-  if (!match) return false;
-  const given = Buffer.from(match[1].trim());
+  const header = (Array.isArray(authorization) ? authorization[0] : authorization) ?? '';
+  // Plain string parsing, not a regex: the header is caller-controlled, and a
+  // backtracking pattern over it is a denial-of-service lever (CodeQL
+  // js/polynomial-redos).
+  if (header.length > 8192 || header.slice(0, 7).toLowerCase() !== 'bearer ') return false;
+  const given = Buffer.from(header.slice(7).trim());
+  if (given.length === 0) return false;
   const expected = Buffer.from(config.token);
   return given.length === expected.length && timingSafeEqual(given, expected);
 }

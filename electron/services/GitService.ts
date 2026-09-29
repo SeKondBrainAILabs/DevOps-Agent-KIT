@@ -461,7 +461,13 @@ export class GitService extends BaseService {
   ): Promise<IpcResult<SessionDiff>> {
     return this.wrap(async () => {
       const maxBytes = options.maxBytes && options.maxBytes > 0 ? options.maxBytes : DEFAULT_DIFF_MAX_BYTES;
-      let base = options.since;
+      let base: string | undefined;
+      if (options.since) {
+        // `since` comes from the MCP caller and lands before `--`, so it must be
+        // a revision, never an option (e.g. --output=<file> would write a file).
+        if (options.since.startsWith('-')) throw new Error(`since must be a commit, not an option: ${options.since}`);
+        base = await this.git(['rev-parse', '--verify', '--quiet', `${options.since}^{commit}`], worktreePath);
+      }
       if (!base) {
         const branch = options.baseBranch || 'main';
         for (const candidate of [`origin/${branch}`, branch]) {

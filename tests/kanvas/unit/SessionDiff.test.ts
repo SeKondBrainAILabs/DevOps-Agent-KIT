@@ -5,7 +5,7 @@
 
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { execFileSync, execFile } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, unlinkSync, renameSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, unlinkSync, renameSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -105,5 +105,15 @@ describe('mcp tools kit_get_diff (KC-S3.1.4)', () => {
     const result = await svc.getSessionDiff(repo, { baseBranch: 'no-such-branch' });
     expect(result.success).toBe(false);
     expect(result.error?.message).toMatch(/merge-base/);
+  });
+
+  it('refuses a since that is an option or not a commit, and writes nothing', async () => {
+    const target = join(repo, 'injected.txt');
+    const option = await svc.getSessionDiff(repo, { since: `--output=${target}` });
+    expect(option.success).toBe(false);
+    expect(option.error?.message).toMatch(/since must be a commit/);
+    expect(existsSync(target)).toBe(false);
+    const unknown = await svc.getSessionDiff(repo, { since: 'no-such-commit' });
+    expect(unknown.success).toBe(false);
   });
 });
