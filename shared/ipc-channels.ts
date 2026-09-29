@@ -520,6 +520,8 @@ export const IPC = {
   HARNESS_EVENTS: 'harness:events',
   HARNESS_STORY_DIFF: 'harness:story-diff',
   HARNESS_SCREENSHOT: 'harness:screenshot',
+  // main → renderer: a devops-agent://coding?run=… link was opened (KC-S2.3.1)
+  HARNESS_OPEN_RUN: 'harness:open-run',
 
   // ==========================================================================
   // SEED DATA CHANNELS
@@ -745,6 +747,7 @@ export const REQUEST_CHANNELS = [
 ] as const;
 
 export const EVENT_CHANNELS = [
+  IPC.HARNESS_OPEN_RUN,
   IPC.SESSION_CREATED,
   IPC.SESSION_UPDATED,
   IPC.SESSION_CLOSED,

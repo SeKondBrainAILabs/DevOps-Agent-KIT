@@ -9,6 +9,11 @@ files:
   - electron/config/**/*
 extraMetadata:
   main: dist/electron/index.js
+# devops-agent:// deep links open the Coding tab on a KIT Harness run (KC-S2.3.1)
+protocols:
+  - name: KIT for DevOps
+    schemes:
+      - devops-agent
 mac:
   category: public.app-category.developer-tools
   icon: resources/icon.icns

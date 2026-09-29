@@ -275,6 +275,17 @@ export default function App(): React.ReactElement {
 
   const mainView = useUIStore((state) => state.mainView);
   const setMainView = useUIStore((state) => state.setMainView);
+  const setCodingFocusRunId = useUIStore((state) => state.setCodingFocusRunId);
+
+  // devops-agent://coding?run=<id> (Kanvas "Build in KIT IDE", KC-S2.3.1):
+  // open the Coding tab and bring that run forward.
+  useEffect(() => {
+    const unsub = window.api?.harness?.onOpenRun?.((runId) => {
+      setMainView('coding');
+      setCodingFocusRunId(runId);
+    });
+    return () => unsub?.();
+  }, [setMainView, setCodingFocusRunId]);
 
   // Determine what to show in main content
   // Priority: 1) Coding/Commits/Workspaces views (always on top), 2) Session detail, 3) Dashboard
