@@ -1,0 +1,77 @@
+{
+  "story_id": "KC-S9.9.3",
+  "title": "Greeting page with a CI badge",
+  "commits": [],
+  "engine_session": null,
+  "pr_url": null,
+  "questions": [],
+  "rounds": 0,
+  "session_id": "sess-1",
+  "state": "awaiting_plan_approval",
+  "tokens": {
+    "by_role": {
+      "planner": {
+        "cost": 0,
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      "refiner": {
+        "cost": 0,
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0
+      }
+    },
+    "cost": 0,
+    "sessions": 2,
+    "tokens_in": 0,
+    "tokens_out": 0
+  },
+  "worktree": "/tmp/claude-0/-home-user-kit-coding-harness/17487055-3dd3-5480-bf3d-dd27958c4fd0/scratchpad/harness-live/.kit/worktrees/sess-1",
+  "story": {
+    "id": "KC-S9.9.3",
+    "type": "story",
+    "title": "Greeting page with a CI badge",
+    "narrative": "As a user I want a greeting file so that I feel welcome.",
+    "acceptance_criteria": [
+      {
+        "id": "AC1",
+        "text": "hello.txt greets the world",
+        "verify": "grep -q 'hello world' hello.txt",
+        "visual": false
+      }
+    ],
+    "depends_on": [],
+    "size": "M",
+    "priority": "Low",
+    "repo": "SeKondBrainAILabs/e2e-sandbox",
+    "base_commit": null,
+    "lane_hints": {},
+    "notion_url": null,
+    "external_depends_on": [],
+    "source": null
+  },
+  "plan": {
+    "files": [
+      {
+        "path": "hello.txt",
+        "action": "create",
+        "why": "the greeting",
+        "phase": 0
+      }
+    ],
+    "tests": [
+      {
+        "ac": "AC1",
+        "file": "tests/test_hello.sh",
+        "kind": "unit",
+        "verify": ""
+      }
+    ],
+    "risks": [],
+    "contract_changes": [],
+    "size": "XS"
+  },
+  "evidence": null
+}

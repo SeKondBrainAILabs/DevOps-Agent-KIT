@@ -7,6 +7,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { AppConfig, AgentType, RepoVersionInfo, RepoVersionSettings, AppUpdateInfo } from '../../../shared/types';
 import { useAgentStore } from '../../store/agentStore';
 import { formatDateTimeShort } from '../../../shared/format-datetime';
+import { HarnessSettings } from './coding/HarnessSettings';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -801,6 +802,9 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                   Update API Key
                 </button>
               )}
+
+              {/* KIT Harness connection for the Coding tab (KC-S2.1.2) */}
+              <HarnessSettings />
             </>
           )}
 

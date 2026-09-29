@@ -13,6 +13,7 @@ import { StatusBar } from './components/layouts/StatusBar';
 import { DashboardCanvas } from './components/features/DashboardCanvas';
 import { SessionDetailView } from './components/features/SessionDetailView';
 import { UniversalCommitsView } from './components/features/UniversalCommitsView';
+import { CodingView } from './components/features/coding/CodingView';
 import { WorkspaceBrowserView } from './components/features/WorkspaceBrowserView';
 import { HomeArtefactLeft } from './components/ui/HomeArtefactLeft';
 import { NewSessionWizard } from './components/features/NewSessionWizard';
@@ -276,8 +277,10 @@ export default function App(): React.ReactElement {
   const setMainView = useUIStore((state) => state.setMainView);
 
   // Determine what to show in main content
-  // Priority: 1) Commits/Workspaces views (always on top), 2) Session detail, 3) Dashboard
-  const mainContent = mainView === 'commits' ? (
+  // Priority: 1) Coding/Commits/Workspaces views (always on top), 2) Session detail, 3) Dashboard
+  const mainContent = mainView === 'coding' ? (
+    <CodingView />
+  ) : mainView === 'commits' ? (
     <UniversalCommitsView />
   ) : mainView === 'workspaces' ? (
     <WorkspaceBrowserView />

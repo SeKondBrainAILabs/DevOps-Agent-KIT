@@ -498,6 +498,27 @@ export const IPC = {
   MCP_TOOL_CALLED: 'mcp:tool-called',
 
   // ==========================================================================
+  // KIT HARNESS CHANNELS (KC-S2.1.2)
+  // Kanvas Coding tab → KIT Harness over MCP (harness_* tools)
+  // ==========================================================================
+  HARNESS_CONNECTION: 'harness:connection',
+  HARNESS_SET_CONNECTION: 'harness:set-connection',
+  HARNESS_LIST_RUNS: 'harness:list-runs',
+  HARNESS_GET_RUN: 'harness:get-run',
+  HARNESS_GET_STORY: 'harness:get-story',
+  HARNESS_SUBMIT_STORIES: 'harness:submit-stories',
+  HARNESS_SUBMIT_EPIC: 'harness:submit-epic',
+  HARNESS_APPROVE: 'harness:approve',
+  HARNESS_ANSWER: 'harness:answer',
+  HARNESS_PAUSE: 'harness:pause',
+  HARNESS_RESUME: 'harness:resume',
+  HARNESS_CANCEL: 'harness:cancel',
+  HARNESS_CLUSTER_STATUS: 'harness:cluster-status',
+  HARNESS_EVENTS: 'harness:events',
+  HARNESS_STORY_DIFF: 'harness:story-diff',
+  HARNESS_SCREENSHOT: 'harness:screenshot',
+
+  // ==========================================================================
   // SEED DATA CHANNELS
   // Generate seed contracts, merge into execution plan, and execute
   // ==========================================================================
@@ -688,6 +709,23 @@ export const REQUEST_CHANNELS = [
   IPC.MCP_GET_AGENT_SESSION_POLICY,
   IPC.MCP_SET_AGENT_SESSION_POLICY,
   IPC.MCP_GET_AGENT_SESSION_COUNT,
+  // KIT Harness channels
+  IPC.HARNESS_CONNECTION,
+  IPC.HARNESS_SET_CONNECTION,
+  IPC.HARNESS_LIST_RUNS,
+  IPC.HARNESS_GET_RUN,
+  IPC.HARNESS_GET_STORY,
+  IPC.HARNESS_SUBMIT_STORIES,
+  IPC.HARNESS_SUBMIT_EPIC,
+  IPC.HARNESS_APPROVE,
+  IPC.HARNESS_ANSWER,
+  IPC.HARNESS_PAUSE,
+  IPC.HARNESS_RESUME,
+  IPC.HARNESS_CANCEL,
+  IPC.HARNESS_CLUSTER_STATUS,
+  IPC.HARNESS_EVENTS,
+  IPC.HARNESS_STORY_DIFF,
+  IPC.HARNESS_SCREENSHOT,
   // Seed data channels
   IPC.SEED_GENERATE_FEATURE,
   IPC.SEED_GENERATE_ALL,

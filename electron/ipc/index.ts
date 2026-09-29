@@ -10,6 +10,7 @@ import { listPullRequests, canApprove, reviewPullRequest, type PrReviewAction } 
 import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from '../services/DatabaseService';
 import { isActiveInstance } from '../../shared/instance-status';
+import { existsSync } from 'fs';
 
 // Coalesce AI stream deltas before crossing the IPC boundary. The Groq stream
 // yields one delta per token; sending each over webContents.send() individually
@@ -1611,6 +1612,72 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   ipcMain.handle(IPC.WORKER_RESTART, () => {
     services.workerBridge.restart();
     return { success: true };
+  });
+
+  // ==========================================================================
+  // KIT HARNESS HANDLERS (KC-S2.1.2) — the Coding tab's client
+  // ==========================================================================
+  ipcMain.handle(IPC.HARNESS_CONNECTION, () => {
+    return { success: true, data: services.harness.connection() };
+  });
+
+  ipcMain.handle(IPC.HARNESS_SET_CONNECTION, (_, url: string, token?: string) => {
+    const saved = services.config.set('harnessUrl', (url || '').trim());
+    if (!saved.success) return saved;
+    if (token !== undefined && token !== '') {
+      const stored = services.config.setCredential('harnessToken', token.trim());
+      if (!stored.success) return stored;
+    }
+    services.harness.reset();
+    return { success: true, data: services.harness.connection() };
+  });
+
+  ipcMain.handle(IPC.HARNESS_LIST_RUNS, () => services.harness.listRuns());
+  ipcMain.handle(IPC.HARNESS_GET_RUN, (_, runId: string) => services.harness.getRun(runId));
+  ipcMain.handle(IPC.HARNESS_GET_STORY, (_, runId: string, storyId: string) => services.harness.getStory(runId, storyId));
+  ipcMain.handle(IPC.HARNESS_SUBMIT_STORIES, (_, stories: unknown[], options?: Record<string, unknown>) =>
+    services.harness.submitStories(stories, options ?? {}));
+  ipcMain.handle(IPC.HARNESS_SUBMIT_EPIC, (_, source: string, repo: string, options?: Record<string, unknown>) =>
+    services.harness.submitEpic(source, repo, options ?? {}));
+  ipcMain.handle(IPC.HARNESS_APPROVE, (_, runId: string, storyId: string | null, approved: boolean, comment?: string) =>
+    services.harness.approve(runId, storyId, approved, comment ?? ''));
+  ipcMain.handle(IPC.HARNESS_ANSWER, (_, runId: string, storyId: string, text: string) =>
+    services.harness.answer(runId, storyId, text));
+  ipcMain.handle(IPC.HARNESS_PAUSE, (_, runId: string) => services.harness.pause(runId));
+  ipcMain.handle(IPC.HARNESS_RESUME, (_, runId: string) => services.harness.resume(runId));
+  ipcMain.handle(IPC.HARNESS_CANCEL, (_, runId: string) => services.harness.cancel(runId));
+  ipcMain.handle(IPC.HARNESS_CLUSTER_STATUS, () => services.harness.clusterStatus());
+  ipcMain.handle(IPC.HARNESS_EVENTS, (_, runId: string, afterEventId?: string | null) =>
+    services.harness.events(runId, afterEventId));
+  ipcMain.handle(IPC.HARNESS_SCREENSHOT, (_, runId: string, storyId: string, path: string) =>
+    services.harness.screenshot(runId, storyId, path));
+
+  // The story's worktree diff, read by this app's own GitService. The path is
+  // taken from the harness's record of the story, never from the renderer, and
+  // only works where the worktree is on this machine (Kanvas on the mini).
+  ipcMain.handle(IPC.HARNESS_STORY_DIFF, async (_, runId: string, storyId: string) => {
+    const run = await services.harness.getRun(runId);
+    if (!run.success || !run.data) return run;
+    const story = run.data.stories.find((s) => s.story_id === storyId);
+    const worktree = story?.worktree;
+    if (!worktree) {
+      return { success: false, error: { code: 'HARNESS_NO_WORKTREE', message: 'This story has no worktree yet' } };
+    }
+    if (!existsSync(worktree)) {
+      return {
+        success: false,
+        error: { code: 'HARNESS_WORKTREE_NOT_LOCAL', message: `The worktree ${worktree} is not on this machine` },
+      };
+    }
+    let baseBranch: string | undefined;
+    try {
+      const listed = services.agentInstance.listInstances();
+      const inst = listed.success ? listed.data?.find((i: any) => i.sessionId === story?.session_id) : undefined;
+      baseBranch = (inst as any)?.config?.baseBranch;
+    } catch {
+      baseBranch = undefined;
+    }
+    return services.git.getSessionDiff(worktree, { baseBranch });
   });
 
   // ==========================================================================

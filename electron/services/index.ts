@@ -32,6 +32,7 @@ import { VersionService } from './VersionService';
 import { AutoUpdateService } from './AutoUpdateService';
 import { WorkerBridgeService } from './WorkerBridgeService';
 import { McpServerService } from './McpServerService';
+import { HarnessClientService } from './HarnessClientService';
 import { SeedDataExecutionService } from './SeedDataExecutionService';
 import { SessionOrchestrator } from './SessionOrchestrator';
 import { ensurePullRequest } from './GitHubService';
@@ -79,6 +80,7 @@ export interface Services {
   autoUpdate: AutoUpdateService;
   workerBridge: WorkerBridgeService;
   mcpServer: McpServerService;
+  harness: HarnessClientService;
   seedDataExecution: SeedDataExecutionService;
   // Analysis services (Phase 1)
   astParser: ASTParserService;
@@ -340,6 +342,14 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   mcpServer.setDebugLog(debugLog);
   console.log('[Services] MCP server initialized on port', mcpServer.getPort());
 
+  // KIT Harness client for the Coding tab (KC-S2.1.2). URL and token come from
+  // Settings; KIT_HARNESS_URL / KIT_HARNESS_TOKEN are the fallback.
+  const harness = new HarnessClientService(() => ({
+    url: config.get('harnessUrl').data || process.env.KIT_HARNESS_URL || null,
+    token: config.getCredentialValue('harnessToken') || process.env.KIT_HARNESS_TOKEN || null,
+  }));
+  harness.setAppVersion(app.getVersion());
+
   // Initialize Seed Data Execution service
   // For seed data contract generation, merging, execution, and port discovery
   const seedDataExecution = new SeedDataExecutionService();
@@ -534,6 +544,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     autoUpdate,
     workerBridge,
     mcpServer,
+    harness,
     seedDataExecution,
     // Analysis services (Phase 1)
     astParser: analysisServices.astParser,

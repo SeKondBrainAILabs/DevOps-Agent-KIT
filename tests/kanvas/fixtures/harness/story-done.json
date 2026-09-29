@@ -1,0 +1,242 @@
+{
+  "story_id": "KC-S9.9.1",
+  "title": "E2E greeting 1",
+  "commits": [
+    "3da66818a59b",
+    "5186319b9b23"
+  ],
+  "engine_session": null,
+  "pr_url": "https://github.com/example/pull/sess-2",
+  "questions": [],
+  "rounds": 1,
+  "session_id": "sess-2",
+  "state": "done",
+  "tokens": {
+    "by_role": {
+      "coder": {
+        "cost": 0,
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      "planner": {
+        "cost": 0,
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      "refiner": {
+        "cost": 0,
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      "reviewer": {
+        "cost": 0,
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      "test-writer": {
+        "cost": 0,
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0
+      }
+    },
+    "cost": 0,
+    "sessions": 5,
+    "tokens_in": 0,
+    "tokens_out": 0
+  },
+  "worktree": "/tmp/claude-0/-home-user-kit-coding-harness/17487055-3dd3-5480-bf3d-dd27958c4fd0/scratchpad/harness-live/.kit/worktrees/sess-2",
+  "reason": "",
+  "story": {
+    "id": "KC-S9.9.1",
+    "type": "story",
+    "title": "E2E greeting 1",
+    "narrative": "As a user I want a greeting file so that I feel welcome.",
+    "acceptance_criteria": [
+      {
+        "id": "AC1",
+        "text": "hello.txt greets the world",
+        "verify": "grep -q 'hello world' hello.txt",
+        "visual": false
+      }
+    ],
+    "depends_on": [],
+    "size": "XS",
+    "priority": "Low",
+    "repo": "SeKondBrainAILabs/e2e-sandbox",
+    "base_commit": null,
+    "lane_hints": {},
+    "notion_url": null,
+    "external_depends_on": [],
+    "source": null
+  },
+  "plan": {
+    "files": [
+      {
+        "path": "hello.txt",
+        "action": "create",
+        "why": "the greeting",
+        "phase": 0
+      }
+    ],
+    "tests": [
+      {
+        "ac": "AC1",
+        "file": "tests/test_hello.sh",
+        "kind": "unit",
+        "verify": ""
+      }
+    ],
+    "risks": [],
+    "contract_changes": [],
+    "size": "XS"
+  },
+  "evidence": {
+    "acceptance_criteria": [
+      {
+        "checks": [
+          {
+            "command": "grep -q 'hello world' hello.txt",
+            "exit_code": 0,
+            "output_tail": ""
+          }
+        ],
+        "id": "AC1",
+        "passed": true,
+        "tests": [
+          "tests/test_hello.sh"
+        ],
+        "text": "hello.txt greets the world",
+        "verify": "grep -q 'hello world' hello.txt"
+      }
+    ],
+    "cited_memories": [],
+    "commits": [
+      {
+        "files": [
+          "tests/test_hello.sh"
+        ],
+        "hash": "3da66818a59b",
+        "message": "test(KC-S9.9.1): failing tests for acceptance criteria"
+      },
+      {
+        "files": [
+          "hello.txt"
+        ],
+        "hash": "5186319b9b23",
+        "message": "feat(KC-S9.9.1): round 1"
+      }
+    ],
+    "files_touched": [
+      "hello.txt",
+      "tests/test_hello.sh"
+    ],
+    "qa_commands": [],
+    "recalled_memories": [],
+    "reuse_check": null,
+    "rounds": 1,
+    "run_id": "20260929T144454-3867b5",
+    "session_id": "sess-2",
+    "static_findings": [],
+    "story_id": "KC-S9.9.1",
+    "tokens": {
+      "by_role": {
+        "coder": {
+          "cost": 0,
+          "sessions": 1,
+          "tokens_in": 0,
+          "tokens_out": 0
+        },
+        "planner": {
+          "cost": 0,
+          "sessions": 1,
+          "tokens_in": 0,
+          "tokens_out": 0
+        },
+        "refiner": {
+          "cost": 0,
+          "sessions": 1,
+          "tokens_in": 0,
+          "tokens_out": 0
+        },
+        "reviewer": {
+          "cost": 0,
+          "sessions": 1,
+          "tokens_in": 0,
+          "tokens_out": 0
+        },
+        "test-writer": {
+          "cost": 0,
+          "sessions": 1,
+          "tokens_in": 0,
+          "tokens_out": 0
+        }
+      },
+      "cost": 0,
+      "sessions": 5,
+      "tokens_in": 0,
+      "tokens_out": 0
+    },
+    "usage": [
+      {
+        "cost": 0,
+        "model": "kit-planner",
+        "role": "refiner",
+        "seconds": 0.004,
+        "served_model": "kit-planner",
+        "session_id": "fake-refiner-2",
+        "step": "refining:0:refiner",
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      {
+        "cost": 0,
+        "model": "kit-planner",
+        "role": "planner",
+        "seconds": 0.002,
+        "served_model": "kit-planner",
+        "session_id": "fake-planner-2",
+        "step": "planning:0:planner",
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      {
+        "cost": 0,
+        "model": "kit-builder",
+        "role": "test-writer",
+        "seconds": 0.003,
+        "served_model": "kit-builder",
+        "session_id": "fake-test-writer-1",
+        "step": "test_writing:0:test-writer",
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      {
+        "cost": 0,
+        "model": "kit-builder",
+        "role": "coder",
+        "seconds": 1.003,
+        "served_model": "kit-builder",
+        "session_id": "fake-coder-1",
+        "step": "coding:1:coder",
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      {
+        "cost": 0,
+        "model": "kit-reviewer",
+        "role": "reviewer",
+        "seconds": 0.001,
+        "served_model": "kit-reviewer",
+        "session_id": "fake-reviewer-1",
+        "step": "reviewing:1:reviewer",
+        "tokens_in": 0,
+        "tokens_out": 0
+      }
+    ]
+  }
+}

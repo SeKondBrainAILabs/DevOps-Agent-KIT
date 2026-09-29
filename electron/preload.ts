@@ -53,6 +53,15 @@ import type {
   AgentType,
 } from '../shared/types';
 import type { McpServerStatus } from '../shared/mcp-types';
+import type {
+  HarnessClusterStatus,
+  HarnessConnection,
+  HarnessEventsPage,
+  HarnessRun,
+  HarnessRunSummary,
+  HarnessStory,
+} from '../shared/harness-types';
+import type { SessionDiff } from '../shared/git-name-status';
 
 /**
  * Type-safe API exposed to renderer process
@@ -2343,6 +2352,51 @@ const api = {
   // ==========================================================================
   // MCP SERVER API
   // ==========================================================================
+  // ==========================================================================
+  // KIT HARNESS API (KC-S2.1.2) — the Coding tab
+  // ==========================================================================
+  harness: {
+    connection: (): Promise<IpcResult<HarnessConnection>> =>
+      ipcRenderer.invoke(IPC.HARNESS_CONNECTION),
+    setConnection: (url: string, token?: string): Promise<IpcResult<HarnessConnection>> =>
+      ipcRenderer.invoke(IPC.HARNESS_SET_CONNECTION, url, token),
+    listRuns: (): Promise<IpcResult<HarnessRunSummary[]>> =>
+      ipcRenderer.invoke(IPC.HARNESS_LIST_RUNS),
+    getRun: (runId: string): Promise<IpcResult<HarnessRun>> =>
+      ipcRenderer.invoke(IPC.HARNESS_GET_RUN, runId),
+    getStory: (runId: string, storyId: string): Promise<IpcResult<HarnessStory>> =>
+      ipcRenderer.invoke(IPC.HARNESS_GET_STORY, runId, storyId),
+    submitStories: (
+      stories: unknown[],
+      options?: { repo?: string; auto_approve?: boolean; models?: Record<string, string> }
+    ): Promise<IpcResult<{ run_id: string; stories: string[] }>> =>
+      ipcRenderer.invoke(IPC.HARNESS_SUBMIT_STORIES, stories, options),
+    submitEpic: (
+      source: string,
+      repo: string,
+      options?: { auto_approve?: boolean; kind?: string; id_prefix?: string }
+    ): Promise<IpcResult<Record<string, unknown>>> =>
+      ipcRenderer.invoke(IPC.HARNESS_SUBMIT_EPIC, source, repo, options),
+    approve: (runId: string, storyId: string | null, approved: boolean, comment?: string): Promise<IpcResult<Record<string, unknown>>> =>
+      ipcRenderer.invoke(IPC.HARNESS_APPROVE, runId, storyId, approved, comment),
+    answer: (runId: string, storyId: string, text: string): Promise<IpcResult<Record<string, unknown>>> =>
+      ipcRenderer.invoke(IPC.HARNESS_ANSWER, runId, storyId, text),
+    pause: (runId: string): Promise<IpcResult<Record<string, unknown>>> =>
+      ipcRenderer.invoke(IPC.HARNESS_PAUSE, runId),
+    resume: (runId: string): Promise<IpcResult<Record<string, unknown>>> =>
+      ipcRenderer.invoke(IPC.HARNESS_RESUME, runId),
+    cancel: (runId: string): Promise<IpcResult<Record<string, unknown>>> =>
+      ipcRenderer.invoke(IPC.HARNESS_CANCEL, runId),
+    clusterStatus: (): Promise<IpcResult<HarnessClusterStatus>> =>
+      ipcRenderer.invoke(IPC.HARNESS_CLUSTER_STATUS),
+    events: (runId: string, afterEventId?: string | null): Promise<IpcResult<HarnessEventsPage>> =>
+      ipcRenderer.invoke(IPC.HARNESS_EVENTS, runId, afterEventId),
+    storyDiff: (runId: string, storyId: string): Promise<IpcResult<SessionDiff>> =>
+      ipcRenderer.invoke(IPC.HARNESS_STORY_DIFF, runId, storyId),
+    screenshot: (runId: string, storyId: string, path: string): Promise<IpcResult<string>> =>
+      ipcRenderer.invoke(IPC.HARNESS_SCREENSHOT, runId, storyId, path),
+  },
+
   mcp: {
     status: (): Promise<IpcResult<McpServerStatus>> =>
       ipcRenderer.invoke(IPC.MCP_SERVER_STATUS),
