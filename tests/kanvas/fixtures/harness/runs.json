@@ -1,0 +1,218 @@
+[
+  {
+    "run_id": "20260929T144454-3867b5",
+    "status": "done",
+    "created_at": "2026-09-29T14:44:54.093081+00:00",
+    "stories": [
+      {
+        "story_id": "KC-S9.9.1",
+        "title": "E2E greeting 1",
+        "commits": [
+          "3da66818a59b",
+          "5186319b9b23"
+        ],
+        "engine_session": null,
+        "pr_url": "https://github.com/example/pull/sess-2",
+        "questions": [],
+        "rounds": 1,
+        "session_id": "sess-2",
+        "state": "done",
+        "tokens": {
+          "by_role": {
+            "coder": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "planner": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "refiner": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "reviewer": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "test-writer": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            }
+          },
+          "cost": 0,
+          "sessions": 5,
+          "tokens_in": 0,
+          "tokens_out": 0
+        },
+        "worktree": "/tmp/claude-0/-home-user-kit-coding-harness/17487055-3dd3-5480-bf3d-dd27958c4fd0/scratchpad/harness-live/.kit/worktrees/sess-2",
+        "reason": ""
+      },
+      {
+        "story_id": "KC-S9.9.2",
+        "title": "E2E greeting 2",
+        "commits": [
+          "3edb5895a335",
+          "26b4c9172da9"
+        ],
+        "engine_session": null,
+        "pr_url": "https://github.com/example/pull/sess-3",
+        "questions": [],
+        "rounds": 1,
+        "session_id": "sess-3",
+        "state": "done",
+        "tokens": {
+          "by_role": {
+            "coder": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "planner": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "refiner": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "reviewer": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "test-writer": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            }
+          },
+          "cost": 0,
+          "sessions": 5,
+          "tokens_in": 0,
+          "tokens_out": 0
+        },
+        "worktree": "/tmp/claude-0/-home-user-kit-coding-harness/17487055-3dd3-5480-bf3d-dd27958c4fd0/scratchpad/harness-live/.kit/worktrees/sess-3",
+        "reason": ""
+      }
+    ],
+    "epic": "",
+    "source": "stories",
+    "role_totals": {
+      "refiner": {
+        "sessions": 2,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": 0
+      },
+      "planner": {
+        "sessions": 2,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": 0
+      },
+      "test-writer": {
+        "sessions": 2,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": 0
+      },
+      "coder": {
+        "sessions": 2,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": 0
+      },
+      "reviewer": {
+        "sessions": 2,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": 0
+      }
+    },
+    "totals": {
+      "sessions": 10,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost": 0
+    }
+  },
+  {
+    "run_id": "20260929T144454-39f87b",
+    "status": "running",
+    "created_at": "2026-09-29T14:44:54.103237+00:00",
+    "stories": [
+      {
+        "story_id": "KC-S9.9.3",
+        "title": "Greeting page with a CI badge",
+        "commits": [],
+        "engine_session": null,
+        "pr_url": null,
+        "questions": [],
+        "rounds": 0,
+        "session_id": "sess-1",
+        "state": "awaiting_plan_approval",
+        "tokens": {
+          "by_role": {
+            "planner": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            },
+            "refiner": {
+              "cost": 0,
+              "sessions": 1,
+              "tokens_in": 0,
+              "tokens_out": 0
+            }
+          },
+          "cost": 0,
+          "sessions": 2,
+          "tokens_in": 0,
+          "tokens_out": 0
+        },
+        "worktree": "/tmp/claude-0/-home-user-kit-coding-harness/17487055-3dd3-5480-bf3d-dd27958c4fd0/scratchpad/harness-live/.kit/worktrees/sess-1"
+      }
+    ],
+    "epic": "",
+    "source": "stories",
+    "role_totals": {
+      "refiner": {
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": 0
+      },
+      "planner": {
+        "sessions": 1,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": 0
+      }
+    },
+    "totals": {
+      "sessions": 2,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost": 0
+    }
+  }
+]

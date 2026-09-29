@@ -5,7 +5,13 @@
 
 import { create } from 'zustand';
 
-export type MainView = 'dashboard' | 'commits' | 'artefacts' | 'workspaces';
+/**
+ * Main views. 'coding' (KIT Harness, KC-S2.1.1) comes first and is the view
+ * the app opens on.
+ */
+export type MainView = 'coding' | 'dashboard' | 'commits' | 'artefacts' | 'workspaces';
+
+export const DEFAULT_MAIN_VIEW: MainView = 'coding';
 export type SidebarTab = 'artefacts' | 'agents';
 
 interface UIState {
@@ -61,7 +67,7 @@ export const useUIStore = create<UIState>((set) => ({
   sidebarTab: 'agents',
 
   // Main view
-  mainView: 'dashboard',
+  mainView: DEFAULT_MAIN_VIEW,
 
   // Modals
   showNewSessionWizard: false,

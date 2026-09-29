@@ -4,6 +4,7 @@
  * Migrated from: branch-config-manager.js + credentials-manager.js
  */
 
+import { normalizeCloudEscalation, type CloudEscalationPolicy } from '../../shared/harness-types';
 import { BaseService } from './BaseService';
 import type {
   AppConfig,
@@ -92,6 +93,18 @@ export class ConfigService extends BaseService {
     } catch (error) {
       return this.error('CONFIG_SET_FAILED', 'Failed to set config');
     }
+  }
+
+  /** The cloud-escalation policy KIT Harness reads (KC-S1.11.6); off unless set. */
+  getCloudEscalation(): CloudEscalationPolicy {
+    const stored = this.get('harnessCloudEscalation');
+    return normalizeCloudEscalation(stored.success ? stored.data : undefined);
+  }
+
+  setCloudEscalation(policy: unknown): IpcResult<CloudEscalationPolicy> {
+    const normalized = normalizeCloudEscalation(policy);
+    const saved = this.set('harnessCloudEscalation', normalized);
+    return saved.success ? this.success(normalized) : (saved as unknown as IpcResult<CloudEscalationPolicy>);
   }
 
   getAll(): IpcResult<AppConfig> {

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for running KIT for DevOps unattended (KC-S2.2.3).
+  Installed by scripts/install-launch-agent.sh, which fills in the
+  placeholders. It runs in the logged-in user's GUI session (Aqua), so the
+  Mac must log that user in automatically after a reboot.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sekondbrain.kit-for-devops</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__APP_EXECUTABLE__</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart after a crash, not after a deliberate quit. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/kit-for-devops.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/kit-for-devops.log</string>
+</dict>
+</plist>

@@ -150,7 +150,7 @@ export function Sidebar(): React.ReactElement {
  * Contains logo, quick-add, navigation icons, and user avatar.
  */
 function IconRail(): React.ReactElement {
-  const { setShowCreateAgentWizard, setSidebarTab, setMainView } = useUIStore();
+  const { setShowCreateAgentWizard, setSidebarTab, setMainView, mainView } = useUIStore();
 
   return (
     <div className="w-12 flex flex-col items-center py-3 border-r border-[rgba(0,0,0,0.10)] bg-surface-secondary">
@@ -175,8 +175,20 @@ function IconRail(): React.ReactElement {
       {/* Divider */}
       <div className="w-7 h-px bg-[rgba(0,0,0,0.10)] my-2" />
 
-      {/* Active navigation icons */}
+      {/* Active navigation icons — Coding (KIT Harness) first (KC-S2.1.1) */}
       <div className="flex flex-col gap-1">
+        <IconRailButton
+          icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
+            </svg>
+          }
+          title="Coding"
+          data-testid="nav-coding"
+          active={mainView === 'coding'}
+          onClick={() => { setSidebarTab('agents'); setMainView('coding'); }}
+        />
         <IconRailButton
           icon={
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -258,12 +270,14 @@ function IconRailButton({
   title,
   onClick,
   disabled,
+  active,
   ...rest
 }: {
   icon: React.ReactNode;
   title: string;
   onClick?: () => void;
   disabled?: boolean;
+  active?: boolean;
   'data-testid'?: string;
 }): React.ReactElement {
   return (
@@ -273,10 +287,14 @@ function IconRailButton({
         w-9 h-9 rounded-full flex items-center justify-center transition-colors
         ${disabled
           ? 'text-text-secondary/30 cursor-not-allowed'
-          : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.05)] hover:text-black cursor-pointer'
+          : active
+            ? 'bg-[rgba(0,0,0,0.08)] text-black cursor-pointer'
+            : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.05)] hover:text-black cursor-pointer'
         }
       `}
       title={title}
+      aria-label={title}
+      aria-current={active ? 'page' : undefined}
       disabled={disabled}
       {...rest}
     >

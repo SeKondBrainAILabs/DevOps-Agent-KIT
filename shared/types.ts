@@ -4,6 +4,7 @@
  */
 
 import type { CommitFile } from './git-name-status';
+import type { CloudEscalationPolicy } from './harness-types';
 
 // =============================================================================
 // SESSION TYPES
@@ -269,6 +270,17 @@ export interface AppConfig {
    * One of 'morning-check' | 'workspace-browser' | 'last-visited'.
    */
   defaultLandingView: 'morning-check' | 'workspace-browser' | 'last-visited';
+  /**
+   * KIT Harness MCP endpoint for the Coding tab (KC-S2.1.2), e.g.
+   * http://<mac-mini>:39200/mcp. Empty until set in Settings.
+   */
+  harnessUrl?: string;
+  /**
+   * Whether KIT Harness may escalate hard stories to a cloud model through
+   * Core AI Backend (KC-S1.11.6). Off by default; the harness reads it over
+   * MCP with kit_get_harness_policy.
+   */
+  harnessCloudEscalation?: CloudEscalationPolicy;
 }
 
 // =============================================================================
@@ -514,6 +526,8 @@ export interface BranchManagementSettings {
 export interface Credentials {
   groqApiKey?: string;
   openaiApiKey?: string;
+  /** Bearer token for KIT Harness's MCP server (KC-S2.1.2). */
+  harnessToken?: string;
   updatedAt?: string;
 }
 
