@@ -10,6 +10,7 @@ import { listPullRequests, canApprove, reviewPullRequest, type PrReviewAction } 
 import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from '../services/DatabaseService';
 import { isActiveInstance } from '../../shared/instance-status';
+import { checkResolveCommand } from '../../shared/resolve-commands';
 
 // Coalesce AI stream deltas before crossing the IPC boundary. The Groq stream
 // yields one delta per token; sending each over webContents.send() individually
@@ -312,6 +313,10 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
 
   ipcMain.handle(IPC.AI_REFINE_SESSION_TASK, async (_, input: { rawTask: string; agentType: string; repoName?: string }) => {
     return services.ai.refineSessionTask(input);
+  });
+
+  ipcMain.handle(IPC.AI_RESOLVE_REPO, async (_, repoPath: string, repoName: string) => {
+    return services.ai.resolveRepo(repoPath, repoName);
   });
 
   ipcMain.handle(IPC.AI_IS_CONFIGURED, async () => {
@@ -1322,46 +1327,19 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return services.quickAction.copyPath(pathToCopy);
   });
 
-  // Safe git command execution — allowlisted commands only, sandboxed to repo path
+  // Safe git command execution for the Resolve panel — guarded argv, no shell, sandboxed to repo path
   ipcMain.handle(IPC.SHELL_EXEC_GIT_SAFE, async (_, repoPath: string, command: string): Promise<{ ok: boolean; stdout: string; stderr: string; exitCode: number }> => {
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
     const execFileAsync = promisify(execFile);
 
-    // Allowlist: only safe, non-destructive git operations
-    const ALLOWED_PREFIXES = [
-      'git pull',
-      'git fetch',
-      'git push',
-      'git add',
-      'git commit',
-      'git stash',
-      'git checkout',
-      'git switch',
-      'git restore',
-      'git rebase --abort',
-      'git merge --abort',
-      'git clean -fd',
-    ];
-    const BLOCKED_PATTERNS = [
-      /--force(?!-with-lease)/,   // block --force but allow --force-with-lease
-      /reset\s+--hard/,
-      /push\s+.*--force(?!-with-lease)/,
-      /branch\s+-[Dd]/,
-      /remote\s+rm/,
-      /\brf\b/,
-      /&&|;|\||\$\(|`/,           // no chaining
-    ];
-
-    const trimmed = command.trim();
-    const allowed = ALLOWED_PREFIXES.some(p => trimmed.startsWith(p));
-    const blocked = BLOCKED_PATTERNS.some(r => r.test(trimmed));
-
-    if (!allowed || blocked) {
-      return { ok: false, stdout: '', stderr: `Command not permitted: ${trimmed}`, exitCode: 1 };
+    // Same verdict the Resolve panel shows; see shared/resolve-commands.ts.
+    const check = checkResolveCommand(command);
+    if (!check.allowed) {
+      return { ok: false, stdout: '', stderr: `Command not permitted: ${check.reason}`, exitCode: 1 };
     }
+    const parts = check.argv;
 
-    const parts = trimmed.split(/\s+/);
     try {
       const { stdout, stderr } = await execFileAsync(parts[0], parts.slice(1), {
         cwd: repoPath,

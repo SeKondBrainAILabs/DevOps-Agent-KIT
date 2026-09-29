@@ -24,6 +24,7 @@ import {
   getRepoComparator,
   type RepoSortKey,
 } from '../../../shared/repo-sort';
+import { parseResolveCommands, stripResolveCommands, type ResolveCommand } from '../../../shared/resolve-commands';
 import type { RepoStatusBlock } from './RepoStatusCard';
 import { AddWorkspaceDialog } from './AddWorkspaceDialog';
 import { StaleBranchesDialog } from './StaleBranchesDialog';
@@ -422,32 +423,9 @@ interface RepoInsightRowProps {
   onOpenBranchCleanup: (repoPath: string) => void;
 }
 
-interface ResolveCommand {
-  label: string;
-  cmd: string;
-}
-
 interface RunResult {
   ok: boolean;
   output: string;
-}
-
-function parseResolveCommands(text: string): ResolveCommand[] {
-  const results: ResolveCommand[] = [];
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^COMMAND:\s*(.+)$/);
-    if (match) {
-      // Use the preceding non-empty line as a label, stripping markdown
-      let label = '';
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = lines[j].trim().replace(/^#+\s*/, '').replace(/^\d+\.\s*/, '').replace(/\*\*/g, '');
-        if (prev) { label = prev; break; }
-      }
-      results.push({ label: label || match[1], cmd: match[1].trim() });
-    }
-  }
-  return results;
 }
 
 function RepoInsightRow({
@@ -467,7 +445,7 @@ function RepoInsightRow({
   const runAllCommands = useCallback(async (commands: ResolveCommand[]) => {
     setRunningAll(true);
     for (let i = 0; i < commands.length; i++) {
-      if (runResults[i]?.ok) continue; // skip already-succeeded commands
+      if (runResults[i]?.ok || commands[i].blockedReason) continue; // skip succeeded and blocked commands
       setRunningIndex(i);
       const r = await window.api.shell?.execGitSafe?.(repo.path, commands[i].cmd);
       const ok = r?.ok ?? false;
@@ -512,43 +490,10 @@ function RepoInsightRow({
     setResolveState('analyzing');
     setResolveText('');
 
-    const issueLines: string[] = [];
-    if (behind > 0) issueLines.push(`- ${behind} commit${behind !== 1 ? 's' : ''} behind remote (need to pull)`);
-    if (ahead > 0) issueLines.push(`- ${ahead} commit${ahead !== 1 ? 's' : ''} ahead of remote (not yet pushed)`);
-    if (staged > 0) issueLines.push(`- ${staged} staged file${staged !== 1 ? 's' : ''} waiting to be committed`);
-    if (modified > 0) issueLines.push(`- ${modified} modified file${modified !== 1 ? 's' : ''} not yet staged`);
-    if (untracked > 0) issueLines.push(`- ${untracked} untracked file${untracked !== 1 ? 's' : ''}`);
-    if (stashCount > 0) issueLines.push(`- ${stashCount} stash${stashCount !== 1 ? 'es' : ''} saved aside`);
-
-    const userMessage = `Repository: ${repo.name}\nBranch: ${branch}\n\nCurrent issues:\n${issueLines.join('\n')}`;
-    const systemMessage = `You are a concise git assistant helping a developer resolve repository issues.
-Explain what each issue means in 1-2 plain-English sentences, then give exact git commands to fix them.
-
-Rules:
-- Be concise and practical
-- No --force, no reset --hard, no branch deletion
-- If staged files exist: commit them with a sensible message
-- If modified files exist: suggest staging + committing, or stashing
-- If behind remote: git pull --rebase origin ${branch}
-- If ahead of remote: git push origin ${branch}
-- Each command must appear on its own line starting with COMMAND: (no markdown fences around it)
-
-Format your response exactly like:
-**What's happening:** [brief plain-English summary]
-
-**Steps to resolve:**
-
-1. [step description]
-COMMAND: git <command here>
-
-2. [next step if needed]
-COMMAND: git <command here>`;
-
+    // The prompt and the repo facts it needs (file names, stash origins) are
+    // assembled in the main process — see AIService.resolveRepo.
     try {
-      const result = await window.api.ai?.chat([
-        { role: 'system', content: systemMessage },
-        { role: 'user', content: userMessage },
-      ]);
+      const result = await window.api.ai?.resolveRepo(repo.path, repo.name);
       if (result?.success) {
         setResolveText(result.data ?? '');
         setResolveState('done');
@@ -567,7 +512,7 @@ COMMAND: git <command here>`;
       setResolveText('Failed to reach AI service. Is it configured?');
       setResolveState('error');
     }
-  }, [repo.name, branch, behind, ahead, staged, modified, untracked, stashCount, resolveState]);
+  }, [repo.path, repo.name, resolveState]);
 
   return (
     <div data-testid="repo-list-row" style={{ borderBottom: rowBorder }}>
@@ -782,9 +727,7 @@ COMMAND: git <command here>`;
 
           {resolveState === 'done' && (() => {
             const commands = parseResolveCommands(resolveText);
-            // Render explanation text without COMMAND: lines
-            const explanationLines = resolveText.split('\n').filter(l => !l.match(/^COMMAND:/));
-            const explanation = explanationLines.join('\n').trim();
+            const explanation = stripResolveCommands(resolveText);
 
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -800,10 +743,10 @@ COMMAND: git <command here>`;
                       <p style={{ fontSize: 11, fontFamily: 'var(--f-mono)', textTransform: 'uppercase', letterSpacing: '0.10em', color: 'rgba(0,0,0,0.40)', margin: 0 }}>
                         Commands to run
                       </p>
-                      {commands.length > 1 && (
+                      {commands.filter(c => !c.blockedReason).length > 1 && (
                         <button
                           type="button"
-                          disabled={runningAll || commands.every((_, i) => runResults[i]?.ok)}
+                          disabled={runningAll || commands.every((c, i) => c.blockedReason || runResults[i]?.ok)}
                           onClick={() => void runAllCommands(commands)}
                           style={{
                             height: 24, padding: '0 12px', fontSize: 11, borderRadius: 999, border: 'none',
@@ -833,35 +776,52 @@ COMMAND: git <command here>`;
                             <code style={{ fontSize: 12, fontFamily: 'var(--f-mono)', color: '#1e40af', flex: 1 }}>
                               {c.cmd}
                             </code>
-                            <button
-                              type="button"
-                              disabled={!!res || resolveState === 'analyzing' || runningAll}
-                              style={{
-                                height: 24,
-                                padding: '0 10px',
-                                fontSize: 11,
-                                borderRadius: 999,
-                                border: 'none',
-                                background: res ? (res.ok ? '#dcfce7' : '#fee2e2') : (runningIndex === ci ? '#e5e7eb' : '#000'),
-                                color: res ? (res.ok ? '#059669' : '#b91c1c') : (runningIndex === ci ? '#6b7280' : '#fff'),
-                                cursor: res || runningAll ? 'default' : 'pointer',
-                                fontWeight: 600,
-                                flexShrink: 0,
-                              }}
-                              onClick={async () => {
-                                const r = await window.api.shell?.execGitSafe?.(repo.path, c.cmd);
-                                setRunResults(prev => ({
-                                  ...prev,
-                                  [ci]: {
-                                    ok: r?.ok ?? false,
-                                    output: r ? `${r.stdout}${r.stderr ? '\n' + r.stderr : ''}`.trim() : 'No response',
-                                  },
-                                }));
-                              }}
-                            >
-                              {res ? (res.ok ? '✓ Done' : '✗ Failed') : (runningIndex === ci ? 'Running…' : '▶ Run')}
-                            </button>
+                            {c.blockedReason ? (
+                              <span
+                                title={c.blockedReason}
+                                style={{
+                                  height: 24, lineHeight: '24px', padding: '0 10px', fontSize: 11, borderRadius: 999,
+                                  background: '#fef3c7', color: '#92400e', fontWeight: 600, flexShrink: 0,
+                                }}
+                              >
+                                Blocked
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={!!res || resolveState === 'analyzing' || runningAll}
+                                style={{
+                                  height: 24,
+                                  padding: '0 10px',
+                                  fontSize: 11,
+                                  borderRadius: 999,
+                                  border: 'none',
+                                  background: res ? (res.ok ? '#dcfce7' : '#fee2e2') : (runningIndex === ci ? '#e5e7eb' : '#000'),
+                                  color: res ? (res.ok ? '#059669' : '#b91c1c') : (runningIndex === ci ? '#6b7280' : '#fff'),
+                                  cursor: res || runningAll ? 'default' : 'pointer',
+                                  fontWeight: 600,
+                                  flexShrink: 0,
+                                }}
+                                onClick={async () => {
+                                  const r = await window.api.shell?.execGitSafe?.(repo.path, c.cmd);
+                                  setRunResults(prev => ({
+                                    ...prev,
+                                    [ci]: {
+                                      ok: r?.ok ?? false,
+                                      output: r ? `${r.stdout}${r.stderr ? '\n' + r.stderr : ''}`.trim() : 'No response',
+                                    },
+                                  }));
+                                }}
+                              >
+                                {res ? (res.ok ? '✓ Done' : '✗ Failed') : (runningIndex === ci ? 'Running…' : '▶ Run')}
+                              </button>
+                            )}
                           </div>
+                          {c.blockedReason && (
+                            <p style={{ margin: '0.4rem 0 0', fontSize: 11, color: '#92400e' }}>
+                              Not run: {c.blockedReason}
+                            </p>
+                          )}
                           {res?.output && (
                             <pre style={{ margin: '0.4rem 0 0', fontSize: 11, fontFamily: 'var(--f-mono)', color: res.ok ? '#059669' : '#b91c1c', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                               {res.output}

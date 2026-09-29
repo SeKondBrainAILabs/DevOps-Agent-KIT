@@ -116,6 +116,7 @@ export const IPC = {
   AI_HEALTH_CHECK: 'ai:health-check',
   // Refine a raw user task into a structured agent brief (picks persona, short title, structured rewrite).
   AI_REFINE_SESSION_TASK: 'ai:refine-session-task',
+  AI_RESOLVE_REPO: 'ai:resolve-repo',
   // Events (main → renderer)
   AI_STREAM_CHUNK: 'ai:stream:chunk',
   AI_STREAM_END: 'ai:stream:end',

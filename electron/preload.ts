@@ -540,6 +540,9 @@ const api = {
       repoName?: string;
     }): Promise<IpcResult<{ persona: string; taskTitle: string; refinedTask: string }>> =>
       ipcRenderer.invoke(IPC.AI_REFINE_SESSION_TASK, input),
+
+    resolveRepo: (repoPath: string, repoName: string): Promise<IpcResult<string>> =>
+      ipcRenderer.invoke(IPC.AI_RESOLVE_REPO, repoPath, repoName),
   },
 
   // ==========================================================================

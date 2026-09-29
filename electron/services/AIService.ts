@@ -10,6 +10,9 @@ import type { ChatMessage, IpcResult } from '../../shared/types';
 import type { ConfigService } from './ConfigService';
 import { getAIConfigRegistry, type ModeConfig } from './AIConfigRegistry';
 import Groq from 'groq-sdk';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { collectResolveFacts, formatResolveVariables } from '../../shared/resolve-facts';
 
 // Available Groq models. Only models Groq still serves belong here — a
 // retired ID 404s with model_not_found on every call.
@@ -223,81 +226,16 @@ export class AIService extends BaseService {
       if (!input.rawTask || !input.rawTask.trim()) {
         throw new Error('Task is empty');
       }
-      const client = this.getClient();
-      // openai/gpt-oss-120b — measurably stronger than llama-3.3-70b at the
-      // "expand a vague brief into a specific one" task we're doing here.
-      // Still on Groq, still sub-second.
-      const modelId = GROQ_MODELS['gpt-oss-120b'];
-
-      const systemPrompt = [
-        'You are refining a raw task description so an AI coding agent has a high-quality brief.',
-        '',
-        'Adopt one of these personas based on what the task is really about:',
-        '  - "product_manager": product / design / spec / scoping / UX / requirements',
-        '  - "senior_engineer": implementation / refactor / bug / migration / infra / testing',
-        '  - "senior_ai_engineer": prompts / model / eval / RAG / agent / LLM ops',
-        '',
-        'A senior version of each persona, given a vague brief, does this:',
-        '  1. Re-states the underlying user need in one line (the WHY, not the what).',
-        '  2. Lays out the first 3-5 concrete steps the agent will actually take.',
-        '  3. Defines "done" with verifiable criteria — never tautologies like "task is done when it is done".',
-        '  4. Calls out implicit assumptions, dependencies, and ambiguities so the human can correct them.',
-        '',
-        'Output STRICT JSON with this exact shape and nothing else:',
-        '{ "persona": "...", "taskTitle": "...", "refinedTask": "..." }',
-        '',
-        'Rules:',
-        '  - taskTitle: 5-7 words, imperative ("Review X and verify Y"), no trailing period.',
-        '  - refinedTask: Markdown. Use these section headers, in order:',
-        '      **Why** — the underlying need in one sentence.',
-        '      **Approach** — 3-5 concrete bullets, each starting with an action verb.',
-        '      **Definition of Done** — specific, verifiable, measurable. Reject tautologies.',
-        '      **Open questions / assumptions** — anything the user left implicit. State assumptions you\'re making so they can be corrected.',
-        '  - Preserve every concrete detail the user gave (libraries, paths, branch names, file names, deadlines).',
-        '  - It is OK and EXPECTED to make plausible assumptions to fill gaps — but STATE them in "Open questions / assumptions". A senior PM/engineer always surfaces their assumptions.',
-        '  - Avoid: tautology, paraphrasing the brief in different words, generic platitudes ("ensure quality", "make sure to test", "follow best practices").',
-        '  - No preamble. No "as a senior X" boilerplate. No apologies. Just the four sections.',
-        '',
-        'Worked example:',
-        'USER: "Make the login faster"',
-        'GOOD output (refinedTask):',
-        '**Why**',
-        'The current login flow is slow enough that users notice — likely hurting activation.',
-        '**Approach**',
-        '- Measure baseline TTFB and Time-to-Interactive for /login on prod.',
-        '- Profile to find the dominant cost (auth call, render, network, CSS).',
-        '- Apply the single fix that targets the dominant cost.',
-        '- Re-measure and capture before/after traces.',
-        '**Definition of Done**',
-        '/login Time-to-Interactive on prod is ≥30% faster than baseline, with traces saved as evidence.',
-        '**Open questions / assumptions**',
-        '- Assuming the bottleneck is server-side until profiling shows otherwise.',
-        '- Assuming "faster" means perceived latency, not just TTFB.',
-        '- Will not change visual design unless required by the fix.',
-      ].join('\n');
-
-      const userPrompt = [
-        `Agent runtime: ${input.agentType}`,
-        input.repoName ? `Repo: ${input.repoName}` : null,
-        '',
-        'Raw task:',
-        input.rawTask.trim(),
-      ].filter(Boolean).join('\n');
-
-      const response = await client.chat.completions.create({
-        model: modelId,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        // 0.3 produced safe-but-empty rewrites that just paraphrased the
-        // user. 0.6 buys enough room to expand without going off-task.
-        temperature: 0.6,
-        max_tokens: 2048,
-        response_format: { type: 'json_object' },
+      // Prompt, model and temperature live in config/modes/session_task_refiner.yaml.
+      const raw = await this.completeWithMode({
+        modeId: 'session_task_refiner',
+        promptKey: 'refine',
+        variables: {
+          agent_type: input.agentType,
+          repo_line: input.repoName ? `Repo: ${input.repoName}` : '',
+        },
+        userMessage: input.rawTask.trim(),
       });
-
-      const raw = response.choices[0]?.message?.content || '';
       type RefineShape = { persona?: unknown; taskTitle?: unknown; refinedTask?: unknown };
       let parsed: RefineShape;
       try {
@@ -323,6 +261,29 @@ export class AIService extends BaseService {
     }, 'AI_REFINE_FAILED');
   }
 
+  /**
+   * Explain what is off with a repository and propose git commands to fix it
+   * (the "✦ Resolve" button). Gathers file names and stash origins first so
+   * the model can tell a `.env` backup from source code and this branch's
+   * stash from another agent's. Prompt: config/modes/repo_resolve.yaml.
+   */
+  async resolveRepo(repoPath: string, repoName: string): Promise<IpcResult<string>> {
+    return this.wrap(async () => {
+      const execFileAsync = promisify(execFile);
+      // Not GitService.git(): that trims stdout, which eats the leading
+      // space of the first `status --porcelain` line.
+      const git = async (args: string[]) =>
+        (await execFileAsync('git', args, { cwd: repoPath, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })).stdout;
+      const facts = await collectResolveFacts(repoName, git);
+      return this.completeWithMode({
+        modeId: 'repo_resolve',
+        promptKey: 'resolve',
+        variables: formatResolveVariables(facts),
+        userMessage: 'Diagnose this repository and give the smallest safe fix.',
+      });
+    }, 'AI_RESOLVE_FAILED');
+  }
+
   async healthCheck(): Promise<{ online: boolean; configured: boolean; error?: string }> {
     const configured = this.hasApiKey();
     if (!configured) return { online: false, configured: false, error: 'API key not configured' };
@@ -344,47 +305,51 @@ export class AIService extends BaseService {
    * Send a message using a mode's prompt template
    */
   async sendWithMode(options: ModeRequestOptions): Promise<IpcResult<string>> {
-    return this.wrap(async () => {
-      const registry = getAIConfigRegistry();
-      const mode = registry.getMode(options.modeId);
+    return this.wrap(() => this.completeWithMode(options), 'AI_MODE_CHAT_FAILED');
+  }
 
-      if (!mode) {
-        throw new Error(`Mode not found: ${options.modeId}`);
+  /**
+   * Run a mode's prompt and return the raw completion text. Throws on failure;
+   * callers that need an IpcResult go through sendWithMode.
+   */
+  private async completeWithMode(options: ModeRequestOptions): Promise<string> {
+    const registry = getAIConfigRegistry();
+    const mode = registry.getMode(options.modeId);
+
+    if (!mode) {
+      throw new Error(`Mode not found: ${options.modeId}`);
+    }
+
+    // Get model: explicit override > mode settings > default
+    const modelKey = this.resolveModelKey(options.modelOverride || mode.settings.model);
+    const modelId = GROQ_MODELS[modelKey] || this.getModelId();
+
+    // Build messages from mode prompts
+    const messages = this.buildMessagesFromMode(mode, options);
+    const request = {
+      messages,
+      temperature: mode.settings.temperature ?? 0.5,
+      max_tokens: mode.settings.max_tokens ?? 4096,
+      ...(mode.settings.response_format === 'json_object'
+        ? { response_format: { type: 'json_object' as const } }
+        : {}),
+    };
+
+    const client = this.getClient();
+    try {
+      const response = await client.chat.completions.create({ model: modelId, ...request });
+      return response.choices[0]?.message?.content || '';
+    } catch (primaryError) {
+      // If primary model fails with 404/model-not-found, fall back to a live model
+      const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+      const isModelError = errMsg.includes('404') || errMsg.includes('model_not_found') || errMsg.includes('does not exist');
+      if (isModelError && modelId !== GROQ_MODELS[FALLBACK_MODEL]) {
+        console.warn(`[AIService] Model ${modelId} unavailable (${errMsg.slice(0, 80)}), falling back to ${FALLBACK_MODEL}`);
+        const fallbackResponse = await client.chat.completions.create({ model: GROQ_MODELS[FALLBACK_MODEL], ...request });
+        return fallbackResponse.choices[0]?.message?.content || '';
       }
-
-      // Get model: explicit override > mode settings > default
-      const modelKey = this.resolveModelKey(options.modelOverride || mode.settings.model);
-      const modelId = GROQ_MODELS[modelKey] || this.getModelId();
-
-      // Build messages from mode prompts
-      const messages = this.buildMessagesFromMode(mode, options);
-
-      const client = this.getClient();
-      try {
-        const response = await client.chat.completions.create({
-          model: modelId,
-          messages,
-          temperature: mode.settings.temperature ?? 0.5,
-          max_tokens: mode.settings.max_tokens ?? 4096,
-        });
-        return response.choices[0]?.message?.content || '';
-      } catch (primaryError) {
-        // If primary model fails with 404/model-not-found, fall back to a live model
-        const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
-        const isModelError = errMsg.includes('404') || errMsg.includes('model_not_found') || errMsg.includes('does not exist');
-        if (isModelError && modelId !== GROQ_MODELS[FALLBACK_MODEL]) {
-          console.warn(`[AIService] Model ${modelId} unavailable (${errMsg.slice(0, 80)}), falling back to ${FALLBACK_MODEL}`);
-          const fallbackResponse = await client.chat.completions.create({
-            model: GROQ_MODELS[FALLBACK_MODEL],
-            messages,
-            temperature: mode.settings.temperature ?? 0.5,
-            max_tokens: mode.settings.max_tokens ?? 4096,
-          });
-          return fallbackResponse.choices[0]?.message?.content || '';
-        }
-        throw primaryError;
-      }
-    }, 'AI_MODE_CHAT_FAILED');
+      throw primaryError;
+    }
   }
 
   /**
@@ -449,11 +414,12 @@ export class AIService extends BaseService {
    * Format a prompt template with variables
    */
   formatPrompt(template: string, variables: Record<string, string>): string {
-    let result = template;
-    for (const [key, value] of Object.entries(variables)) {
-      result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
-    }
-    return result;
+    // One pass, values inserted literally: a value containing `{other_var}`
+    // (a user's task text, git output) is never expanded again, and `$&` in
+    // a value is not treated as a replacement pattern.
+    return template.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, key: string) =>
+      Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : match
+    );
   }
 
   /**
