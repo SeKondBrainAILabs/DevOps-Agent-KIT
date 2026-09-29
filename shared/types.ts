@@ -3,6 +3,8 @@
  * Used by both main (Electron) and renderer (React) processes
  */
 
+import type { CommitFile } from './git-name-status';
+
 // =============================================================================
 // SESSION TYPES
 // =============================================================================
@@ -87,6 +89,9 @@ export interface GitCommit {
   message: string;
   author: string;
   date: string;
+  /** Paths the commit changed and how (KC-S3.1.1). Set by GitService.commit. */
+  files?: CommitFile[];
+  filesChanged?: number;
 }
 
 export interface BranchInfo {

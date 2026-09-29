@@ -7,6 +7,10 @@
 // MCP SERVER STATUS
 // =============================================================================
 
+import type { CommitFile } from './git-name-status';
+
+export type { CommitFile, CommitFileStatus } from './git-name-status';
+
 export interface McpServerStatus {
   port: number | null;
   url: string | null;
@@ -28,6 +32,8 @@ export interface McpCommitResult {
   shortHash: string;
   message: string;
   filesChanged: number;
+  /** The paths the commit changed: added, modified, deleted or renamed (with from) (KC-S3.1.1). */
+  files: CommitFile[];
   pushed: boolean;
 }
 
@@ -59,6 +65,8 @@ export interface McpCommitHistoryEntry {
   author: string;
   date: string;
   filesChanged: number;
+  /** The paths each commit changed, read from git for every commit (KC-S3.1.1). */
+  files?: CommitFile[];
 }
 
 export interface McpReviewResult {

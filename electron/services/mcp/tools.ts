@@ -41,6 +41,7 @@ import {
 import { isKitWorktreePath, resolveRepoRootFromWorktree } from '../../../shared/worktree-path';
 import { deriveObserverConfig } from '../../../shared/observer-session';
 import { AGENT_TYPES } from '../../../shared/types';
+import type { CommitFile } from '../../../shared/git-name-status';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
@@ -681,7 +682,7 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_commit',
-    'Stage all changes, commit with a message, record in KIT, and optionally push. This replaces writing .devops-commit files. In multi-repo mode, specify repo to target a specific repository.',
+    'Stage all changes, commit with a message, record in KIT, and optionally push. This replaces writing .devops-commit files. In multi-repo mode, specify repo to target a specific repository. Returns the commit hash, filesChanged and files: [{path, status}] with status added, modified, deleted or renamed (renames also carry from).',
     {
       session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
@@ -736,7 +737,8 @@ export function registerTools(
         const commitData = commitResult.data;
         const hash = commitData?.hash || commitData?.commitHash || '';
         const shortHash = commitData?.shortHash || hash.substring(0, 7);
-        const filesChanged = commitData?.filesChanged || 0;
+        const files: CommitFile[] = Array.isArray(commitData?.files) ? commitData.files : [];
+        const filesChanged = commitData?.filesChanged || files.length || 0;
 
         // 2. Record in database
         if (deps.databaseService) {
@@ -817,6 +819,7 @@ export function registerTools(
           shortHash,
           message,
           filesChanged,
+          files,
           pushed,
           repo: repo || undefined,
         };
@@ -850,7 +853,7 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_commit_all',
-    'Commit changes across all repositories in a multi-repo session. Each repo with changes gets a commit with the same message.',
+    'Commit changes across all repositories in a multi-repo session. Each repo with changes gets a commit with the same message. Each repo result carries filesChanged and files: [{path, status}].',
     {
       session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
@@ -892,7 +895,7 @@ export function registerTools(
         }) }] };
       }
 
-      const results: Array<{ repoName: string; commitHash?: string; filesChanged?: number; pushed?: boolean; error?: string }> = [];
+      const results: Array<{ repoName: string; commitHash?: string; filesChanged?: number; files?: CommitFile[]; pushed?: boolean; error?: string }> = [];
 
       for (const repo of repos) {
         try {
@@ -912,7 +915,8 @@ export function registerTools(
           }
 
           const hash = commitResult.data?.hash || '';
-          const filesChanged = commitResult.data?.filesChanged || 0;
+          const repoFiles: CommitFile[] = Array.isArray(commitResult.data?.files) ? commitResult.data.files : [];
+          const filesChanged = commitResult.data?.filesChanged || repoFiles.length || 0;
 
           // Record in database
           if (deps.databaseService) {
@@ -969,7 +973,7 @@ export function registerTools(
           // Post-commit contract check
           triggerContractCheck(session_id, repo.worktreePath, hash).catch(() => {});
 
-          const repoResult: Record<string, unknown> = { repoName: repo.repoName, commitHash: hash, filesChanged, pushed };
+          const repoResult: Record<string, unknown> = { repoName: repo.repoName, commitHash: hash, filesChanged, files: repoFiles, pushed };
           if (pushError) repoResult.pushError = pushError;
           if (rebaseInfo) repoResult.rebase = { ok: rebaseInfo.ok, rewrote: rebaseInfo.rewrote, commitsIntegrated: rebaseInfo.commitsIntegrated, baseBranch: rebaseInfo.baseBranch, message: rebaseInfo.message, conflictFiles: rebaseInfo.conflictFiles };
           results.push(repoResult as any);
@@ -1198,7 +1202,7 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_get_commit_history',
-    'Get recent commit history for the session branch. In multi-repo mode, specify repo to get history for a specific repository.',
+    'Get recent commit history for the session branch. In multi-repo mode, specify repo to get history for a specific repository. Each commit carries files: [{path, status}] (added, modified, deleted or renamed).',
     {
       session_id: z.string().describe('The KIT session ID'),
       limit: z.number().optional().default(10).describe('Max number of commits to return'),
@@ -1220,7 +1224,22 @@ export function registerTools(
           return { content: [{ type: 'text', text: JSON.stringify({ error: result.error?.message || 'Failed to get history' }) }] };
         }
 
-        return { content: [{ type: 'text', text: JSON.stringify({ commits: result.data || [], repo: repo || undefined }) }] };
+        // Files per commit (KC-S3.1.1), read from git so older commits get them too.
+        const commits: any[] = result.data || [];
+        const getFiles = deps.gitService.getCommitFiles;
+        if (getFiles) {
+          for (const commit of commits) {
+            if (Array.isArray(commit.files) || !commit.hash) continue;
+            try {
+              const listed = await getFiles(worktree, commit.hash);
+              if (listed?.success && Array.isArray(listed.data)) commit.files = listed.data;
+            } catch {
+              // a commit git cannot show keeps its count without paths
+            }
+          }
+        }
+
+        return { content: [{ type: 'text', text: JSON.stringify({ commits, repo: repo || undefined }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'History fetch failed' }) }] };
       }

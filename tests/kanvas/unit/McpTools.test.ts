@@ -693,6 +693,39 @@ describe('MCP Tools', () => {
   // ==========================================================================
   // kit_commit_all
   // ==========================================================================
+  describe('mcp tools commit files (KC-S3.1.1)', () => {
+    const files = [
+      { path: 'src/new.ts', status: 'added' },
+      { path: 'src/old.ts', status: 'modified' },
+      { path: 'src/gone.ts', status: 'deleted' },
+    ];
+
+    it('kit_commit returns files alongside filesChanged', async () => {
+      mockGitService.commit.mockResolvedValue({ success: true, data: { hash: 'abc123def456', shortHash: 'abc123d', filesChanged: 3, files } });
+      const result = await callTool('kit_commit', { session_id: 'sess_test_123', message: 'feat: files', push: false });
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.filesChanged).toBe(3);
+      expect(parsed.files).toEqual(files);
+    });
+
+    it('kit_get_commit_history adds files per commit, from git for older commits', async () => {
+      mockGitService.getCommitHistory.mockResolvedValue({
+        success: true,
+        data: [
+          { hash: 'new1', shortHash: 'new1', message: 'recent', author: 't', date: '2026-09-29', filesChanged: 1, files: [{ path: 'a.ts', status: 'modified' }] },
+          { hash: 'old1', shortHash: 'old1', message: 'older', author: 't', date: '2026-01-01', filesChanged: 2 },
+        ],
+      });
+      mockGitService.getCommitFiles = (jest.fn() as any).mockResolvedValue({ success: true, data: [{ path: 'b.ts', status: 'added' }, { path: 'c.ts', status: 'deleted' }] });
+      const result = await callTool('kit_get_commit_history', { session_id: 'sess_test_123', limit: 10 });
+      const { commits } = JSON.parse(result.content[0].text);
+      expect(commits[0].files).toEqual([{ path: 'a.ts', status: 'modified' }]);
+      expect(commits[1].files).toEqual([{ path: 'b.ts', status: 'added' }, { path: 'c.ts', status: 'deleted' }]);
+      expect(mockGitService.getCommitFiles).toHaveBeenCalledTimes(1);
+      expect(mockGitService.getCommitFiles).toHaveBeenCalledWith('/tmp/worktree-test', 'old1');
+    });
+  });
+
   describe('kit_commit_all', () => {
     it('should register the tool', () => {
       expect(registeredTools.has('kit_commit_all')).toBe(true);
@@ -715,6 +748,24 @@ describe('MCP Tools', () => {
       expect(data.commits).toHaveLength(2);
       expect(data.commits[0].repoName).toBe('primary');
       expect(data.commits[1].repoName).toBe('lib-a');
+    });
+
+    it('returns files per repo result (KC-S3.1.1, two-repo session)', async () => {
+      binder.registerMultiRepoSession('sess_multi_files', [
+        { repoName: 'primary', worktreePath: '/tmp/wt-files', role: 'primary' },
+        { repoName: 'lib-a', worktreePath: '/tmp/wt-files/libs/lib-a', role: 'secondary' },
+      ]);
+      mockGitService.commit.mockImplementation(async (_sid: string, _msg: string, repo?: string) => ({
+        success: true,
+        data: repo === 'lib-a'
+          ? { hash: 'bbb', filesChanged: 1, files: [{ path: 'lib.ts', status: 'modified' }] }
+          : { hash: 'aaa', filesChanged: 2, files: [{ path: 'app.ts', status: 'added' }, { path: 'x.ts', status: 'deleted' }] },
+      }));
+      const data = parseResult(await callTool('kit_commit_all', { session_id: 'sess_multi_files', message: 'feat: both', push: false }));
+      expect(data.commits.map((c: any) => [c.repoName, c.files])).toEqual([
+        ['primary', [{ path: 'app.ts', status: 'added' }, { path: 'x.ts', status: 'deleted' }]],
+        ['lib-a', [{ path: 'lib.ts', status: 'modified' }]],
+      ]);
     });
 
     it('should return error for unknown session', async () => {

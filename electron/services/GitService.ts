@@ -12,6 +12,7 @@ import {
   type StatusEntry,
 } from '../../shared/stage-changes';
 import { IPC } from '../../shared/ipc-channels';
+import { parseNameStatus, type CommitFile } from '../../shared/git-name-status';
 import type {
   GitStatus,
   GitCommit,
@@ -430,16 +431,32 @@ export class GitService extends BaseService {
       const author = await this.git(['log', '-1', '--format=%an'], cwd);
       const date = await this.git(['log', '-1', '--format=%aI'], cwd);
 
+      // The paths it changed (KC-S3.1.1): callers get more than a count.
+      const files = parseNameStatus(await this.git(['show', '--name-status', '-M', '--format=', hash], cwd));
+
       const commit: GitCommit = {
         hash,
         shortHash,
         message,
         author,
         date,
+        files,
+        filesChanged: files.length,
       };
 
       return commit;
     }, 'GIT_COMMIT_FAILED');
+  }
+
+  /**
+   * Paths a commit changed and how, read from git itself, so it works for any
+   * commit, including ones made before commits recorded their files (KC-S3.1.1).
+   */
+  async getCommitFiles(repoPath: string, commitHash: string): Promise<IpcResult<CommitFile[]>> {
+    return this.wrap(
+      async () => parseNameStatus(await this.git(['show', '--name-status', '-M', '--format=', commitHash], repoPath)),
+      'GIT_GET_COMMIT_FILES_FAILED',
+    );
   }
 
   async push(
