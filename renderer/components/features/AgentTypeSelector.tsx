@@ -105,6 +105,30 @@ const AGENT_TYPES: AgentTypeInfo[] = [
     ),
   },
   {
+    type: 'opencode',
+    name: 'OpenCode',
+    description: 'Open-source coding agent with MCP, driven headless by KIT Harness',
+    launchMethod: 'CLI',
+    color: 'bg-slate-700',
+    icon: (
+      <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M9 8l-4 4 4 4M15 8l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    type: 'pi',
+    name: 'Pi',
+    description: 'Minimal coding agent (no MCP), driven over RPC by KIT Harness',
+    launchMethod: 'CLI',
+    color: 'bg-indigo-500',
+    icon: (
+      <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+        <text x="6" y="18" fontSize="16" fontWeight="bold">π</text>
+      </svg>
+    ),
+  },
+  {
     type: 'custom',
     name: 'Custom Agent',
     description: 'Any tool with Kanvas integration',

@@ -39,6 +39,8 @@ export const SESSION_BRANCH_AGENTS = [
   'aider',
   'warp',
   'cline',
+  'opencode',
+  'pi',
 ] as const;
 
 /**

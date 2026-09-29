@@ -121,6 +121,8 @@ export function getAgentInstructions(
     cline: getClineInstructions,
     aider: getAiderInstructions,
     warp: getWarpInstructions,
+    opencode: getOpenCodeInstructions,
+    pi: getPiInstructions,
     custom: getCustomInstructions,
   };
 
@@ -1228,6 +1230,77 @@ Activity will appear in the KIT dashboard once the MCP server is connected.
 `;
 }
 
+function getOpenCodeInstructions(vars: InstructionVars): string {
+  const mcpSection = vars.mcpUrl ? `
+### KIT MCP Setup
+Add KIT's MCP server to \`opencode.json\` in the project root (or \`~/.config/opencode/opencode.json\`):
+\`\`\`json
+{ "mcp": { "kit": { "type": "remote", "url": "${vars.mcpUrl}", "enabled": true } } }
+\`\`\`
+
+Available MCP tools: \`kit_commit\`, \`kit_commit_all\`, \`kit_get_session_info\`, \`kit_log_activity\`, \`kit_lock_file\`, \`kit_unlock_file\`, \`kit_get_commit_history\`, \`kit_request_review\`, \`kit_merge\`, \`kit_rebase\`
+
+**session_id for all MCP calls: \`${vars.sessionId}\`**
+` : `
+### Activity Tracking (No MCP)
+\`\`\`bash
+export KANVAS_SESSION_ID="${vars.sessionId}"
+\`\`\`
+`;
+
+  return `## OpenCode Agent Setup for ${vars.repoName}
+
+KIT Harness normally drives OpenCode headless (\`opencode serve\`) and makes every
+commit through KIT on its behalf. To run it by hand in this session instead:
+
+### 1. Navigate to the working directory
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+\`\`\`
+
+### 2. Start OpenCode
+\`\`\`bash
+opencode
+\`\`\`
+${mcpSection}
+### 3. Give it the task
+
+${vars.taskDescription || 'Describe the task for this session.'}
+
+Commit with \`kit_commit\` (not \`git commit\`) so KIT records the work and keeps
+the session's locks and history.
+`;
+}
+
+function getPiInstructions(vars: InstructionVars): string {
+  return `## Pi Agent Setup for ${vars.repoName}
+
+Pi has no MCP client, so it cannot call KIT's \`kit_*\` tools itself. KIT Harness
+drives Pi over RPC (\`pi --mode rpc\`) and makes the session's commits through KIT
+on its behalf. To run it by hand in this session:
+
+### 1. Navigate to the working directory
+\`\`\`bash
+cd "${vars.repoPath}"
+git checkout ${vars.branchName}
+\`\`\`
+
+### 2. Start Pi
+\`\`\`bash
+export KANVAS_SESSION_ID="${vars.sessionId}"
+pi
+\`\`\`
+
+### 3. Give it the task
+
+${vars.taskDescription || 'Describe the task for this session.'}
+
+When Pi is done, commit from KIT (the session's Commit action) rather than with
+\`git commit\`, so the work is recorded against session \`${vars.sessionId}\`.
+`;
+}
+
 function getCustomInstructions(vars: InstructionVars): string {
   const mcpSection = vars.customMcpEnabled && vars.mcpUrl ? `
 ### MCP Server (Detected as Supported)
@@ -1327,6 +1400,8 @@ export function getAgentTypeDescription(agentType: AgentType): string {
     cline: 'Cline - Autonomous coding agent for VS Code',
     aider: 'Aider - Git-aware AI pair programming in terminal',
     warp: 'Warp - AI-powered terminal with natural language commands',
+    opencode: 'OpenCode - Open-source coding agent with MCP support, driven headless by KIT Harness',
+    pi: 'Pi - Minimal coding agent (no MCP), driven over RPC by KIT Harness',
     custom: 'Custom Agent - Any tool with KIT integration',
   };
 
@@ -1345,6 +1420,8 @@ export function getAgentLaunchMethod(agentType: AgentType): 'cli' | 'ide' | 'ter
     cline: 'ide',
     aider: 'cli',
     warp: 'terminal',
+    opencode: 'cli',
+    pi: 'cli',
     custom: 'manual',
   };
 

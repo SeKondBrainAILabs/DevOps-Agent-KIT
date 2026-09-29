@@ -141,6 +141,7 @@ describe('state-changing classification', () => {
       MCP_TOOLS.LIST_BRANCHES,
       MCP_TOOLS.LIST_WORKTREES,
       MCP_TOOLS.GET_COMMIT_HISTORY,
+      MCP_TOOLS.GET_DIFF,
       MCP_TOOLS.GET_SESSION_INFO,
     ]) {
       expect(MCP_STATE_CHANGING_TOOLS.has(name)).toBe(false);

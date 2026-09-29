@@ -621,7 +621,7 @@ describe('observer read-only enforcement (A4)', () => {
     // Blocking workspace/discovery tools would make observers useless for
     // exactly the work they are best at.
     const handlers = guardHarness();
-    for (const tool of ['kit_get_session_info', 'kit_log_activity', 'kit_workspace_list']) {
+    for (const tool of ['kit_get_session_info', 'kit_log_activity', 'kit_workspace_list', 'kit_get_diff']) {
       const result = await handlers.get(tool)!({
         session_id: 'sess_obs',
         type: 'info',

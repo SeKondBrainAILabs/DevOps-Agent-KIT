@@ -22,6 +22,9 @@ import type { Server } from 'http';
 import { BaseService } from './BaseService';
 import { McpSessionBinder } from './mcp/session-binder';
 import { MCP_DEFAULT_PORT_START, MCP_SERVER_HOST } from '../../shared/mcp-types';
+import { resolveMcpBind, isMcpRequestAuthorized, type McpBindConfig } from '../../shared/mcp-bind';
+import { DEFAULT_SESSION_LIMITS } from '../../shared/session-admission';
+import { isActiveInstance } from '../../shared/instance-status';
 import { IPC } from '../../shared/ipc-channels';
 import type { McpServerStatus, McpInstallConfigStatus, McpInstallTarget } from '../../shared/mcp-types';
 import type { DebugLogService } from './DebugLogService';
@@ -62,6 +65,14 @@ export interface McpServiceDeps {
     push: (sessionId: string, repoName?: string, options?: { forceWithLease?: boolean }) => Promise<any>;
     getStatus: (sessionId: string) => Promise<any>;
     getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number) => Promise<any>;
+    // Paths a commit changed (KC-S3.1.1). Optional so older fakes keep working.
+    getCommitFiles?: (repoPath: string, commitHash: string) => Promise<any>;
+    // A session's diff against its base (KC-S3.1.4). Read-only.
+    getPendingChanges?: (worktreePath: string) => Promise<any>;
+    getSessionDiff?: (
+      worktreePath: string,
+      options?: { baseBranch?: string; since?: string; paths?: string[]; maxBytes?: number },
+    ) => Promise<any>;
     // Current branch of a worktree path, TRI-STATE: branch name | 'HEAD' (detached)
     // | null (couldn't determine). Used by the MCP worktree-divergence guards
     // (injectable so it's mockable in tests). Distinct name from the IpcResult
@@ -81,6 +92,10 @@ export interface McpServiceDeps {
     declareFiles: (repoPath: string, sessionId: string, files: string[], operation: 'edit' | 'read' | 'delete') => Promise<any>;
     releaseFiles: (repoPath: string, sessionId: string) => Promise<any>;
     forceReleaseLock: (repoPath: string, filePath: string) => Promise<any>;
+    // Protected paths (KC-S3.1.2)
+    protectPaths?: (repoPath: string, sessionId: string, patterns: string[], reason?: string) => Promise<any>;
+    unprotectPaths?: (repoPath: string, sessionId: string, patterns: string[]) => Promise<any>;
+    listProtections?: (repoPath: string, sessionId?: string) => Promise<any>;
   };
   /**
    * Session lifecycle. Both the IPC layer and this one go through the same
@@ -251,6 +266,10 @@ export class McpServerService extends BaseService {
   private httpServer: Server | null = null;
   private port: number | null = null;
   private startedAt: string | null = null;
+  // Loopback unless a LAN bind with a token is configured (KC-S2.2.2).
+  private bind: McpBindConfig = { host: MCP_SERVER_HOST, urlHost: MCP_SERVER_HOST, lan: false, token: null };
+  private appVersion = 'unknown';
+  private healthLimits: { at: number; max_global: number; max_per_repo: number } | null = null;
   private debugLog: DebugLogService | null = null;
 
   // Per-connection transports (stateful mode) — keyed by mcp-session-id
@@ -294,6 +313,11 @@ export class McpServerService extends BaseService {
 
   setDebugLog(debugLog: DebugLogService): void {
     this.debugLog = debugLog;
+  }
+
+  /** The app version /health reports; wired from app.getVersion() in services/index.ts. */
+  setAppVersion(version: string): void {
+    this.appVersion = version;
   }
 
   getMcpCallLog(limit = 200): McpCallLogEntry[] {
@@ -429,6 +453,13 @@ export class McpServerService extends BaseService {
       const detectPort = (await import('detect-port')).default;
       this.port = await detectPort(MCP_DEFAULT_PORT_START);
 
+      // Bind address and token (KC-S2.2.2): loopback unless a LAN bind with a token is set
+      this.bind = resolveMcpBind(this.deps.databaseService?.getSetting, process.env);
+      if (this.bind.warning) {
+        console.warn(`[McpServerService] ${this.bind.warning}`);
+        this.debugLog?.warn('McpServer', this.bind.warning);
+      }
+
       // Pre-load SDK classes so handleRequest doesn't need to await them
       await getMcpServer();
       await getTransport();
@@ -447,9 +478,12 @@ export class McpServerService extends BaseService {
 
       // Start listening
       await new Promise<void>((resolve, reject) => {
-        this.httpServer!.listen(this.port!, MCP_SERVER_HOST, () => {
+        this.httpServer!.listen(this.port!, this.bind.host, () => {
           this.startedAt = new Date().toISOString();
-          console.log(`[McpServerService] MCP server listening on http://${MCP_SERVER_HOST}:${this.port}/mcp`);
+          console.log(
+            `[McpServerService] MCP server listening on http://${this.bind.host}:${this.port}/mcp` +
+              (this.bind.lan ? ' (LAN bind: bearer token required off-host)' : ''),
+          );
           resolve();
         });
         this.httpServer!.on('error', reject);
@@ -521,11 +555,25 @@ export class McpServerService extends BaseService {
     // CORS headers for local development
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id, Authorization');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // LAN bind: every route needs the bearer token from off-host callers (KC-S2.2.2)
+    if (!isMcpRequestAuthorized(this.bind, req.socket?.remoteAddress, req.headers.authorization)) {
+      res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+
+    // ---- Health (KC-S3.1.3): no MCP session, no git or disk work ----
+    if (url.pathname === '/health' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(this.health()));
       return;
     }
 
@@ -773,13 +821,48 @@ export class McpServerService extends BaseService {
 
   getUrl(): string | null {
     if (!this.port) return null;
-    return `http://${MCP_SERVER_HOST}:${this.port}/mcp`;
+    return `http://${this.bind.urlHost}:${this.port}/mcp`;
   }
 
   /** Stateless JSON-RPC endpoint for Codex / type:"http" clients */
   getRpcUrl(): string | null {
     if (!this.port) return null;
-    return `http://${MCP_SERVER_HOST}:${this.port}/rpc`;
+    return `http://${this.bind.urlHost}:${this.port}/rpc`;
+  }
+
+  /**
+   * GET /health (KC-S3.1.3). Reads only in-memory state; the session caps come
+   * from the settings table at most every 30 s, so a probe never waits on git or disk.
+   */
+  health(): {
+    status: 'ok';
+    version: string;
+    uptime_s: number;
+    sessions: { active: number; max_global: number; max_per_repo: number };
+  } {
+    const now = Date.now();
+    if (!this.healthLimits || now - this.healthLimits.at > 30_000) {
+      let limits = DEFAULT_SESSION_LIMITS;
+      try {
+        limits = this.deps.databaseService?.getSessionLimits?.() ?? DEFAULT_SESSION_LIMITS;
+      } catch {
+        // keep the defaults: health must answer even when settings cannot be read
+      }
+      this.healthLimits = { at: now, max_global: limits.maxConcurrentGlobal, max_per_repo: limits.maxConcurrentPerRepo };
+    }
+    let active = 0;
+    try {
+      const listed = this.deps.agentInstanceService?.listInstances();
+      active = (listed?.data ?? []).filter((instance: any) => isActiveInstance(instance)).length;
+    } catch {
+      active = 0;
+    }
+    return {
+      status: 'ok',
+      version: this.appVersion,
+      uptime_s: this.startedAt ? Math.round((now - Date.parse(this.startedAt)) / 1000) : 0,
+      sessions: { active, max_global: this.healthLimits.max_global, max_per_repo: this.healthLimits.max_per_repo },
+    };
   }
 
   getStatus(): McpServerStatus {
@@ -789,6 +872,8 @@ export class McpServerService extends BaseService {
       isRunning: this.httpServer !== null && this.httpServer.listening,
       connectionCount: this.transports.size + this.sseTransports.size,
       startedAt: this.startedAt,
+      bindHost: this.bind.host,
+      lan: this.bind.lan,
     };
   }
 

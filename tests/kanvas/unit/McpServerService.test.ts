@@ -348,6 +348,109 @@ describe('McpServerService', () => {
     });
   });
 
+  /** A request with headers and a peer address, for the auth and health routes. */
+  async function request(
+    method: string,
+    path: string,
+    opts: { headers?: Record<string, string>; remoteAddress?: string } = {},
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve) => {
+      let status = 200;
+      const res = {
+        headersSent: false,
+        setHeader: jest.fn(),
+        writeHead: (s: number) => { status = s; },
+        end: (b?: string) => resolve({ status, body: b || '' }),
+      };
+      const req = { url: path, method, headers: opts.headers ?? {}, socket: { remoteAddress: opts.remoteAddress ?? '127.0.0.1' } };
+      mockHttpServerInstance._handler!(req, res);
+    });
+  }
+
+  function useSettings(values: Record<string, string>, extra: Record<string, unknown> = {}) {
+    service.setDatabaseService({
+      recordCommit: jest.fn(),
+      recordSessionEvent: jest.fn(),
+      getSetting: (key: string, dflt?: unknown) => values[key] ?? dflt,
+      ...extra,
+    } as any);
+  }
+
+  describe('McpServerService LAN bind (KC-S2.2.2)', () => {
+    it('stays on 127.0.0.1 by default and serves local callers without a token', async () => {
+      await service.initialize();
+      expect(mockHttpServerInstance.listen).toHaveBeenCalledWith(39100, '127.0.0.1', expect.any(Function));
+      expect((await request('GET', '/health', { remoteAddress: '10.0.0.9' })).status).toBe(200);
+      expect(service.getStatus()).toMatchObject({ bindHost: '127.0.0.1', lan: false });
+    });
+
+    it('a setting enables a LAN bind, and local agents keep the loopback URL', async () => {
+      useSettings({ 'mcp.server.bind_host': '0.0.0.0', 'mcp.server.token': 's3cret' });
+      await service.initialize();
+      expect(mockHttpServerInstance.listen).toHaveBeenCalledWith(39100, '0.0.0.0', expect.any(Function));
+      expect(service.getUrl()).toBe('http://127.0.0.1:39100/mcp');
+      expect(service.getStatus()).toMatchObject({ bindHost: '0.0.0.0', lan: true });
+    });
+
+    it('refuses a LAN bind without a token', async () => {
+      useSettings({ 'mcp.server.bind_host': '0.0.0.0' });
+      await service.initialize();
+      expect(mockHttpServerInstance.listen).toHaveBeenCalledWith(39100, '127.0.0.1', expect.any(Function));
+    });
+
+    it('mcp auth: LAN callers need the bearer token on /mcp, /rpc and /sse', async () => {
+      useSettings({ 'mcp.server.bind_host': '0.0.0.0', 'mcp.server.token': 's3cret' });
+      await service.initialize();
+      for (const [method, path] of [['POST', '/mcp'], ['POST', '/rpc'], ['GET', '/sse'], ['GET', '/health']]) {
+        const denied = await request(method, path, { remoteAddress: '192.168.1.7' });
+        expect(denied.status).toBe(401);
+        const wrong = await request(method, path, { remoteAddress: '192.168.1.7', headers: { authorization: 'Bearer nope' } });
+        expect(wrong.status).toBe(401);
+      }
+      const ok = await request('GET', '/health', { remoteAddress: '192.168.1.7', headers: { authorization: 'Bearer s3cret' } });
+      expect(ok.status).toBe(200);
+      const local = await request('GET', '/health', { remoteAddress: '127.0.0.1' });
+      expect(local.status).toBe(200);
+    });
+  });
+
+  describe('McpServerService health (KC-S3.1.3)', () => {
+    it('GET /health returns status, version, uptime and session counts', async () => {
+      useSettings({}, { getSessionLimits: () => ({ enabled: true, maxConcurrentGlobal: 6, maxConcurrentPerRepo: 3 }) });
+      service.setAgentInstanceService({
+        listInstances: () => ({ success: true, data: [{ status: 'running' }, { status: 'waiting' }, { status: 'closed' }] }),
+      } as any);
+      service.setAppVersion('2.9.2');
+      await service.initialize();
+      const { status, body } = await request('GET', '/health');
+      expect(status).toBe(200);
+      const health = JSON.parse(body);
+      expect(health).toEqual({
+        status: 'ok',
+        version: '2.9.2',
+        uptime_s: expect.any(Number),
+        sessions: { active: 2, max_global: 6, max_per_repo: 3 },
+      });
+    });
+
+    it('needs no MCP session and falls back to the default caps', async () => {
+      await service.initialize();
+      const health = JSON.parse((await request('GET', '/health')).body);
+      expect(health.sessions).toEqual({ active: 0, max_global: 8, max_per_repo: 4 });
+      expect(transportCtorMock).not.toHaveBeenCalled();
+    });
+
+    it('responds in under 50 ms and does no git work, however slow git is', async () => {
+      const never = () => new Promise(() => undefined);
+      service.setGitService({ commit: jest.fn(never), getStatus: jest.fn(never), getCommitHistory: jest.fn(never) } as any);
+      await service.initialize();
+      const started = Date.now();
+      const { status } = await request('GET', '/health');
+      expect(status).toBe(200);
+      expect(Date.now() - started).toBeLessThan(50);
+    });
+  });
+
   describe('session binder', () => {
     it('should expose session binder for external registration', () => {
       expect(service.sessionBinder).toBeDefined();

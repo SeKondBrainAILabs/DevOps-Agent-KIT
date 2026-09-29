@@ -40,6 +40,9 @@ import {
 } from '../../../shared/branch-naming';
 import { isKitWorktreePath, resolveRepoRootFromWorktree } from '../../../shared/worktree-path';
 import { deriveObserverConfig } from '../../../shared/observer-session';
+import { AGENT_TYPES } from '../../../shared/types';
+import type { CommitFile } from '../../../shared/git-name-status';
+import { PROTECTED_PATH, protectedHits, type ProtectedPathHit } from '../../../shared/protected-paths';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
@@ -675,12 +678,70 @@ export function registerTools(
     }
   }
 
+  /**
+   * The pending changes in a worktree that touch paths this session protected
+   * (KC-S3.1.2). Checked before anything is staged, so a refused commit leaves
+   * the worktree exactly as it was. Fails closed: when the session has
+   * protections but the changes cannot be listed, `error` is set.
+   */
+  async function findProtectedChanges(
+    sessionId: string,
+    worktree: string,
+  ): Promise<{ hits: ProtectedPathHit[]; error?: string }> {
+    if (!deps.lockService?.listProtections) return { hits: [] };
+    const lockRoot = resolveRepoRootFromWorktree(worktree)?.root ?? worktree;
+    const listed = await deps.lockService.listProtections(lockRoot, sessionId);
+    if (!listed?.success) return { hits: [], error: listed?.error?.message || 'Could not read protected paths' };
+    const protections = Array.isArray(listed.data) ? listed.data : [];
+    if (protections.length === 0) return { hits: [] };
+    const pending = await deps.gitService?.getPendingChanges?.(worktree);
+    if (!pending?.success || !Array.isArray(pending.data)) {
+      return { hits: [], error: pending?.error?.message || 'Could not list pending changes' };
+    }
+    return { hits: protectedHits(pending.data, protections) };
+  }
+
+  function protectedPathResponse(
+    sessionId: string,
+    tool: string,
+    found: { hits: ProtectedPathHit[]; error?: string },
+    repo?: string,
+  ) {
+    const paths = found.hits.map((h) => h.path);
+    deps.activityService?.log(
+      sessionId,
+      'warning',
+      found.error
+        ? `Commit refused: protected-path check failed (${found.error})`
+        : `Commit refused: changes touch protected paths ${paths.join(', ')}`,
+      { source: 'mcp', toolName: tool, paths, repo },
+    );
+    return {
+      isError: true,
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          error: PROTECTED_PATH,
+          tool,
+          paths,
+          hits: found.hits,
+          repo: repo || undefined,
+          ...(found.error ? { check_error: found.error } : {}),
+          instruction: found.error
+            ? 'This session has protected paths and the pending changes could not be checked against them, so nothing was committed.'
+            : 'Nothing was staged or committed. These paths are protected in this session: revert your changes to them ' +
+              '(git checkout -- <path>, or delete new files) and commit again. If a protected test is wrong, raise a test_dispute instead of editing it.',
+        }),
+      }],
+    };
+  }
+
   // --------------------------------------------------------------------------
   // kit_commit — Stage + commit + record + push (optional repo for multi-repo)
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_commit',
-    'Stage all changes, commit with a message, record in KIT, and optionally push. This replaces writing .devops-commit files. In multi-repo mode, specify repo to target a specific repository.',
+    'Stage all changes, commit with a message, record in KIT, and optionally push. This replaces writing .devops-commit files. In multi-repo mode, specify repo to target a specific repository. Returns the commit hash, filesChanged and files: [{path, status}] with status added, modified, deleted or renamed (renames also carry from).',
     {
       session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
@@ -701,6 +762,12 @@ export function registerTools(
 
       if (!deps.gitService) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Git service not available' }) }] };
+      }
+
+      // Protected paths (KC-S3.1.2): refuse before staging anything.
+      const protectedChanges = await findProtectedChanges(session_id, worktree);
+      if (protectedChanges.error || protectedChanges.hits.length > 0) {
+        return protectedPathResponse(session_id, 'kit_commit', protectedChanges, repo);
       }
 
       // Pre-commit sanity gate — catches the f7f05bb-class truncation that
@@ -735,7 +802,8 @@ export function registerTools(
         const commitData = commitResult.data;
         const hash = commitData?.hash || commitData?.commitHash || '';
         const shortHash = commitData?.shortHash || hash.substring(0, 7);
-        const filesChanged = commitData?.filesChanged || 0;
+        const files: CommitFile[] = Array.isArray(commitData?.files) ? commitData.files : [];
+        const filesChanged = commitData?.filesChanged || files.length || 0;
 
         // 2. Record in database
         if (deps.databaseService) {
@@ -816,6 +884,7 @@ export function registerTools(
           shortHash,
           message,
           filesChanged,
+          files,
           pushed,
           repo: repo || undefined,
         };
@@ -849,7 +918,7 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_commit_all',
-    'Commit changes across all repositories in a multi-repo session. Each repo with changes gets a commit with the same message.',
+    'Commit changes across all repositories in a multi-repo session. Each repo with changes gets a commit with the same message. Each repo result carries filesChanged and files: [{path, status}].',
     {
       session_id: z.string().describe('The KIT session ID'),
       message: z.string().describe('Commit message (conventional commits format preferred)'),
@@ -869,6 +938,16 @@ export function registerTools(
 
       if (!deps.gitService) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Git service not available' }) }] };
+      }
+
+      // Protected paths (KC-S3.1.2), per repo: any hit refuses the whole commit.
+      for (const r of repos) {
+        const wt = binder.getWorktreePathForRepo(session_id, r.repoName);
+        if (!wt) continue;
+        const found = await findProtectedChanges(session_id, wt);
+        if (found.error || found.hits.length > 0) {
+          return protectedPathResponse(session_id, 'kit_commit_all', found, r.repoName);
+        }
       }
 
       // Sanity gate per repo. If ANY repo blocks, refuse the whole multi-repo
@@ -891,7 +970,7 @@ export function registerTools(
         }) }] };
       }
 
-      const results: Array<{ repoName: string; commitHash?: string; filesChanged?: number; pushed?: boolean; error?: string }> = [];
+      const results: Array<{ repoName: string; commitHash?: string; filesChanged?: number; files?: CommitFile[]; pushed?: boolean; error?: string }> = [];
 
       for (const repo of repos) {
         try {
@@ -911,7 +990,8 @@ export function registerTools(
           }
 
           const hash = commitResult.data?.hash || '';
-          const filesChanged = commitResult.data?.filesChanged || 0;
+          const repoFiles: CommitFile[] = Array.isArray(commitResult.data?.files) ? commitResult.data.files : [];
+          const filesChanged = commitResult.data?.filesChanged || repoFiles.length || 0;
 
           // Record in database
           if (deps.databaseService) {
@@ -968,7 +1048,7 @@ export function registerTools(
           // Post-commit contract check
           triggerContractCheck(session_id, repo.worktreePath, hash).catch(() => {});
 
-          const repoResult: Record<string, unknown> = { repoName: repo.repoName, commitHash: hash, filesChanged, pushed };
+          const repoResult: Record<string, unknown> = { repoName: repo.repoName, commitHash: hash, filesChanged, files: repoFiles, pushed };
           if (pushError) repoResult.pushError = pushError;
           if (rebaseInfo) repoResult.rebase = { ok: rebaseInfo.ok, rewrote: rebaseInfo.rewrote, commitsIntegrated: rebaseInfo.commitsIntegrated, baseBranch: rebaseInfo.baseBranch, message: rebaseInfo.message, conflictFiles: rebaseInfo.conflictFiles };
           results.push(repoResult as any);
@@ -1065,15 +1145,19 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_lock_file',
-    'Declare intent to edit files. Returns conflicts if another session holds locks on the same files.',
+    'Declare intent to edit files. Returns conflicts if another session holds locks on the same files. ' +
+    'With mode "protect", the paths (or globs such as tests/**) are protected in THIS session instead: kit_commit and ' +
+    'kit_commit_all in this session then refuse any commit touching them with error PROTECTED_PATH. Protection persists ' +
+    'across restarts and is lifted only by kit_unlock_file naming the same paths, from this session.',
     {
       session_id: z.string().describe('The KIT session ID'),
-      files: z.array(z.string()).describe('File paths to lock (relative to worktree)'),
+      files: z.array(z.string()).describe('File paths to lock (relative to worktree); in protect mode, paths or globs'),
       cwd: z.string().describe('Your current shell working directory (run `pwd`). REQUIRED — must be the session worktree.'),
       reason: z.string().optional().describe('Reason for the lock'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
+      mode: z.enum(['advisory', 'protect']).optional().describe('"advisory" (default): warn other sessions. "protect": this session\'s own commits may not touch these paths.'),
     },
-    withCallLog('kit_lock_file', async ({ session_id, files, cwd, reason, repo }) => {
+    withCallLog('kit_lock_file', async ({ session_id, files, cwd, reason, repo, mode }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -1096,6 +1180,25 @@ export function registerTools(
         // result: kit_lock_file always reported "no conflicts" regardless of
         // who actually held the file.
         const lockRoot = resolveRepoRootFromWorktree(worktree)?.root ?? worktree;
+
+        if (mode === 'protect') {
+          if (!deps.lockService.protectPaths) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: 'Protected paths not supported by the lock service' }) }] };
+          }
+          const protectedResult = await deps.lockService.protectPaths(lockRoot, session_id, files, reason);
+          if (!protectedResult?.success) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: protectedResult?.error?.message || 'Protect failed' }) }] };
+          }
+          deps.activityService?.log(session_id, 'info', `Protected paths: ${files.join(', ')}`, {
+            files,
+            reason,
+            repo,
+            mode,
+            source: 'mcp',
+          });
+          const protectedPatterns = (protectedResult.data ?? []).map((p: any) => p.pattern);
+          return { content: [{ type: 'text', text: JSON.stringify({ locked: true, mode, files, protected: protectedPatterns, conflicts: [] }) }] };
+        }
 
         // Check for conflicts first
         const conflictResult = await deps.lockService.checkConflicts(lockRoot, files, session_id);
@@ -1151,7 +1254,9 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_unlock_file',
-    'Release file locks for this session. If no files specified, releases all locks.',
+    'Release file locks for this session. If no files specified, releases all advisory locks. Protected paths ' +
+    '(kit_lock_file mode "protect") are lifted only by naming them, and only by the session that protected them; ' +
+    'naming a path another session protected returns error PROTECTION_NOT_OWNED and leaves that protection in place.',
     {
       session_id: z.string().describe('The KIT session ID'),
       files: z.array(z.string()).optional().describe('Specific files to unlock. Omit to release all.'),
@@ -1173,6 +1278,26 @@ export function registerTools(
         const worktree = binder.getWorktreePathForRepo(session_id, repo)!;
         const lockRoot = resolveRepoRootFromWorktree(worktree)?.root ?? worktree;
 
+        // Protected paths (KC-S3.1.2): only the owner may lift them.
+        let unprotected: string[] = [];
+        if (files && files.length > 0 && deps.lockService.unprotectPaths) {
+          const lifted = await deps.lockService.unprotectPaths(lockRoot, session_id, files);
+          if (!lifted?.success) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: lifted?.error?.message || 'Unprotect failed' }) }] };
+          }
+          const refused = lifted.data?.refused ?? [];
+          unprotected = lifted.data?.released ?? [];
+          if (refused.length > 0) {
+            deps.activityService?.log(session_id, 'warning',
+              `Unlock refused: ${refused.map((r: any) => r.pattern).join(', ')} protected by another session`,
+              { refused, source: 'mcp' });
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ unlocked: false, error: 'PROTECTION_NOT_OWNED', refused, unprotected }) }],
+            };
+          }
+        }
+
         if (files && files.length > 0) {
           for (const file of files) {
             await deps.lockService.forceReleaseLock(lockRoot, file);
@@ -1183,7 +1308,7 @@ export function registerTools(
 
         const unlockedLabel = files ? files.join(', ') : 'all files';
         deps.activityService?.log(session_id, 'git', `Unlocked: ${unlockedLabel}`, { files, source: 'mcp' });
-        return { content: [{ type: 'text', text: JSON.stringify({ unlocked: true, files: files || 'all' }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ unlocked: true, files: files || 'all', ...(unprotected.length ? { unprotected } : {}) }) }] };
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Unlock failed';
         deps.activityService?.log(session_id, 'error', `Unlock failed: ${errMsg}`, { source: 'mcp' });
@@ -1197,7 +1322,7 @@ export function registerTools(
   // --------------------------------------------------------------------------
   srv.tool(
     'kit_get_commit_history',
-    'Get recent commit history for the session branch. In multi-repo mode, specify repo to get history for a specific repository.',
+    'Get recent commit history for the session branch. In multi-repo mode, specify repo to get history for a specific repository. Each commit carries files: [{path, status}] (added, modified, deleted or renamed).',
     {
       session_id: z.string().describe('The KIT session ID'),
       limit: z.number().optional().default(10).describe('Max number of commits to return'),
@@ -1219,9 +1344,70 @@ export function registerTools(
           return { content: [{ type: 'text', text: JSON.stringify({ error: result.error?.message || 'Failed to get history' }) }] };
         }
 
-        return { content: [{ type: 'text', text: JSON.stringify({ commits: result.data || [], repo: repo || undefined }) }] };
+        // Files per commit (KC-S3.1.1), read from git so older commits get them too.
+        const commits: any[] = result.data || [];
+        const getFiles = deps.gitService.getCommitFiles;
+        if (getFiles) {
+          for (const commit of commits) {
+            if (Array.isArray(commit.files) || !commit.hash) continue;
+            try {
+              const listed = await getFiles(worktree, commit.hash);
+              if (listed?.success && Array.isArray(listed.data)) commit.files = listed.data;
+            } catch {
+              // a commit git cannot show keeps its count without paths
+            }
+          }
+        }
+
+        return { content: [{ type: 'text', text: JSON.stringify({ commits, repo: repo || undefined }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'History fetch failed' }) }] };
+      }
+    })
+  );
+
+  // --------------------------------------------------------------------------
+  // kit_get_diff — The session's unified diff against its base (KC-S3.1.4)
+  // --------------------------------------------------------------------------
+  srv.tool(
+    'kit_get_diff',
+    'Read-only. The session\'s unified diff against its base branch (the merge-base), or since a given commit: ' +
+    'committed and uncommitted changes to tracked files. Returns {diff, files: [{path, status, additions, deletions, binary?}], truncated, base}. ' +
+    'The diff is capped at max_bytes (default 200 KB) with truncated: true; binary files are listed, not inlined. ' +
+    'Allowed for observer sessions, so a reviewer can read the diff it is reviewing.',
+    {
+      session_id: z.string().describe('The KIT session ID'),
+      since: z.string().optional().describe('A commit to diff from instead of the merge-base with the base branch'),
+      paths: z.array(z.string()).optional().describe('Limit the diff to these paths (git pathspecs)'),
+      max_bytes: z.number().int().min(1).optional().describe('Cap on the diff text in bytes (default 204800)'),
+      repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
+    },
+    withCallLog('kit_get_diff', async ({ session_id, since, paths, max_bytes, repo }) => {
+      const worktree = binder.getWorktreePathForRepo(session_id, repo);
+      if (!worktree) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
+      }
+      if (!deps.gitService?.getSessionDiff) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Git service not available' }) }] };
+      }
+      let baseBranch: string | undefined;
+      try {
+        const listed = deps.agentInstanceService?.listInstances?.();
+        const inst = listed?.success && Array.isArray(listed.data)
+          ? listed.data.find((i: any) => i.sessionId === session_id)
+          : undefined;
+        baseBranch = inst?.config?.baseBranch;
+      } catch {
+        baseBranch = undefined;
+      }
+      try {
+        const result = await deps.gitService.getSessionDiff(worktree, { baseBranch, since, paths, maxBytes: max_bytes });
+        if (!result?.success) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: result?.error?.message || 'Diff failed' }) }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ ...result.data, repo: repo || undefined }) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : 'Diff failed' }) }] };
       }
     })
   );
@@ -1504,7 +1690,7 @@ export function registerTools(
       repo_path: z.string().describe('Absolute path to the git repository root the new session works in.'),
       task: z.string().min(1).describe('What this session is for, in one sentence. Shown in the KIT UI and embedded in the agent prompt.'),
       session_id: z.string().optional().describe('YOUR own KIT session id. The new session is recorded as its child so you can later close everything you spawned in one kit_close_sessions call.'),
-      agent_type: z.enum(['claude', 'cursor', 'codex', 'copilot', 'aider', 'cline', 'warp', 'custom']).optional().describe('Which coding agent will run in this session. Defaults to claude.'),
+      agent_type: z.enum(AGENT_TYPES).optional().describe('Which coding agent will run in this session. Defaults to claude.'),
       isolation: z.enum(['worktree', 'observer']).optional().describe("\"worktree\" (default) gives the session its own branch and worktree directory with full read/write. \"observer\" gives it NO worktree: it borrows another session's directory (or a repo checkout) and every write tool — kit_commit, kit_merge, kit_rebase, kit_lock_file — is refused. Use observer for reviewers and analysts that must not mutate the tree; it costs no disk and no watcher."),
       observe_session_id: z.string().optional().describe("With isolation=\"observer\": the session whose worktree to borrow. Omit to observe repo_path directly."),
       branch_name: z.string().optional().describe('Branch to create. Omit and KIT derives one in the same shape the UI uses.'),
