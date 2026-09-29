@@ -3,7 +3,7 @@
  * Creates and manages all main process services
  */
 
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { SessionService } from './SessionService';
 import { GitService } from './GitService';
 import { WatcherService } from './WatcherService';
@@ -296,6 +296,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Initialize MCP Server service
   // Provides MCP protocol interface for coding agents (Claude Code, Cursor, etc.)
   const mcpServer = new McpServerService();
+  mcpServer.setAppVersion(app.getVersion());
   mcpServer.setGitService(git);
   mcpServer.setActivityService(activity);
   mcpServer.setLockService(lock);

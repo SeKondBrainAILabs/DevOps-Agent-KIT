@@ -13,6 +13,10 @@ export interface McpServerStatus {
   isRunning: boolean;
   connectionCount: number;
   startedAt: string | null;
+  /** Address the server listens on; 127.0.0.1 unless a LAN bind is configured (KC-S2.2.2). */
+  bindHost?: string;
+  /** True on a LAN bind, where off-host callers need the bearer token. */
+  lan?: boolean;
 }
 
 // =============================================================================
