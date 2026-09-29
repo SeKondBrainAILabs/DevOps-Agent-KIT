@@ -595,7 +595,14 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
   });
 
   ipcMain.handle(IPC.INSTANCE_UPDATE_BASE_BRANCH, async (_, sessionId: string, newBaseBranch: string) => {
-    return services.agentInstance.updateBaseBranch(sessionId, newBaseBranch);
+    const result = await services.agentInstance.updateBaseBranch(sessionId, newBaseBranch);
+    if (result.success) {
+      await services.rebaseWatcher.updateBaseBranch(
+        sessionId,
+        newBaseBranch.replace(/^origin\//, '')
+      );
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.INSTANCE_REPAIR_STALE_REBASE, async (_, instanceId: string) => {
@@ -1668,6 +1675,7 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     enabled?: boolean;
     maxConcurrentGlobal?: number;
     maxConcurrentPerRepo?: number;
+    agentsMayCloseUiSessions?: boolean;
   }) => {
     return { success: true, data: databaseService.setSessionLimits(patch ?? {}) };
   });

@@ -87,11 +87,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   // is the number people hit first when fanning out.
   const [sessionPolicy, setSessionPolicy] = useState<{
     enabled: boolean; maxConcurrentGlobal: number; maxConcurrentPerRepo: number;
+    agentsMayCloseUiSessions: boolean;
   } | null>(null);
   const [policySaving, setPolicySaving] = useState(false);
 
   const saveSessionPolicy = async (patch: {
     enabled?: boolean; maxConcurrentGlobal?: number; maxConcurrentPerRepo?: number;
+    agentsMayCloseUiSessions?: boolean;
   }): Promise<void> => {
     setPolicySaving(true);
     try {
@@ -990,6 +992,29 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                     meaning unlimited — use the toggle above to stop agents entirely.
                     Lowering a cap never closes sessions that are already running.
                   </p>
+                </div>
+
+                <div className="bg-surface-tertiary rounded-lg p-3 space-y-2">
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-gray-300">
+                      Let agents close sessions I started
+                      <span className="block text-[11px] text-gray-500">
+                        Off by default. When on, an agent can close a session you created
+                        in KIT, and delete its worktree and branch, if it passes
+                        allow_foreign. It still can't discard uncommitted or unpushed work
+                        unless it forces that explicitly.
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={sessionPolicy?.agentsMayCloseUiSessions ?? false}
+                      disabled={!sessionPolicy || policySaving}
+                      onChange={(e) =>
+                        void saveSessionPolicy({ agentsMayCloseUiSessions: e.target.checked })
+                      }
+                      className="accent-accent"
+                    />
+                  </label>
                 </div>
               </div>
 

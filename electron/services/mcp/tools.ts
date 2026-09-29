@@ -1747,7 +1747,7 @@ export function registerTools(
       delete_remote_branch: z.boolean().optional().describe('DESTRUCTIVE. Also delete the branch on origin. Only when the work is merged or abandoned.'),
       force_dirty: z.boolean().optional().describe('DISCARDS UNCOMMITTED WORK. Only set after the user explicitly authorised it.'),
       force_unpushed: z.boolean().optional().describe('DISCARDS COMMITS THAT EXIST NOWHERE ELSE. Only set after the user explicitly authorised it.'),
-      allow_foreign: z.boolean().optional().describe("Permit closing another agent's session. Never permits closing a session a human created in the KIT UI."),
+      allow_foreign: z.boolean().optional().describe("Permit closing a session you did not create. For a session a human created in the KIT UI (or one that was adopted) this works only when the user has turned on \"Let agents close sessions I started\" in Settings › MCP; otherwise it is refused."),
     },
     withCallLog('kit_close_session', async (args: any) => {
       if (!deps.sessionOrchestrator?.closeSession) return notAvailable('sessionOrchestrator');
@@ -1974,7 +1974,7 @@ export function registerTools(
       delete_remote_branch: z.boolean().optional().describe('DESTRUCTIVE, applied per session.'),
       force_dirty: z.boolean().optional().describe('DISCARDS UNCOMMITTED WORK in every matched session.'),
       force_unpushed: z.boolean().optional().describe('DISCARDS UNPUSHED COMMITS in every matched session.'),
-      allow_foreign: z.boolean().optional().describe("Permit closing other agents' sessions. Never permits closing a human's."),
+      allow_foreign: z.boolean().optional().describe("Permit closing sessions you did not create. A human's sessions (created_by ui or adopted) are closable only when the user has turned on \"Let agents close sessions I started\" in Settings › MCP."),
     },
     withCallLog('kit_close_sessions', async (args: any) => {
       if (!deps.sessionOrchestrator?.closeSessions) return notAvailable('sessionOrchestrator');

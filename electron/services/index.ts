@@ -441,6 +441,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
     watcher,
     rebaseWatcher,
     binder: mcpServer.sessionBinder,
+    agentsMayCloseUiSessions: () => databaseService.getSessionLimits().agentsMayCloseUiSessions,
     // R1. Narrow function refs rather than the services themselves, so the
     // reaper cannot reach anything else on them — it is the one code path that
     // deletes worktrees unattended.
