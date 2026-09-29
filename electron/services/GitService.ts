@@ -34,6 +34,7 @@ import {
 import { promises as fs } from 'fs';
 import { existsSync, statSync, readFileSync } from 'fs';
 import path from 'path';
+import { meaningfulStatusLines, porcelainPath } from '../../shared/kit-generated-files';
 
 // Map to track worktree paths by session ID
 const worktreePaths: Map<string, { repoPath: string; worktreePath: string }> = new Map();
@@ -665,7 +666,7 @@ export class GitService extends BaseService {
     return this.wrap(async () => {
       let status: string;
       try {
-        status = await this.git(['status', '--porcelain'], worktreePath);
+        status = await this.git(['status', '--porcelain', '--untracked-files=all'], worktreePath);
       } catch (err) {
         // We could not even read the worktree. Report inconclusive AND assume
         // there is work, so every caller refuses to delete.
@@ -677,9 +678,9 @@ export class GitService extends BaseService {
         };
       }
 
-      const hasUncommittedChanges = status
-        .split('\n')
-        .some((line) => line.trim().length > 0);
+      // KIT's own per-session files are not work, so they do not hold a
+      // session back from being reaped.
+      const hasUncommittedChanges = meaningfulStatusLines(status).length > 0;
 
       if (!baseBranch) {
         return {
@@ -2314,18 +2315,17 @@ export class GitService extends BaseService {
       };
 
       const [statusOut, mainLogOut, devLogOut] = await Promise.all([
-        safe(this.git(['status', '--porcelain'], worktreePath), ''),
+        safe(this.git(['status', '--porcelain', '--untracked-files=all'], worktreePath), ''),
         safe(this.git(['log', 'main..HEAD', '--oneline'], worktreePath), ''),
         safe(this.git(['log', 'development..HEAD', '--oneline'], worktreePath), ''),
       ]);
 
-      const uncommittedFiles = statusOut
-        .split('\n')
-        .filter((line) => line.trim().length > 0)
-        .map((line) => ({
-          status: line.slice(0, 2).trim(),
-          path: line.slice(3).trim(),
-        }));
+      // KIT rewrites .claude/settings.json and friends in every worktree, so
+      // counting them made nearly every session look dirty.
+      const uncommittedFiles = meaningfulStatusLines(statusOut).map((line) => ({
+        status: line.slice(0, 2).trim(),
+        path: porcelainPath(line),
+      }));
 
       const mainCommits = mainLogOut.split('\n').filter((l) => l.trim().length > 0);
       const devCommits = devLogOut.split('\n').filter((l) => l.trim().length > 0);

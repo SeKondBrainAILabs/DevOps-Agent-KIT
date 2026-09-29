@@ -85,6 +85,7 @@ import {
   type WorktreeStatus,
 } from '../../shared/worktree-outcome';
 import { isObserverSession, refuseDestructiveForObserver } from '../../shared/observer-session';
+import { meaningfulStatusLines } from '../../shared/kit-generated-files';
 import {
   planNodeModules,
   type NodeModulesSetting,
@@ -2843,17 +2844,40 @@ ${DEVOPS_KIT_DIR}/
     let unpushedCommitCount = 0;
     let hasRemoteBranch = false;
 
-    const checkPath = worktreePath || repoPath;
-    // Count against the worktree (where the branch is actually checked out) so
-    // HEAD resolves to the session branch even when the main repo is on a
-    // different branch.
-    const countPath = worktreePath || repoPath;
+    // Where is the session branch actually checked out? Its worktree if that
+    // still exists; the main checkout only when the main checkout is ON the
+    // session branch (an in-place session). Falling back to the main checkout
+    // unconditionally reported whatever happened to be lying around there —
+    // a stray .env.bak made every worktree-less session look dirty.
+    let checkedOutAt: string | null =
+      worktreePath && existsSync(worktreePath) ? worktreePath : null;
+    if (!checkedOutAt) {
+      const current = await execaCmd('git', ['branch', '--show-current'], { cwd: repoPath })
+        .then((o) => o.stdout.trim())
+        .catch(() => '');
+      if (current && current === branchName) checkedOutAt = repoPath;
+    }
+    const localBranchExists = await execaCmd(
+      'git',
+      ['rev-parse', '--verify', '--quiet', `refs/heads/${branchName}`],
+      { cwd: repoPath }
+    )
+      .then(() => true)
+      .catch(() => false);
 
-    try {
-      // Check uncommitted changes
-      const statusOut = await execaCmd('git', ['status', '--porcelain'], { cwd: checkPath });
-      hasUncommittedChanges = statusOut.stdout.trim().length > 0;
-    } catch { /* ignore */ }
+    // Count against the checkout's HEAD when there is one, else the branch ref,
+    // so the main repo being on a different branch never skews the count.
+    const countPath = checkedOutAt || repoPath;
+    const tip = checkedOutAt ? 'HEAD' : branchName;
+
+    if (checkedOutAt) {
+      try {
+        const statusOut = await execaCmd('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: checkedOutAt });
+        // KIT's own per-session files (.claude/settings.json and friends) are
+        // not anybody's work — see shared/kit-generated-files.
+        hasUncommittedChanges = meaningfulStatusLines(statusOut.stdout).length > 0;
+      } catch { /* ignore */ }
+    }
 
     // ------------------------------------------------------------------
     // Unpushed / at-risk commit count.
@@ -2878,7 +2902,7 @@ ${DEVOPS_KIT_DIR}/
       try {
         const out = await execaCmd(
           'git',
-          ['rev-list', '--count', '--cherry-pick', '--right-only', `${base}...HEAD`],
+          ['rev-list', '--count', '--cherry-pick', '--right-only', `${base}...${tip}`],
           { cwd: countPath }
         );
         const n = parseInt(out.stdout.trim(), 10);
@@ -2896,13 +2920,16 @@ ${DEVOPS_KIT_DIR}/
       // No comparable baseline at all — fall back to raw commit count so a
       // brand-new never-pushed branch still warns about its real work.
       try {
-        const out = await execaCmd('git', ['rev-list', '--count', 'HEAD'], { cwd: countPath });
+        const out = await execaCmd('git', ['rev-list', '--count', tip], { cwd: countPath });
         const n = parseInt(out.stdout.trim(), 10);
         if (Number.isFinite(n)) totalCommits = n;
       } catch { /* ignore */ }
     }
 
-    unpushedCommitCount = resolveUnpushedCount({ vsRemoteBranch, vsBaseBranch }, totalCommits);
+    // No checkout and no local branch: nothing local exists to lose.
+    unpushedCommitCount = checkedOutAt || localBranchExists
+      ? resolveUnpushedCount({ vsRemoteBranch, vsBaseBranch }, totalCommits)
+      : 0;
 
     try {
       // Check if remote branch exists
