@@ -40,6 +40,7 @@ import {
 } from '../../../shared/branch-naming';
 import { isKitWorktreePath, resolveRepoRootFromWorktree } from '../../../shared/worktree-path';
 import { deriveObserverConfig } from '../../../shared/observer-session';
+import { AGENT_TYPES } from '../../../shared/types';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
@@ -1504,7 +1505,7 @@ export function registerTools(
       repo_path: z.string().describe('Absolute path to the git repository root the new session works in.'),
       task: z.string().min(1).describe('What this session is for, in one sentence. Shown in the KIT UI and embedded in the agent prompt.'),
       session_id: z.string().optional().describe('YOUR own KIT session id. The new session is recorded as its child so you can later close everything you spawned in one kit_close_sessions call.'),
-      agent_type: z.enum(['claude', 'cursor', 'codex', 'copilot', 'aider', 'cline', 'warp', 'custom']).optional().describe('Which coding agent will run in this session. Defaults to claude.'),
+      agent_type: z.enum(AGENT_TYPES).optional().describe('Which coding agent will run in this session. Defaults to claude.'),
       isolation: z.enum(['worktree', 'observer']).optional().describe("\"worktree\" (default) gives the session its own branch and worktree directory with full read/write. \"observer\" gives it NO worktree: it borrows another session's directory (or a repo checkout) and every write tool — kit_commit, kit_merge, kit_rebase, kit_lock_file — is refused. Use observer for reviewers and analysts that must not mutate the tree; it costs no disk and no watcher."),
       observe_session_id: z.string().optional().describe("With isolation=\"observer\": the session whose worktree to borrow. Omit to observe repo_path directly."),
       branch_name: z.string().optional().describe('Branch to create. Omit and KIT derives one in the same shape the UI uses.'),

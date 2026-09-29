@@ -26,6 +26,15 @@ describe('AgentTypeSelector', () => {
     expect(screen.getByText('Custom Agent')).toBeInTheDocument();
   });
 
+  it('offers OpenCode and Pi, the engines KIT Harness drives (KC-S2.2.1)', () => {
+    render(<AgentTypeSelector selectedType={null} onSelect={mockOnSelect} />);
+
+    fireEvent.click(screen.getByText('OpenCode'));
+    expect(mockOnSelect).toHaveBeenCalledWith('opencode');
+    fireEvent.click(screen.getByText('Pi'));
+    expect(mockOnSelect).toHaveBeenCalledWith('pi');
+  });
+
   it('should display the label for agent type selection', () => {
     render(<AgentTypeSelector selectedType={null} onSelect={mockOnSelect} />);
 
@@ -92,7 +101,7 @@ describe('AgentTypeSelector', () => {
 
     // All agent type buttons should be in a grid
     const buttons = screen.getAllByRole('button');
-    expect(buttons.length).toBe(8); // 8 agent types (claude, cursor, copilot, cline, aider, warp, codex, custom)
+    expect(buttons.length).toBe(10); // claude, cursor, copilot, cline, aider, warp, codex, opencode, pi, custom
   });
 
   describe('Agent Type Selection', () => {
@@ -103,6 +112,8 @@ describe('AgentTypeSelector', () => {
       { type: 'cline', name: 'Cline' },
       { type: 'aider', name: 'Aider' },
       { type: 'warp', name: 'Warp' },
+      { type: 'opencode', name: 'OpenCode' },
+      { type: 'pi', name: 'Pi' },
       { type: 'custom', name: 'Custom Agent' },
     ];
 

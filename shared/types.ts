@@ -9,7 +9,25 @@
 
 export type SessionStatus = 'idle' | 'active' | 'watching' | 'paused' | 'error' | 'closed';
 
-export type AgentType = 'claude' | 'codex' | 'cursor' | 'copilot' | 'cline' | 'aider' | 'warp' | 'custom';
+/**
+ * Every coding agent a session can be started for. The kit_start_session
+ * agent_type enum is built from this list, so a new agent is added here once.
+ * `opencode` and `pi` are the engines KIT Harness drives (KC-S2.2.1).
+ */
+export const AGENT_TYPES = [
+  'claude',
+  'codex',
+  'cursor',
+  'copilot',
+  'cline',
+  'aider',
+  'warp',
+  'opencode',
+  'pi',
+  'custom',
+] as const;
+
+export type AgentType = (typeof AGENT_TYPES)[number];
 
 export interface Session {
   id: string;

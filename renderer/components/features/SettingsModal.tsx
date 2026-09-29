@@ -30,6 +30,8 @@ const agentTypes: { value: AgentType; label: string }[] = [
   { value: 'cline', label: 'Cline' },
   { value: 'aider', label: 'Aider' },
   { value: 'warp', label: 'Warp' },
+  { value: 'opencode', label: 'OpenCode' },
+  { value: 'pi', label: 'Pi' },
   { value: 'custom', label: 'Custom' },
 ];
 
