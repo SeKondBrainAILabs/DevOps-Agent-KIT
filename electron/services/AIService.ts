@@ -11,21 +11,37 @@ import type { ConfigService } from './ConfigService';
 import { getAIConfigRegistry, type ModeConfig } from './AIConfigRegistry';
 import Groq from 'groq-sdk';
 
-// Available Groq models (kept for backward compatibility)
+// Available Groq models. Only models Groq still serves belong here — a
+// retired ID 404s with model_not_found on every call.
 export const GROQ_MODELS = {
-  'llama-3.3-70b': 'llama-3.3-70b-versatile',
-  'kimi-k2': 'moonshotai/kimi-k2-instruct-0905',
   'gpt-oss-120b': 'openai/gpt-oss-120b',
   'gpt-oss-20b': 'openai/gpt-oss-20b',
-  'qwen-qwq-32b': 'qwen-qwq-32b',
-  'qwen3-32b': 'qwen/qwen3-32b',
-  'llama-3.1-8b': 'llama-3.1-8b-instant',
 } as const;
 
 export type GroqModelKey = keyof typeof GROQ_MODELS;
 
+// Keys for models Groq has shut down, mapped to Groq's recommended
+// replacement (console.groq.com/docs/deprecations). Mode YAML, user overrides
+// in ~/.kanvas and saved settings may still name these, so resolve them
+// rather than falling through to a dead model ID.
+export const RETIRED_MODEL_ALIASES: Record<string, GroqModelKey> = {
+  'llama-3.3-70b': 'gpt-oss-120b',        // shut down 2026-08-16
+  'llama-3.3-70b-versatile': 'gpt-oss-120b',
+  'llama-3.1-8b': 'gpt-oss-20b',          // shut down 2026-08-16
+  'llama-3.1-8b-instant': 'gpt-oss-20b',
+  'kimi-k2': 'gpt-oss-120b',              // shut down 2025-10-10
+  'moonshotai/kimi-k2-instruct': 'gpt-oss-120b',
+  'moonshotai/kimi-k2-instruct-0905': 'gpt-oss-120b',
+  'qwen3-32b': 'gpt-oss-120b',            // shut down 2026-07-17
+  'qwen/qwen3-32b': 'gpt-oss-120b',
+  'qwen-qwq-32b': 'gpt-oss-120b',         // shut down 2025-07-14
+};
+
 // Default model - can be changed via config
-const DEFAULT_MODEL: GroqModelKey = 'llama-3.3-70b';
+const DEFAULT_MODEL: GroqModelKey = 'gpt-oss-120b';
+
+// Retried once when a mode's model 404s (model_not_found).
+const FALLBACK_MODEL: GroqModelKey = 'gpt-oss-120b';
 
 // Mode-based request options
 export interface ModeRequestOptions {
@@ -63,12 +79,13 @@ export class AIService extends BaseService {
   /**
    * Set the model to use
    */
-  setModel(modelKey: GroqModelKey): void {
-    if (!(modelKey in GROQ_MODELS)) {
+  setModel(modelKey: string): void {
+    const resolved = modelKey in GROQ_MODELS ? (modelKey as GroqModelKey) : RETIRED_MODEL_ALIASES[modelKey];
+    if (!resolved) {
       throw new Error(`Unknown model: ${modelKey}. Available: ${Object.keys(GROQ_MODELS).join(', ')}`);
     }
-    this.currentModelKey = modelKey;
-    console.log(`[AIService] Model set to: ${modelKey} (${GROQ_MODELS[modelKey]})`);
+    this.currentModelKey = resolved;
+    console.log(`[AIService] Model set to: ${resolved} (${GROQ_MODELS[resolved]})`);
   }
 
   /**
@@ -76,12 +93,8 @@ export class AIService extends BaseService {
    */
   getAvailableModels(): Array<{ key: GroqModelKey; id: string; description: string }> {
     return [
-      { key: 'llama-3.3-70b', id: GROQ_MODELS['llama-3.3-70b'], description: 'Llama 3.3 70B - General purpose' },
-      { key: 'kimi-k2', id: GROQ_MODELS['kimi-k2'], description: 'Kimi K2 - Best for coding/agentic (256K context)' },
       { key: 'gpt-oss-120b', id: GROQ_MODELS['gpt-oss-120b'], description: 'GPT-OSS 120B - OpenAI open-weight, strong reasoning' },
       { key: 'gpt-oss-20b', id: GROQ_MODELS['gpt-oss-20b'], description: 'GPT-OSS 20B - OpenAI open-weight, faster' },
-      { key: 'qwen3-32b', id: GROQ_MODELS['qwen3-32b'], description: 'Qwen 3 32B - Good for reasoning/code' },
-      { key: 'llama-3.1-8b', id: GROQ_MODELS['llama-3.1-8b'], description: 'Llama 3.1 8B - Fast/lightweight' },
     ];
   }
 
@@ -109,7 +122,7 @@ export class AIService extends BaseService {
   async sendMessage(messages: ChatMessage[], modelOverride?: GroqModelKey): Promise<IpcResult<string>> {
     return this.wrap(async () => {
       const client = this.getClient();
-      const modelId = modelOverride ? GROQ_MODELS[modelOverride] : this.getModelId();
+      const modelId = modelOverride ? GROQ_MODELS[this.resolveModelKey(modelOverride)] : this.getModelId();
 
       const groqMessages = messages.map((m) => ({
         role: m.role as 'user' | 'assistant' | 'system',
@@ -132,7 +145,7 @@ export class AIService extends BaseService {
    */
   async *streamChat(messages: ChatMessage[], modelOverride?: GroqModelKey): AsyncGenerator<string, void, unknown> {
     const client = this.getClient();
-    const modelId = modelOverride ? GROQ_MODELS[modelOverride] : this.getModelId();
+    const modelId = modelOverride ? GROQ_MODELS[this.resolveModelKey(modelOverride)] : this.getModelId();
     const controller = new AbortController();
     this.activeStreams.add(controller);
 
@@ -340,7 +353,7 @@ export class AIService extends BaseService {
       }
 
       // Get model: explicit override > mode settings > default
-      const modelKey = options.modelOverride || this.resolveModelKey(mode.settings.model);
+      const modelKey = this.resolveModelKey(options.modelOverride || mode.settings.model);
       const modelId = GROQ_MODELS[modelKey] || this.getModelId();
 
       // Build messages from mode prompts
@@ -356,13 +369,13 @@ export class AIService extends BaseService {
         });
         return response.choices[0]?.message?.content || '';
       } catch (primaryError) {
-        // If primary model fails with 404/model-not-found, fall back to llama-3.3-70b
+        // If primary model fails with 404/model-not-found, fall back to a live model
         const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
         const isModelError = errMsg.includes('404') || errMsg.includes('model_not_found') || errMsg.includes('does not exist');
-        if (isModelError && modelId !== GROQ_MODELS['llama-3.3-70b']) {
-          console.warn(`[AIService] Model ${modelId} unavailable (${errMsg.slice(0, 80)}), falling back to llama-3.3-70b`);
+        if (isModelError && modelId !== GROQ_MODELS[FALLBACK_MODEL]) {
+          console.warn(`[AIService] Model ${modelId} unavailable (${errMsg.slice(0, 80)}), falling back to ${FALLBACK_MODEL}`);
           const fallbackResponse = await client.chat.completions.create({
-            model: GROQ_MODELS['llama-3.3-70b'],
+            model: GROQ_MODELS[FALLBACK_MODEL],
             messages,
             temperature: mode.settings.temperature ?? 0.5,
             max_tokens: mode.settings.max_tokens ?? 4096,
@@ -521,6 +534,11 @@ export class AIService extends BaseService {
     // Direct match
     if (modelSetting in GROQ_MODELS) {
       return modelSetting as GroqModelKey;
+    }
+
+    // Retired model (by key or ID) -> its replacement
+    if (modelSetting in RETIRED_MODEL_ALIASES) {
+      return RETIRED_MODEL_ALIASES[modelSetting];
     }
 
     // Try to find by model ID

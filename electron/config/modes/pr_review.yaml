@@ -12,7 +12,7 @@ mode:
 settings:
   temperature: 0.4
   max_tokens: 3000
-  model: kimi-k2  # Long context for full PR review
+  model: gpt-oss-120b  # Long context for full PR review
 
 persona:
   name: "PR Reviewer"

@@ -14,15 +14,15 @@ mode:
 settings:
   temperature: 0.2  # Low temperature for deterministic, accurate resolutions
   max_tokens: 4096  # Need enough tokens for full file content
-  model: llama-3.3-70b  # Default: reliable general model (kimi-k2 used as override for complex conflicts if available)
+  model: gpt-oss-120b  # Default: strong reasoning model; simple conflicts are routed to gpt-oss-20b
 
 # Model routing for cost-optimized conflict resolution
 # Simple conflicts use fast model, complex use reasoning model
 models:
-  triage: llama-3.1-8b      # Classify conflict type (~800 tok/s on Groq)
-  plan: kimi-k2              # Reasoning model for complex analysis
-  execute_simple: llama-3.1-8b  # Fast model for simple resolutions
-  execute_complex: kimi-k2      # Reasoning model for complex resolutions
+  triage: gpt-oss-20b       # Classify conflict type (fast)
+  plan: gpt-oss-120b         # Reasoning model for complex analysis
+  execute_simple: gpt-oss-20b   # Fast model for simple resolutions
+  execute_complex: gpt-oss-120b # Reasoning model for complex resolutions
 
 # Safety configuration
 safety:

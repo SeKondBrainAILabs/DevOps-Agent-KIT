@@ -86,9 +86,9 @@ describe.skip('AIConfigRegistry', () => {
       const registry = new AIConfigRegistry();
 
       // Should have fallback models
-      expect(registry.getDefaultModel()).toBe('llama-3.3-70b');
-      expect(registry.getModel('llama-3.3-70b')).toBeDefined();
-      expect(registry.getModel('kimi-k2')).toBeDefined();
+      expect(registry.getDefaultModel()).toBe('gpt-oss-120b');
+      expect(registry.getModel('gpt-oss-120b')).toBeDefined();
+      expect(registry.getModel('gpt-oss-20b')).toBeDefined();
     });
 
     it('should return null for non-existent model', () => {
@@ -275,7 +275,7 @@ describe.skip('AIConfigRegistry', () => {
       const codingDefault = registry.getModelForTask('coding');
 
       expect(codingDefault).toBeDefined();
-      expect(codingDefault?.primary).toBe('kimi-k2');
+      expect(codingDefault?.primary).toBe('gpt-oss-120b');
       expect(codingDefault?.fallback).toBeDefined();
     });
 

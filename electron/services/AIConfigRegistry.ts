@@ -273,46 +273,35 @@ export class AIConfigRegistry extends BaseService {
   private getDefaultModelsConfig(): AIModelsConfig {
     return {
       version: '1.0.0',
-      default_model: 'llama-3.3-70b',
+      default_model: 'gpt-oss-120b',
       models: {
-        'llama-3.3-70b': {
-          id: 'llama-3.3-70b-versatile',
-          name: 'Llama 3.3 70B',
-          description: 'General purpose model',
+        'gpt-oss-120b': {
+          id: 'openai/gpt-oss-120b',
+          name: 'GPT-OSS 120B',
+          description: 'Strong reasoning and code',
           provider: 'groq',
-          context_window: 128000,
+          context_window: 131072,
+          max_tokens: 8192,
+          settings: { temperature: 0.5, top_p: 1.0 },
+          pricing: { input: 0.15, output: 0.6 },
+          use_cases: ['general', 'coding', 'reasoning'],
+        },
+        'gpt-oss-20b': {
+          id: 'openai/gpt-oss-20b',
+          name: 'GPT-OSS 20B',
+          description: 'Fast and lightweight',
+          provider: 'groq',
+          context_window: 131072,
           max_tokens: 4096,
           settings: { temperature: 0.5, top_p: 1.0 },
-          pricing: { input: 0.59, output: 0.79 },
-          use_cases: ['general'],
-        },
-        'kimi-k2': {
-          id: 'moonshotai/kimi-k2-instruct-0905',
-          name: 'Kimi K2',
-          description: 'Best for coding/agentic tasks',
-          provider: 'groq',
-          context_window: 256000,
-          max_tokens: 8192,
-          settings: { temperature: 0.6, top_p: 0.95 },
-          pricing: { input: 1.0, output: 3.0 },
-          use_cases: ['coding', 'agentic'],
-        },
-        'qwen-qwq-32b': {
-          id: 'qwen-qwq-32b',
-          name: 'Qwen QwQ 32B',
-          description: 'Advanced reasoning',
-          provider: 'groq',
-          context_window: 128000,
-          max_tokens: 4096,
-          settings: { temperature: 0.6, top_p: 0.95, reasoning_format: 'parsed' },
-          pricing: { input: 0.29, output: 0.59 },
-          use_cases: ['reasoning', 'code_analysis'],
+          pricing: { input: 0.075, output: 0.3 },
+          use_cases: ['simple_tasks', 'fast_inference'],
         },
       },
       task_defaults: {
-        coding: { primary: 'kimi-k2', fallback: 'llama-3.3-70b' },
-        code_review: { primary: 'qwen-qwq-32b', fallback: 'kimi-k2' },
-        chat: { primary: 'llama-3.3-70b', fallback: 'kimi-k2' },
+        coding: { primary: 'gpt-oss-120b', fallback: 'gpt-oss-20b' },
+        code_review: { primary: 'gpt-oss-120b', fallback: 'gpt-oss-20b' },
+        chat: { primary: 'gpt-oss-120b', fallback: 'gpt-oss-20b' },
       },
       providers: {
         groq: {
@@ -331,7 +320,7 @@ export class AIConfigRegistry extends BaseService {
   // ==========================================================================
 
   getDefaultModel(): string {
-    return this.modelsConfig?.default_model || 'llama-3.3-70b';
+    return this.modelsConfig?.default_model || 'gpt-oss-120b';
   }
 
   getModel(modelKey: string): ModelConfig | null {

@@ -12,7 +12,7 @@ mode:
 settings:
   temperature: 0.2  # Low temperature for consistent, deterministic analysis
   max_tokens: 4096
-  model: qwen-qwq-32b  # Best for code reasoning and analysis
+  model: gpt-oss-120b  # Best for code reasoning and analysis
 
 persona:
   name: "Repository Intelligence Engine"
