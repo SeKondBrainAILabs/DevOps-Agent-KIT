@@ -2400,6 +2400,12 @@ const api = {
       ipcRenderer.invoke(IPC.HARNESS_STORY_DIFF, runId, storyId),
     screenshot: (runId: string, storyId: string, path: string): Promise<IpcResult<string>> =>
       ipcRenderer.invoke(IPC.HARNESS_SCREENSHOT, runId, storyId, path),
+    /** A devops-agent://coding?run=… link was opened (KC-S2.3.1); runId is null for a bare link. */
+    onOpenRun: (callback: (runId: string | null) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, runId: string | null) => callback(runId);
+      ipcRenderer.on(IPC.HARNESS_OPEN_RUN, handler);
+      return () => ipcRenderer.removeListener(IPC.HARNESS_OPEN_RUN, handler);
+    },
   },
 
   mcp: {

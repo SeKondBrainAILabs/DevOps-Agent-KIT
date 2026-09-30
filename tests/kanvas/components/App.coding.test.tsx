@@ -57,3 +57,27 @@ describe('App (KC-S2.1.1 AC2)', () => {
     expect(screen.getByTestId('coding-view')).toBeInTheDocument();
   });
 });
+
+describe('App: devops-agent:// links (KC-S2.3.1)', () => {
+  it('a devops-agent://coding?run=… link opens the Coding view on that run', async () => {
+    let deliver: ((runId: string | null) => void) | undefined;
+    installHarnessApi({
+      onOpenRun: jest.fn((cb: (runId: string | null) => void) => {
+        deliver = cb;
+        return () => undefined;
+      }),
+    });
+    const api = (window as any).api;
+    api.config = { ...api.config, get: jest.fn(async () => ({ success: true, data: true })) };
+    useUIStore.setState({ mainView: 'commits', codingFocusRunId: null });
+    render(<App />);
+    expect(screen.getByTestId('commits-view')).toBeInTheDocument();
+
+    act(() => deliver?.('20260929T181500-ab12cd'));
+
+    expect(screen.getByTestId('coding-view')).toBeInTheDocument();
+    expect(useUIStore.getState().codingFocusRunId).toBe('20260929T181500-ab12cd');
+    expect(screen.getByTestId('coding-focused-run')).toHaveTextContent('20260929T181500-ab12cd');
+  });
+});
+

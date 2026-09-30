@@ -6,7 +6,7 @@
 import '@testing-library/jest-dom';
 import React from 'react';
 import { describe, it, expect, jest } from '@jest/globals';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CodingView } from '../../../renderer/components/features/coding/CodingView';
 import { CodingBoard } from '../../../renderer/components/features/coding/CodingBoard';
@@ -167,3 +167,27 @@ describe('TokenMeter (KC-S2.1.7 AC2)', () => {
     expect(screen.getByTestId('token-meter')).toHaveTextContent('53.5k total · $0.42');
   });
 });
+
+describe('CodingView: a run opened from Kanvas (KC-S2.3.1)', () => {
+  it('brings the run forward with its status, and can be dismissed', async () => {
+    installHarnessApi();
+    useUIStore.setState({ codingFocusRunId: GATED_RUN.run_id });
+    render(<CodingView />);
+    const banner = await screen.findByTestId('coding-focused-run');
+    expect(banner).toHaveTextContent(GATED_RUN.run_id);
+    await userEvent.click(within(banner).getByText('Dismiss'));
+    expect(screen.queryByTestId('coding-focused-run')).not.toBeInTheDocument();
+    expect(useUIStore.getState().codingFocusRunId).toBeNull();
+  });
+
+  it('says so when the harness has not reported the run yet', async () => {
+    installHarnessApi();
+    useUIStore.setState({ codingFocusRunId: 'not-listed-yet' });
+    render(<CodingView />);
+    await waitFor(() =>
+      expect(screen.getByTestId('coding-focused-run')).toHaveTextContent('has not reported this run yet')
+    );
+    act(() => useUIStore.setState({ codingFocusRunId: null }));
+  });
+});
+

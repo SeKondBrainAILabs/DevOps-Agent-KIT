@@ -22,6 +22,8 @@ interface UIState {
 
   // Main view
   mainView: MainView;
+  /** A KIT Harness run to bring forward in the Coding tab (a devops-agent:// link, KC-S2.3.1). */
+  codingFocusRunId: string | null;
 
   // Modals
   showNewSessionWizard: boolean;
@@ -45,6 +47,7 @@ interface UIState {
   setSidebarWidth: (width: number) => void;
   setSidebarTab: (tab: SidebarTab) => void;
   setMainView: (view: MainView) => void;
+  setCodingFocusRunId: (runId: string | null) => void;
   setShowNewSessionWizard: (show: boolean) => void;
   setShowCloseSessionDialog: (show: boolean, sessionId?: string) => void;
   setShowSettingsModal: (show: boolean) => void;
@@ -68,6 +71,7 @@ export const useUIStore = create<UIState>((set) => ({
 
   // Main view
   mainView: DEFAULT_MAIN_VIEW,
+  codingFocusRunId: null,
 
   // Modals
   showNewSessionWizard: false,
@@ -92,6 +96,8 @@ export const useUIStore = create<UIState>((set) => ({
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
 
   setMainView: (view) => set({ mainView: view }),
+
+  setCodingFocusRunId: (runId) => set({ codingFocusRunId: runId }),
 
   setShowNewSessionWizard: (show) => set({ showNewSessionWizard: show }),
 

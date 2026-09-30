@@ -11,6 +11,7 @@ import { initializeServices, disposeServices, type Services } from './services';
 import { startMemoryProbe } from './diagnostics/MemoryProbe';
 
 import { IPC } from '../shared/ipc-channels';
+import { DEEP_LINK_SCHEME, deepLinkFromArgv, parseDeepLink } from '../shared/deep-link';
 import type { ExpiredAgentSessionInfo } from '../shared/types';
 
 // One-time data-dir migration from the legacy "sekondbrain-kanvas" userData
@@ -471,20 +472,57 @@ async function createWindow(): Promise<void> {
   });
 }
 
+// devops-agent:// deep links (KC-S2.3.1): Kanvas's "Build in KIT IDE" links to
+// devops-agent://coding?run=<id>. macOS delivers the link as 'open-url' (also on
+// a cold start, before 'ready'); Windows and Linux pass it on the command line.
+// A link that arrives before the renderer has loaded waits for it.
+let pendingDeepLink: string | null = deepLinkFromArgv(process.argv);
+
+function openDeepLink(raw: string): void {
+  const link = parseDeepLink(raw);
+  if (!link) return;
+  if (!mainWindow || mainWindow.webContents.isLoading()) {
+    pendingDeepLink = raw;
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+  mainWindow.webContents.send(IPC.HARNESS_OPEN_RUN, link.runId);
+}
+
+/** createWindow() resolves once the renderer has loaded: deliver a link that waited for it. */
+function flushDeepLink(): void {
+  const link = pendingDeepLink;
+  pendingDeepLink = null;
+  if (link) openDeepLink(link);
+}
+
+app.on('open-url', (event: { preventDefault(): void }, url: string) => {
+  event.preventDefault();
+  openDeepLink(url);
+});
+
 // App lifecycle events
 app.whenReady().then(async () => {
+  if (!app.isDefaultProtocolClient(DEEP_LINK_SCHEME)) {
+    app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+  }
   await createWindow();
+  flushDeepLink();
 
   // macOS: recreate window when dock icon is clicked
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       await createWindow();
+      flushDeepLink();
     }
   });
 });
 
-// Handle second instance (focus existing window)
-app.on('second-instance', () => {
+// Handle second instance (focus existing window; forward a deep link it was launched with)
+app.on('second-instance', (_event: unknown, argv: string[]) => {
+  const link = deepLinkFromArgv(argv);
+  if (link) openDeepLink(link);
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
