@@ -12,7 +12,7 @@ mode:
 settings:
   temperature: 0.3
   max_tokens: 2048
-  model: kimi-k2  # Best for code understanding
+  model: gpt-oss-120b  # Best for code understanding
 
 persona:
   name: "DevOps Agent"

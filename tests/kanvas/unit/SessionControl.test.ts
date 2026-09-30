@@ -338,6 +338,51 @@ describe('updateSession', () => {
     const result = await h.orch.updateSession('sess_nope', { taskDescription: 'x' });
     expect(result.error?.code).toBe('NOT_FOUND');
   });
+  describe('base_branch', () => {
+    const withBase = (over: any = {}) => {
+      const h = harness([inst({ config: { baseBranch: 'main', rebaseFrequency: 'daily' } })]);
+      h.deps.agentInstance.updateBaseBranch =
+        over.updateBaseBranch ?? jest.fn(async () => ({ success: true, data: undefined }));
+      h.deps.rebaseWatcher.updateBaseBranch = jest.fn(async () => ({ success: true }));
+      return h;
+    };
+
+    it('goes through the header path, stripped of origin/', async () => {
+      const h = withBase();
+      await h.orch.updateSession('sess_1', { baseBranch: 'origin/release' });
+      expect(h.deps.agentInstance.updateBaseBranch).toHaveBeenCalledWith('sess_1', 'release');
+    });
+
+    it('re-points the running rebase watcher at the new base', async () => {
+      // The watcher captures baseBranch at start, so without this auto-rebase
+      // kept tracking the old branch after the base was changed.
+      const h = withBase();
+      await h.orch.updateSession('sess_1', { baseBranch: 'release' });
+      expect(h.deps.rebaseWatcher.updateBaseBranch).toHaveBeenCalledWith('sess_1', 'release');
+    });
+
+    it('refuses a branch that does not exist, and changes nothing', async () => {
+      const h = withBase({
+        updateBaseBranch: jest.fn(async () => ({
+          success: false,
+          error: { code: 'BRANCH_NOT_FOUND', message: 'nope' },
+        })),
+      });
+      const r = await h.orch.updateSession('sess_1', { baseBranch: 'nope' });
+      expect(r.error?.code).toBe('BRANCH_NOT_FOUND');
+      expect(h.deps.agentInstance.updateSessionConfig).not.toHaveBeenCalled();
+      expect(h.deps.rebaseWatcher.updateBaseBranch).not.toHaveBeenCalled();
+    });
+
+    it('does not re-point twice when the frequency restart already used the new base', async () => {
+      const h = withBase();
+      await h.orch.updateSession('sess_1', { baseBranch: 'release', rebaseFrequency: 'weekly' });
+      expect(h.deps.rebaseWatcher.startWatching).toHaveBeenCalledWith(
+        expect.objectContaining({ baseBranch: 'release' })
+      );
+      expect(h.deps.rebaseWatcher.updateBaseBranch).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // ─── Extend ──────────────────────────────────────────────────────────────────

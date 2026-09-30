@@ -57,6 +57,8 @@ export interface EnsurePrResult {
   /** For 'gh_unavailable', which gh problem it was. */
   reason?: GhFailure;
   message?: string;
+  /** Set when an existing PR was pointed at a new base; the base it had before. */
+  retargetedFrom?: string;
 }
 
 /** Only github.com remotes can have a PR opened by `gh`. */
@@ -104,7 +106,7 @@ export async function ensurePullRequest(
 
   // ── 3. Does an OPEN pull request already exist? ─────────────────────────
   const view = await deps.gh(
-    ['pr', 'view', branchName, '--json', 'number,url,state'],
+    ['pr', 'view', branchName, '--json', 'number,url,state,baseRefName'],
     worktreePath
   );
 
@@ -118,7 +120,8 @@ export async function ensurePullRequest(
     return { status: 'not_github' };
   }
 
-  let existing: { number: number; url: string; state: string } | null = null;
+  let existing: { number: number; url: string; state: string; baseRefName?: string } | null =
+    null;
   if (view.ok && view.stdout.trim()) {
     try {
       existing = JSON.parse(view.stdout);
@@ -150,8 +153,20 @@ export async function ensurePullRequest(
     await writeFile(bodyFile, body, 'utf-8');
 
     if (hasOpenPr && existing) {
+      // The session's base branch can be changed after the PR was opened (the
+      // session header's branch picker). Editing only the body would report
+      // "updated" while the PR still targets the old branch — so retarget it.
+      const clean = (b?: string) => (b ?? '').replace(/^origin\//, '');
+      const retargetedFrom =
+        existing.baseRefName && clean(existing.baseRefName) !== clean(baseBranch)
+          ? existing.baseRefName
+          : undefined;
       const edit = await deps.gh(
-        ['pr', 'edit', String(existing.number), '--body-file', bodyFile],
+        [
+          'pr', 'edit', String(existing.number),
+          ...(retargetedFrom ? ['--base', clean(baseBranch)] : []),
+          '--body-file', bodyFile,
+        ],
         worktreePath
       );
       if (!edit.ok) {
@@ -162,7 +177,7 @@ export async function ensurePullRequest(
           number: existing.number,
         };
       }
-      return { status: 'updated', url: existing.url, number: existing.number };
+      return { status: 'updated', url: existing.url, number: existing.number, retargetedFrom };
     }
 
     const create = await deps.gh(

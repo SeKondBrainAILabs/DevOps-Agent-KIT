@@ -13,7 +13,7 @@ mode:
 settings:
   temperature: 0.2  # Very low for consistent, accurate analysis
   max_tokens: 8192  # Higher for comprehensive output
-  model: llama-3.3-70b  # Better instruction following
+  model: gpt-oss-120b  # Better instruction following
 
 persona:
   name: "Code Architect"

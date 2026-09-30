@@ -197,3 +197,56 @@ describe('unidentified callers', () => {
     expect(r.allowed).toBe(false);
   });
 });
+
+describe('the user opt-in: agents may close sessions a human started', () => {
+  const human = (createdBy: SessionOrigin | undefined) => ({
+    sessionId: 'sess_human',
+    createdBy,
+  });
+
+  it.each([['ui'], ['adopted'], [undefined]] as [SessionOrigin | undefined][])(
+    'allows a %s session, destructively, with allow_foreign',
+    (origin) => {
+      const r = ask({
+        target: human(origin),
+        allowForeign: true,
+        destructive: true,
+        agentsMayCloseUiSessions: true,
+      });
+      expect(r.allowed).toBe(true);
+    }
+  );
+
+  it.each([['ui'], ['adopted']] as [SessionOrigin][])(
+    'still requires allow_foreign for a %s session',
+    (origin) => {
+      const r = ask({ target: human(origin), agentsMayCloseUiSessions: true });
+      expect(r.allowed).toBe(false);
+      expect(r.error?.code).toBe(NOT_PERMITTED_CODE);
+      expect(r.error?.instruction).toMatch(/allow_foreign/);
+    }
+  );
+
+  it('is off unless explicitly on — allow_foreign alone is not enough', () => {
+    expect(ask({ target: human('ui'), allowForeign: true }).allowed).toBe(false);
+    expect(
+      ask({ target: human('ui'), allowForeign: true, agentsMayCloseUiSessions: false }).allowed
+    ).toBe(false);
+    expect(
+      ask({ target: human('adopted'), allowForeign: true, destructive: true }).allowed
+    ).toBe(false);
+  });
+
+  it('points a refused agent at the setting', () => {
+    const r = ask({ target: human('ui'), allowForeign: true });
+    expect(r.error?.instruction).toMatch(/Settings › MCP/);
+  });
+
+  it('leaves the agent-vs-agent rules unchanged', () => {
+    const theirs = { sessionId: 'sess_theirs', createdBy: 'mcp' as const };
+    expect(ask({ target: theirs, agentsMayCloseUiSessions: true }).allowed).toBe(false);
+    expect(
+      ask({ target: theirs, allowForeign: true, agentsMayCloseUiSessions: true }).allowed
+    ).toBe(true);
+  });
+});

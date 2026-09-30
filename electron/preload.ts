@@ -550,6 +550,9 @@ const api = {
       repoName?: string;
     }): Promise<IpcResult<{ persona: string; taskTitle: string; refinedTask: string }>> =>
       ipcRenderer.invoke(IPC.AI_REFINE_SESSION_TASK, input),
+
+    resolveRepo: (repoPath: string, repoName: string): Promise<IpcResult<string>> =>
+      ipcRenderer.invoke(IPC.AI_RESOLVE_REPO, repoPath, repoName),
   },
 
   // ==========================================================================
@@ -2416,16 +2419,19 @@ const api = {
       enabled: boolean;
       maxConcurrentGlobal: number;
       maxConcurrentPerRepo: number;
+      agentsMayCloseUiSessions: boolean;
     }>> => ipcRenderer.invoke(IPC.MCP_GET_AGENT_SESSION_POLICY),
 
     setAgentSessionPolicy: (patch: {
       enabled?: boolean;
       maxConcurrentGlobal?: number;
       maxConcurrentPerRepo?: number;
+      agentsMayCloseUiSessions?: boolean;
     }): Promise<IpcResult<{
       enabled: boolean;
       maxConcurrentGlobal: number;
       maxConcurrentPerRepo: number;
+      agentsMayCloseUiSessions: boolean;
     }>> => ipcRenderer.invoke(IPC.MCP_SET_AGENT_SESSION_POLICY, patch),
 
     getAgentSessionCount: (): Promise<IpcResult<{

@@ -48,6 +48,7 @@ describe('evaluateSessionAdmission — defaults', () => {
       enabled: true,
       maxConcurrentGlobal: 8,
       maxConcurrentPerRepo: 4,
+      agentsMayCloseUiSessions: false,
     });
   });
 });
@@ -247,6 +248,22 @@ describe('rule ordering', () => {
 });
 
 // ─── Settings plumbing (KIT-MCP-G2) ──────────────────────────────────────────
+describe('agentsMayCloseUiSessions setting', () => {
+  const read = (stored: Record<string, unknown>) =>
+    readSessionLimits((key: string, dflt?: unknown) => (key in stored ? stored[key] : dflt));
+  const KEY = 'mcp.session_close.allow_ui_sessions';
+
+  it('defaults to off on an install that never set it', () => {
+    expect(read({}).agentsMayCloseUiSessions).toBe(false);
+  });
+  it.each([[true, true], ['true', true], [false, false], ['yes', false], [1, false]])(
+    'reads %p as %p',
+    (raw, want) => {
+      expect(read({ [KEY]: raw }).agentsMayCloseUiSessions).toBe(want);
+    }
+  );
+});
+
 describe('readSessionLimits', () => {
   const from = (store: Record<string, unknown>) =>
     readSessionLimits((key: string, dflt?: unknown) =>
@@ -265,7 +282,12 @@ describe('readSessionLimits', () => {
         [SESSION_LIMIT_SETTING_KEYS.maxConcurrentGlobal]: 3,
         [SESSION_LIMIT_SETTING_KEYS.maxConcurrentPerRepo]: 2,
       })
-    ).toEqual({ enabled: false, maxConcurrentGlobal: 3, maxConcurrentPerRepo: 2 });
+    ).toEqual({
+      enabled: false,
+      maxConcurrentGlobal: 3,
+      maxConcurrentPerRepo: 2,
+      agentsMayCloseUiSessions: false,
+    });
   });
 
   it('falls back per key — an upgrade with only some keys set still works', () => {
@@ -303,6 +325,7 @@ describe('readSessionLimits', () => {
       maxConcurrentGlobal: 'mcp.session_create.max_concurrent_global',
       maxConcurrentPerRepo: 'mcp.session_create.max_concurrent_per_repo',
       allowRemoteBranchDelete: 'mcp.session_close.allow_remote_branch_delete',
+      agentsMayCloseUiSessions: 'mcp.session_close.allow_ui_sessions',
       nodeModulesStrategy: 'worktree.node_modules_strategy',
     });
   });
