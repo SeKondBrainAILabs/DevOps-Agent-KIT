@@ -580,6 +580,12 @@ export class DatabaseService extends BaseService {
         clampSessionLimit(patch.maxConcurrentPerRepo, DEFAULT_SESSION_LIMITS.maxConcurrentPerRepo)
       );
     }
+    if (patch.agentsMayCloseUiSessions !== undefined) {
+      this.setSetting(
+        SESSION_LIMIT_SETTING_KEYS.agentsMayCloseUiSessions,
+        patch.agentsMayCloseUiSessions === true
+      );
+    }
     return this.getSessionLimits();
   }
 

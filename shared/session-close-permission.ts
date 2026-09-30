@@ -28,6 +28,11 @@ export interface ClosePermissionInput {
   allowForeign?: boolean;
   /** Whether the request would delete a worktree or a branch. */
   destructive?: boolean;
+  /**
+   * The user's opt-in (Settings › MCP) letting agents close sessions a human
+   * started. Read from the settings table by the caller; an agent cannot set it.
+   */
+  agentsMayCloseUiSessions?: boolean;
 }
 
 export interface ClosePermissionResult {
@@ -52,6 +57,12 @@ function deny(message: string, instruction?: string): ClosePermissionResult {
  *   'adopted' session                  → safe close yes, destructive NEVER
  *   'ui' session, or createdBy absent  → NEVER, whatever allowForeign says
  *
+ * unless the user has turned on `agentsMayCloseUiSessions`, in which case
+ * 'ui' and 'adopted' sessions may be closed — destructively too — but only
+ * with allowForeign. The opt-in widens what an agent MAY do; allowForeign is
+ * still how it says it MEANT to reach for someone else's work. The dirty and
+ * unpushed guards downstream are untouched by either.
+ *
  * Two fail-safes worth stating explicitly.
  *
  * An ABSENT `createdBy` is treated as 'ui'. Records written before the field
@@ -65,8 +76,14 @@ function deny(message: string, instruction?: string): ClosePermissionResult {
 export function evaluateClosePermission(
   input: ClosePermissionInput
 ): ClosePermissionResult {
-  const { target, callerSessionId, callerDescendantIds = [], allowForeign, destructive } =
-    input;
+  const {
+    target,
+    callerSessionId,
+    callerDescendantIds = [],
+    allowForeign,
+    destructive,
+    agentsMayCloseUiSessions,
+  } = input;
   const origin: SessionOrigin = target.createdBy ?? 'ui';
 
   const isSelf = Boolean(callerSessionId) && callerSessionId === target.sessionId;
@@ -78,11 +95,21 @@ export function evaluateClosePermission(
     return ALLOWED;
   }
 
+  if ((origin === 'ui' || origin === 'adopted') && agentsMayCloseUiSessions) {
+    if (allowForeign) return ALLOWED;
+    return deny(
+      `Session ${target.sessionId} was started by a human. The user allows agents ` +
+        'to close such sessions, but you must say you mean to.',
+      'Pass allow_foreign: true to close a session you did not create.'
+    );
+  }
+
   if (origin === 'ui') {
     return deny(
       `Session ${target.sessionId} was created from the KIT UI (or predates session ` +
         'origin tracking) and cannot be closed by an agent.',
-      'Ask the user to close this session from the KIT app.'
+      'Ask the user to close this session from the KIT app, or to turn on ' +
+        '"Let agents close sessions I started" in Settings › MCP.'
     );
   }
 
@@ -93,7 +120,8 @@ export function evaluateClosePermission(
           'worktree and branch may belong to a human. An agent may close it but not ' +
           'delete its work.',
         'Retry without delete_worktree / delete_local_branch / delete_remote_branch, ' +
-          'or ask the user to delete it from the KIT app.'
+          'or ask the user to delete it from the KIT app, or to turn on ' +
+          '"Let agents close sessions I started" in Settings › MCP.'
       );
     }
     return ALLOWED;

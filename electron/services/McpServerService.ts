@@ -215,6 +215,7 @@ export interface McpServiceDeps {
       enabled: boolean;
       maxConcurrentGlobal: number;
       maxConcurrentPerRepo: number;
+      agentsMayCloseUiSessions: boolean;
     };
   };
   contractDetectionService?: {

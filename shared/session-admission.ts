@@ -43,12 +43,19 @@ export interface SessionLimits {
   maxConcurrentGlobal: number;
   /** Max concurrent MCP-created sessions in one repo. */
   maxConcurrentPerRepo: number;
+  /**
+   * Let an agent close sessions a human started (origin 'ui' or 'adopted'),
+   * including deleting their worktree and branch. Off by default, and even when
+   * on the agent must still pass allow_foreign — see evaluateClosePermission.
+   */
+  agentsMayCloseUiSessions: boolean;
 }
 
 export const DEFAULT_SESSION_LIMITS: SessionLimits = {
   enabled: true,
   maxConcurrentGlobal: 8,
   maxConcurrentPerRepo: 4,
+  agentsMayCloseUiSessions: false,
 };
 
 /**
@@ -85,6 +92,7 @@ export const SESSION_LIMIT_SETTING_KEYS = {
   maxConcurrentGlobal: 'mcp.session_create.max_concurrent_global',
   maxConcurrentPerRepo: 'mcp.session_create.max_concurrent_per_repo',
   allowRemoteBranchDelete: 'mcp.session_close.allow_remote_branch_delete',
+  agentsMayCloseUiSessions: 'mcp.session_close.allow_ui_sessions',
   nodeModulesStrategy: 'worktree.node_modules_strategy',
 } as const;
 
@@ -137,6 +145,13 @@ export function readSessionLimits(get: SettingReader): SessionLimits {
         DEFAULT_SESSION_LIMITS.maxConcurrentPerRepo
       ),
       DEFAULT_SESSION_LIMITS.maxConcurrentPerRepo
+    ),
+    agentsMayCloseUiSessions: readFlag(
+      get(
+        SESSION_LIMIT_SETTING_KEYS.agentsMayCloseUiSessions,
+        DEFAULT_SESSION_LIMITS.agentsMayCloseUiSessions
+      ),
+      DEFAULT_SESSION_LIMITS.agentsMayCloseUiSessions
     ),
   };
 }

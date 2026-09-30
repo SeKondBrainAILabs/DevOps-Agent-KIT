@@ -12,7 +12,7 @@ mode:
 settings:
   temperature: 0.2  # Low for precise analysis
   max_tokens: 2048
-  model: qwen-qwq-32b  # Best for reasoning about contracts
+  model: gpt-oss-120b  # Best for reasoning about contracts
 
 persona:
   name: "Contract Analyzer"

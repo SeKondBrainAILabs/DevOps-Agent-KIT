@@ -193,6 +193,19 @@ export class RebaseWatcherService extends BaseService {
   }
 
   /**
+   * Point a running watcher at a new base branch.
+   *
+   * The watcher (and its worker-side monitor) captures baseBranch when it
+   * starts, so changing the session's base without this left auto-rebase
+   * tracking the old branch. A session that is not being watched is a no-op.
+   */
+  async updateBaseBranch(sessionId: string, baseBranch: string): Promise<IpcResult<void>> {
+    const state = this.watchedSessions.get(sessionId);
+    if (!state) return { success: true, data: undefined };
+    return this.startWatching({ ...state.config, baseBranch });
+  }
+
+  /**
    * Start watching a session for remote changes
    */
   async startWatching(config: RebaseWatchConfig): Promise<IpcResult<void>> {

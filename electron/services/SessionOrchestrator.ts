@@ -94,6 +94,11 @@ export interface OrchestratorAgentInstanceService {
     },
     commitChanges?: boolean
   ): Promise<IpcResult<AgentInstance>>;
+  /**
+   * Change the base branch the way the session header does: validate that the
+   * branch exists, strip origin/, update the session file and re-report.
+   */
+  updateBaseBranch?(sessionId: string, newBaseBranch: string): Promise<IpcResult<void>>;
   /** Apply a validated config patch to a live session (M5). */
   updateSessionConfig?(
     sessionId: string,
@@ -182,6 +187,8 @@ export interface OrchestratorRebaseWatcherService {
     rebaseFrequency: string;
     pollIntervalMs: number;
   }): Promise<IpcResult<void>>;
+  /** Re-point a running watcher at a new base branch. No-op if not watching. */
+  updateBaseBranch?(sessionId: string, baseBranch: string): Promise<IpcResult<void>>;
 }
 
 /** The slice of McpSessionBinder the orchestrator needs. */
@@ -228,6 +235,12 @@ export interface SessionOrchestratorDeps {
   rebaseWatcher: OrchestratorRebaseWatcherService;
   binder: OrchestratorSessionBinder;
   reap?: OrchestratorReapDeps;
+  /**
+   * The user's opt-in letting agents close sessions a human started. A read,
+   * never a write — the setting is only changeable from the Settings UI.
+   * Absent means off.
+   */
+  agentsMayCloseUiSessions?: () => boolean;
 }
 
 export interface ReapPassOptions {
@@ -485,6 +498,7 @@ export class SessionOrchestrator {
         : [],
       allowForeign: opts.allowForeign,
       destructive,
+      agentsMayCloseUiSessions: this.deps.agentsMayCloseUiSessions?.() ?? false,
     });
     if (!permission.allowed) {
       return { success: false, error: permission.error };
@@ -1230,6 +1244,18 @@ export class SessionOrchestrator {
     }
     const liveId = instance.sessionId;
 
+    // A base-branch change goes through the same path as the session header,
+    // so an agent cannot set a branch that does not exist, and the session
+    // file and renderer see it too — updateSessionConfig alone did neither.
+    const previousBase = instance.config?.baseBranch;
+    if (patch.baseBranch !== undefined) {
+      patch = { ...patch, baseBranch: patch.baseBranch.replace(/^origin\//, '') };
+      if (this.deps.agentInstance.updateBaseBranch) {
+        const rebased = await this.deps.agentInstance.updateBaseBranch(liveId, patch.baseBranch!);
+        if (!rebased.success) return rebased as any;
+      }
+    }
+
     const applied = await this.deps.agentInstance.updateSessionConfig?.(liveId, patch);
     if (applied && applied.success === false) return applied as any;
 
@@ -1268,6 +1294,20 @@ export class SessionOrchestrator {
           pollIntervalMs: 60_000,
         });
       }
+    }
+
+    // The rebase block above restarts the watcher with the new base when the
+    // frequency changed too. Otherwise the running watcher still holds the old
+    // base, so re-point it.
+    const frequencyRestarted =
+      patch.rebaseFrequency !== undefined &&
+      patch.rebaseFrequency !== instance.config?.rebaseFrequency;
+    if (
+      patch.baseBranch !== undefined &&
+      patch.baseBranch !== previousBase &&
+      !frequencyRestarted
+    ) {
+      await this.deps.rebaseWatcher.updateBaseBranch?.(liveId, patch.baseBranch);
     }
 
     return { success: true, data: { sessionId: liveId, updated: keys } };

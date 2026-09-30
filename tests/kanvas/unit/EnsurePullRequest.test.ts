@@ -120,6 +120,40 @@ describe('ensurePullRequest — idempotency', () => {
     expect(h.calls.some((c) => c[1] === 'edit')).toBe(true);
   });
 
+  it('retargets an open PR whose base no longer matches the session base branch', async () => {
+    // The session header lets the user change the base after the PR exists.
+    // Editing only the body reported "updated" while the PR kept its old base.
+    const h = harness({
+      ghResponses: {
+        'pr view': ok(
+          JSON.stringify({ number: 7, url: 'https://gh/pr/7', state: 'OPEN', baseRefName: 'main' })
+        ),
+      },
+    });
+    const r = await ensurePullRequest(h.deps, session);
+
+    expect(r.status).toBe('updated');
+    expect(r.retargetedFrom).toBe('main');
+    const edit = h.calls.find((c) => c[1] === 'edit')!;
+    expect(edit[edit.indexOf('--base') + 1]).toBe('development');
+  });
+
+  it('does not pass --base when the open PR already targets the session base', async () => {
+    const h = harness({
+      ghResponses: {
+        'pr view': ok(
+          JSON.stringify({
+            number: 7, url: 'https://gh/pr/7', state: 'OPEN', baseRefName: 'development',
+          })
+        ),
+      },
+    });
+    const r = await ensurePullRequest(h.deps, { ...session, baseBranch: 'origin/development' });
+
+    expect(r.retargetedFrom).toBeUndefined();
+    expect(h.calls.find((c) => c[1] === 'edit')).not.toContain('--base');
+  });
+
   it('two calls produce exactly one create', async () => {
     let viewed = 0;
     const h = harness({
