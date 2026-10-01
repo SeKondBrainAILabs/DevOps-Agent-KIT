@@ -6,12 +6,13 @@
 import { create } from 'zustand';
 
 /**
- * Main views. 'coding' (KIT Harness, KC-S2.1.1) comes first and is the view
- * the app opens on.
+ * Main views. 'coding' (KIT Harness, KC-S2.1.1) comes first on the rail as the
+ * cross-repo board; the app opens on the sessions dashboard, and each session
+ * has its own Code tab for its repo's runs.
  */
 export type MainView = 'coding' | 'dashboard' | 'commits' | 'artefacts' | 'workspaces';
 
-export const DEFAULT_MAIN_VIEW: MainView = 'coding';
+export const DEFAULT_MAIN_VIEW: MainView = 'dashboard';
 export type SidebarTab = 'artefacts' | 'agents';
 
 interface UIState {

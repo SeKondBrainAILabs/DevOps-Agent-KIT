@@ -16,8 +16,9 @@ import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
 import { CommitsTab } from './CommitsTab';
 import { McpTab } from './McpTab';
+import { SessionCodeTab } from './coding/SessionCodeTab';
 
-type DetailTab = 'prompt' | 'review' | 'activity' | 'commits' | 'files' | 'contracts' | 'terminal' | 'mcp';
+type DetailTab = 'prompt' | 'code' | 'review' | 'activity' | 'commits' | 'files' | 'contracts' | 'terminal' | 'mcp';
 
 // Threshold for switching to virtualized rendering
 const VIRTUALIZATION_LINE_THRESHOLD = 100;
@@ -822,7 +823,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
 
         {/* Tabs */}
         <div className="flex gap-2 flex-wrap">
-          {(['prompt', 'review', 'activity', 'commits', 'terminal', 'files', 'contracts', 'mcp'] as DetailTab[]).map((tab) => (
+          {(['prompt', 'code', 'review', 'activity', 'commits', 'terminal', 'files', 'contracts', 'mcp'] as DetailTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -863,6 +864,9 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
             onCopyInstructions={handleCopyInstructions}
             copySuccess={copySuccess}
           />
+        )}
+        {activeTab === 'code' && (
+          <SessionCodeTab session={session} />
         )}
         {activeTab === 'review' && (
           <ReviewTab session={session} />

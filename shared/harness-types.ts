@@ -35,11 +35,14 @@ export interface HarnessRunSummary {
   created_at: string;
   /** Story counts by state. */
   stories: Record<string, number>;
+  /** Repos the run's stories target: a repo name, owner/name, or an absolute checkout path. */
+  repos?: string[];
 }
 
 export interface HarnessStorySummary {
   story_id: string;
   title: string;
+  repo?: string;
   state: HarnessStoryState | string;
   rounds?: number;
   session_id?: string | null;
@@ -130,6 +133,9 @@ export interface HarnessEventsPage {
 }
 
 export interface HarnessClusterStatus {
+  /** Core AI Backend, the harness's model route since its ADR 0012. */
+  core?: { ok: boolean; url?: string | null; detail?: unknown };
+  /** The LiteLLM gateway, reported by harnesses from before ADR 0012. */
   litellm?: { ok: boolean; url?: string; detail?: unknown };
   devops_agent?: { ok: boolean; url?: string; mode?: string };
   /** Per-lane health, when the harness reports it: alias -> status. */
@@ -403,8 +409,9 @@ export function laneHealth(status: HarnessClusterStatus | null): Array<{ id: str
   return HARNESS_LANES.map((lane) => {
     const reported = status?.lanes?.[lane.alias] ?? status?.lanes?.[lane.id];
     if (reported) return { ...lane, health: reported.ok ? 'ok' : 'down', model: reported.model };
-    if (!status?.litellm) return { ...lane, health: 'unknown' };
-    return { ...lane, health: status.litellm.ok ? 'ok' : 'down' };
+    const gateway = status?.core ?? status?.litellm;
+    if (!gateway) return { ...lane, health: 'unknown' };
+    return { ...lane, health: gateway.ok ? 'ok' : 'down' };
   });
 }
 
@@ -429,4 +436,57 @@ export function roleTokens(roleTotals: Record<string, HarnessUsage> | undefined)
       sessions: u.sessions,
     }))
     .sort((a, b) => b.total - a.total);
+}
+
+// ---------------------------------------------------------------------------
+// A session's Code tab: the runs for that session's repo, and the sessions they spawned
+// ---------------------------------------------------------------------------
+
+function trimSlash(path: string): string {
+  return path.replace(/\/+$/, '');
+}
+
+/** Does a story's repo (name, owner/name or absolute path) name this checkout? */
+export function repoMatches(repo: string | undefined, repoPath: string): boolean {
+  if (!repo) return false;
+  const target = trimSlash(repoPath);
+  const wanted = trimSlash(repo);
+  if (wanted.startsWith('/')) return wanted === target;
+  return wanted.split('/').pop() === target.split('/').pop();
+}
+
+/** Runs with at least one story for this checkout. Uses the run's repos, else its stories' repos. */
+export function runsForRepo(runs: HarnessRun[], repoPath: string): HarnessRun[] {
+  return runs.filter((run) => {
+    const repos = run.repos ?? run.stories.map((s) => s.repo).filter((r): r is string => !!r);
+    return repos.some((repo) => repoMatches(repo, repoPath));
+  });
+}
+
+export interface SpawnedSession {
+  run_id: string;
+  story_id: string;
+  title: string;
+  state: string;
+  session_id: string;
+  pr_url?: string | null;
+}
+
+/** The DevOps sessions the harness started for these runs' stories, one per story, newest run first. */
+export function spawnedSessions(runs: HarnessRun[]): SpawnedSession[] {
+  const out: SpawnedSession[] = [];
+  for (const run of [...runs].reverse()) {
+    for (const story of run.stories) {
+      if (!story.session_id) continue;
+      out.push({
+        run_id: run.run_id,
+        story_id: story.story_id,
+        title: story.title,
+        state: String(story.state),
+        session_id: story.session_id,
+        pr_url: story.pr_url,
+      });
+    }
+  }
+  return out;
 }
