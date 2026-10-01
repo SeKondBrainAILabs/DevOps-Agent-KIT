@@ -120,9 +120,11 @@ export function HarnessSettings(): React.ReactElement {
     const res = await window.api.harness.clusterStatus();
     setBusy(false);
     if (res.success) {
-      const litellm = res.data?.litellm?.ok ? 'LiteLLM up' : 'LiteLLM down';
+      const models = res.data?.core
+        ? res.data.core.ok ? 'Core AI Backend up' : 'Core AI Backend down'
+        : res.data?.litellm?.ok ? 'LiteLLM up' : 'LiteLLM down';
       const devops = res.data?.devops_agent?.ok ? 'DevOps Agent up' : 'DevOps Agent down';
-      setNote({ type: 'success', text: `Connected to KIT Harness (${litellm}, ${devops})` });
+      setNote({ type: 'success', text: `Connected to KIT Harness (${models}, ${devops})` });
     } else {
       setNote({ type: 'error', text: res.error?.message ?? 'KIT Harness is unreachable' });
     }

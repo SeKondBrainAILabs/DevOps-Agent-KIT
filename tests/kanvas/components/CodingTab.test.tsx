@@ -1,5 +1,5 @@
 /**
- * KC-S2.1.1: Coding is the first and default main view.
+ * KC-S2.1.1: Coding is the first main view on the rail; the app opens on sessions.
  * KC-S2.1.2 AC1: Settings holds the KIT Harness URL and token.
  */
 
@@ -17,9 +17,9 @@ import { HarnessSettings } from '../../../renderer/components/features/coding/Ha
 import { installHarnessApi } from '../fixtures/harness/mockHarness';
 
 describe('Coding main view (KC-S2.1.1)', () => {
-  it("is the view the app opens on (uiStore)", () => {
-    expect(DEFAULT_MAIN_VIEW).toBe('coding');
-    expect(useUIStore.getInitialState().mainView).toBe('coding');
+  it('is no longer the view the app opens on: sessions are, each with its own Code tab (uiStore)', () => {
+    expect(DEFAULT_MAIN_VIEW).toBe('dashboard');
+    expect(useUIStore.getInitialState().mainView).toBe('dashboard');
   });
 
   it('is the first entry in the view switcher and selects the Coding view', async () => {

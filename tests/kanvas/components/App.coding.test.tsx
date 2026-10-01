@@ -40,12 +40,15 @@ import { useUIStore } from '../../../renderer/store/uiStore';
 import { installHarnessApi } from '../fixtures/harness/mockHarness';
 
 describe('App (KC-S2.1.1 AC2)', () => {
-  it('opens on the Coding view and switches views from the store', async () => {
+  it('opens on the sessions view and switches to the Coding view from the store', async () => {
     installHarnessApi();
     const api = (window as any).api;
     api.config = { ...api.config, get: jest.fn(async () => ({ success: true, data: true })) };
     useUIStore.setState({ mainView: useUIStore.getInitialState().mainView });
     render(<App />);
+    expect(screen.queryByTestId('coding-view')).not.toBeInTheDocument();
+
+    act(() => useUIStore.getState().setMainView('coding'));
     expect(screen.getByTestId('coding-view')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('coding-board')).toBeInTheDocument());
 

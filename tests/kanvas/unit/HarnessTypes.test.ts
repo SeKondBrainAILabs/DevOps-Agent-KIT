@@ -6,6 +6,9 @@
 
 import { describe, it, expect } from '@jest/globals';
 import {
+  repoMatches,
+  runsForRepo,
+  spawnedSessions,
   CODING_COLUMNS,
   boardColumns,
   columnForState,
@@ -97,6 +100,7 @@ describe('diff and meters', () => {
   it('reports lane health per alias, or the gateway health for all lanes (KC-S2.1.7 AC1)', () => {
     expect(laneHealth(null).every((l) => l.health === 'unknown')).toBe(true);
     expect(laneHealth({ litellm: { ok: true } }).map((l) => l.health)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok']);
+    expect(laneHealth({ core: { ok: false } }).map((l) => l.health)).toEqual(['down', 'down', 'down', 'down', 'down']);
     const reported = laneHealth({
       litellm: { ok: true },
       lanes: { 'kit-fast': { ok: false, detail: 'kit-fast not configured in LiteLLM' }, 'kit-builder': { ok: true, model: 'kit-builder' } },
@@ -142,3 +146,29 @@ describe('cloud escalation policy (KC-S1.11.6)', () => {
   });
 });
 
+
+describe("a session's Code tab scoping", () => {
+  it('matches a story repo by absolute path, or by name against the checkout folder', () => {
+    expect(repoMatches('/srv/repos/vault/', '/srv/repos/vault')).toBe(true);
+    expect(repoMatches('/srv/other/vault', '/srv/repos/vault')).toBe(false);
+    expect(repoMatches('SeKondBrainAILabs/vault', '/srv/repos/vault')).toBe(true);
+    expect(repoMatches('vault', '/srv/repos/vault')).toBe(true);
+    expect(repoMatches(undefined, '/srv/repos/vault')).toBe(false);
+  });
+
+  it("keeps a run when its repos, or else its stories' repos, name the checkout", () => {
+    const byRuns = { ...DONE_RUN, repos: ['/srv/repos/vault'] };
+    const byStories = { ...GATED_RUN, stories: GATED_RUN.stories.map((s) => ({ ...s, repo: 'o/vault' })) };
+    const elsewhere = { ...GATED_RUN, run_id: 'x', repos: ['o/other'] };
+    expect(runsForRepo([byRuns, byStories, elsewhere], '/srv/repos/vault').map((r) => r.run_id)).toEqual([
+      DONE_RUN.run_id,
+      GATED_RUN.run_id,
+    ]);
+  });
+
+  it('lists one spawned session per story that has one, newest run first', () => {
+    const spawned = spawnedSessions(RUNS);
+    expect(spawned.map((s) => s.session_id)).toEqual(['sess-1', 'sess-2', 'sess-3']);
+    expect(spawned[0]).toMatchObject({ run_id: GATED_RUN.run_id, story_id: 'KC-S9.9.3' });
+  });
+});
