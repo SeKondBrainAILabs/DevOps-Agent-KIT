@@ -85,6 +85,12 @@ import {
   type WorktreeStatus,
 } from '../../shared/worktree-outcome';
 import { isObserverSession, refuseDestructiveForObserver } from '../../shared/observer-session';
+import {
+  chooseNewBranchStart,
+  existingBranchWarning,
+  shouldFastForward,
+  type RefRelation,
+} from '../../shared/session-start-ref';
 import { meaningfulStatusLines } from '../../shared/kit-generated-files';
 import {
   planNodeModules,
@@ -1038,6 +1044,63 @@ ${DEVOPS_KIT_DIR}/
    * "best-effort — failure here doesn't block worktree creation", but sat
    * inside the try and so did exactly that. It is genuinely best-effort now.
    */
+  /** Best-effort fetch of one branch. Never throws: offline is a normal state. */
+  private async fetchRef(repoPath: string, branch: string): Promise<void> {
+    await execaCmd('git', ['fetch', 'origin', branch], { cwd: repoPath, timeout: 15_000 }).catch(
+      (err) => console.warn(`[AgentInstanceService] fetch origin ${branch} failed: ${err?.message ?? err}`)
+    );
+  }
+
+  /** How local <branch> relates to origin/<branch>, by ancestry. Call after fetchRef. */
+  private async relateToRemote(repoPath: string, branch: string): Promise<RefRelation> {
+    const sha = (ref: string) =>
+      execaCmd('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath })
+        .then((o) => o.stdout.trim() || null)
+        .catch(() => null);
+    const isAncestor = (a: string, b: string) =>
+      execaCmd('git', ['merge-base', '--is-ancestor', a, b], { cwd: repoPath })
+        .then(() => true)
+        .catch(() => false);
+
+    const local = await sha(`refs/heads/${branch}`);
+    const remote = await sha(`refs/remotes/origin/${branch}`);
+    if (!remote) return 'no-remote';
+    if (!local) return 'no-local';
+    if (local === remote) return 'equal';
+    if (await isAncestor(local, remote)) return 'remote-ahead';
+    if (await isAncestor(remote, local)) return 'local-ahead';
+    return 'diverged';
+  }
+
+  /**
+   * Bring a session branch's checkout up to origin/<branch> when that is a
+   * pure fast-forward. `--ff-only` refuses rather than merging, and git itself
+   * refuses if uncommitted changes would be overwritten — either way nothing is
+   * lost, and the refusal becomes a warning.
+   */
+  private async fastForwardToRemote(
+    repoPath: string,
+    worktreeDir: string,
+    branch: string,
+    warnings: string[]
+  ): Promise<void> {
+    await this.fetchRef(repoPath, branch);
+    const relation = await this.relateToRemote(repoPath, branch);
+    const diverged = existingBranchWarning(branch, relation);
+    if (diverged) warnings.push(diverged);
+    if (!shouldFastForward(relation)) return;
+    try {
+      await execaCmd('git', ['merge', '--ff-only', `origin/${branch}`], { cwd: worktreeDir });
+      console.log(`[AgentInstanceService] Fast-forwarded ${branch} to origin/${branch}`);
+    } catch (err) {
+      warnings.push(
+        `'origin/${branch}' is ahead but could not be fast-forwarded (${
+          err instanceof Error ? err.message.split('\n')[0] : String(err)
+        }). The session is on the older local commit.`
+      );
+    }
+  }
+
   private async createWorktreeIfNeeded(
     config: AgentInstanceConfig
   ): Promise<{ path: string; status: WorktreeStatus; warnings: string[]; error?: string }> {
@@ -1089,6 +1152,9 @@ ${DEVOPS_KIT_DIR}/
       }
       if (existsSync(worktreeDir)) {
         console.log(`[AgentInstanceService] Worktree already exists at ${worktreeDir}`);
+        // A reused worktree may be behind its remote branch (pushed from
+        // elsewhere). Fast-forward only; anything else is left alone.
+        await this.fastForwardToRemote(config.repoPath, worktreeDir, config.branchName, warnings);
         return { path: worktreeDir, status: 'reused', warnings };
       }
 
@@ -1109,10 +1175,30 @@ ${DEVOPS_KIT_DIR}/
       const branchListed = await execaCmd('git', ['branch', '--list', config.branchName], { cwd: config.repoPath });
       const branchExists = Boolean(branchListed.stdout.trim());
 
+      // Start from the latest remote state. Without this fetch a new session
+      // branched from whatever local <base> happened to be — stale whenever
+      // origin had moved on. Best-effort: offline falls back to local, warned.
+      let startRef = baseBranch;
       if (branchExists) {
         await execaCmd('git', ['worktree', 'add', worktreeDir, config.branchName], { cwd: config.repoPath });
+        await this.fastForwardToRemote(config.repoPath, worktreeDir, config.branchName, warnings);
       } else {
-        await execaCmd('git', ['worktree', 'add', '-b', config.branchName, worktreeDir, baseBranch], { cwd: config.repoPath });
+        await this.fetchRef(config.repoPath, baseBranch);
+        const choice = chooseNewBranchStart(
+          baseBranch,
+          await this.relateToRemote(config.repoPath, baseBranch)
+        );
+        startRef = choice.ref;
+        if (choice.warning) warnings.push(choice.warning);
+        // --no-track: starting from origin/<base> would otherwise make origin/<base>
+        // the session branch's upstream, and a bare `git push` would then target
+        // the base branch.
+        await execaCmd(
+          'git',
+          ['worktree', 'add', '--no-track', '-b', config.branchName, worktreeDir, startRef],
+          { cwd: config.repoPath }
+        );
+        console.log(`[AgentInstanceService] Session branch ${config.branchName} cut from ${startRef}`);
       }
 
       // Safety net: verify the worktree landed on the expected branch, not detached.
@@ -1121,7 +1207,7 @@ ${DEVOPS_KIT_DIR}/
       if (head !== config.branchName) {
         console.warn(`[AgentInstanceService] Worktree HEAD is "${head || 'DETACHED'}", expected "${config.branchName}" — re-attaching to session branch`);
         // Force the worktree onto a correctly-named session branch from base.
-        await execaCmd('git', ['checkout', '-B', config.branchName, baseBranch], { cwd: worktreeDir });
+        await execaCmd('git', ['checkout', '--no-track', '-B', config.branchName, startRef], { cwd: worktreeDir });
       }
       console.log(`[AgentInstanceService] Created worktree at ${worktreeDir} for branch ${config.branchName}`);
       status = 'created';
