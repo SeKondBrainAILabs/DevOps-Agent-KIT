@@ -86,6 +86,12 @@ import {
 } from '../../shared/worktree-outcome';
 import { isObserverSession, refuseDestructiveForObserver } from '../../shared/observer-session';
 import {
+  identityFromGit,
+  mergeRecentRepos,
+  recentReposChanged,
+  type RepoIdentity,
+} from '../../shared/recent-repos';
+import {
   chooseNewBranchStart,
   existingBranchWarning,
   shouldFastForward,
@@ -149,6 +155,8 @@ interface StoreSchema {
 export class AgentInstanceService extends BaseService {
   private store: Store<StoreSchema>;
   private instances: Map<string, AgentInstance> = new Map();
+  /** Resolved repository identity per path (see shared/recent-repos). */
+  private repoIdentityCache: Map<string, RepoIdentity> = new Map();
   private terminalLogService: TerminalLogService | null = null;
   private mcpServerUrl: string | null = null;
   private rpcServerUrl: string | null = null;
@@ -4158,32 +4166,70 @@ ${DEVOPS_KIT_DIR}/
 
   // Recent repos management
 
+  /**
+   * Which repository a path belongs to: its origin remote, else its shared git
+   * dir, else the path. Cached — paths do not change repository.
+   */
+  private async resolveRepoIdentity(path: string): Promise<RepoIdentity> {
+    const cached = this.repoIdentityCache.get(path);
+    if (cached) return cached;
+    const git = (args: string[]) =>
+      execaCmd('git', args, { cwd: path, timeout: 5_000 })
+        .then((o) => o.stdout.trim() || null)
+        .catch(() => null);
+    const exists = existsSync(path);
+    const commonDir = exists
+      ? await git(['rev-parse', '--path-format=absolute', '--git-common-dir'])
+      : null;
+    const remoteUrl = commonDir ? await git(['remote', 'get-url', 'origin']) : null;
+    const identity = identityFromGit(path, { remoteUrl, commonDir });
+    // Only cache what git answered; a missing folder may come back.
+    if (commonDir) this.repoIdentityCache.set(path, identity);
+    return identity;
+  }
+
+  /** Merge duplicate rows (same repository) and persist if anything changed. */
+  private async dedupeRecentRepos(repos: RecentRepo[]): Promise<RecentRepo[]> {
+    for (const r of repos) await this.resolveRepoIdentity(r.path);
+    const merged = mergeRecentRepos(
+      repos,
+      (p) => this.repoIdentityCache.get(p) ?? { key: `path:${p}`, canonicalPath: p }
+    );
+    if (recentReposChanged(repos, merged)) this.store.set('recentRepos', merged);
+    return merged;
+  }
+
   async getRecentRepos(): Promise<IpcResult<RecentRepo[]>> {
-    return {
-      success: true,
-      data: this.store.get('recentRepos', []),
-    };
+    const merged = await this.dedupeRecentRepos(this.store.get('recentRepos', []));
+    // Instances may record a worktree or a sibling clone as their repoPath;
+    // resolve those too so session counts land on the merged row.
+    for (const inst of this.instances.values()) {
+      if (inst.config?.repoPath) await this.resolveRepoIdentity(inst.config.repoPath);
+    }
+    this.recalculateRepoAgentCounts();
+    return { success: true, data: this.store.get('recentRepos', merged) };
   }
 
   async addRecentRepo(repo: RecentRepo): Promise<IpcResult<void>> {
     const repos = this.store.get('recentRepos', []);
+    // Record the repository, not the checkout: a worktree path becomes its main
+    // repo, so it lands on the existing row instead of making a new one.
+    const id = await this.resolveRepoIdentity(repo.path);
+    const entry = { ...repo, path: id.canonicalPath, name: basename(id.canonicalPath) };
 
-    // Update existing or add new
-    const existingIndex = repos.findIndex(r => r.path === repo.path);
+    const existingIndex = repos.findIndex(
+      (r) => r.path === entry.path || this.repoIdentityCache.get(r.path)?.key === id.key
+    );
     if (existingIndex >= 0) {
       repos[existingIndex] = {
         ...repos[existingIndex],
-        lastUsed: repo.lastUsed,
+        lastUsed: entry.lastUsed,
         agentCount: repos[existingIndex].agentCount + 1,
       };
     } else {
-      repos.unshift(repo);
+      repos.unshift(entry);
     }
-
-    // Keep only last 10
-    const trimmed = repos.slice(0, 10);
-    this.store.set('recentRepos', trimmed);
-
+    await this.dedupeRecentRepos(repos);
     return { success: true };
   }
 
@@ -4199,7 +4245,10 @@ ${DEVOPS_KIT_DIR}/
    */
   decrementRepoAgentCount(repoPath: string): void {
     const repos = this.store.get('recentRepos', []) as RecentRepo[];
-    const existingIndex = repos.findIndex(r => r.path === repoPath);
+    const key = this.repoIdentityCache.get(repoPath)?.key;
+    const existingIndex = repos.findIndex(
+      (r) => r.path === repoPath || (key !== undefined && this.repoIdentityCache.get(r.path)?.key === key)
+    );
     if (existingIndex >= 0) {
       const newCount = Math.max(0, repos[existingIndex].agentCount - 1);
       repos[existingIndex] = {
@@ -4225,16 +4274,19 @@ ${DEVOPS_KIT_DIR}/
     const instances = Array.from(this.instances.values()).filter(isActiveInstance);
 
     // Count instances per repo
+    // Count by repository identity where known, so a session whose repoPath
+    // is a worktree or a sibling clone counts toward the merged row.
+    const keyOf = (p: string) => this.repoIdentityCache.get(p)?.key ?? `path:${p}`;
     const countByRepo = new Map<string, number>();
     for (const instance of instances) {
-      const repoPath = instance.config.repoPath;
-      countByRepo.set(repoPath, (countByRepo.get(repoPath) || 0) + 1);
+      const k = keyOf(instance.config.repoPath);
+      countByRepo.set(k, (countByRepo.get(k) || 0) + 1);
     }
 
     // Update counts in recent repos
     let updated = false;
     for (const repo of repos) {
-      const actualCount = countByRepo.get(repo.path) || 0;
+      const actualCount = countByRepo.get(keyOf(repo.path)) || 0;
       if (repo.agentCount !== actualCount) {
         console.log(`[AgentInstanceService] Fixing agent count for ${repo.name}: ${repo.agentCount} -> ${actualCount}`);
         repo.agentCount = actualCount;
