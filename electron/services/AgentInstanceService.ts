@@ -86,6 +86,8 @@ import {
 } from '../../shared/worktree-outcome';
 import { isObserverSession, refuseDestructiveForObserver } from '../../shared/observer-session';
 import {
+  countsAsRecentUse,
+  dropAgentOnlyRepos,
   identityFromGit,
   mergeRecentRepos,
   recentReposChanged,
@@ -685,8 +687,9 @@ ${DEVOPS_KIT_DIR}/
       this.instances.set(id, instance);
       this.saveInstances();
 
-      // Add to recent repos
-      await this.addRecentRepo({
+      // Add to recent repos — sessions a person started only. Agents fanning
+      // out across throwaway clones filled the list with duplicates.
+      if (countsAsRecentUse(config.createdBy)) await this.addRecentRepo({
         path: config.repoPath,
         name: basename(config.repoPath),
         lastUsed: new Date().toISOString(),
@@ -4206,6 +4209,16 @@ ${DEVOPS_KIT_DIR}/
     for (const inst of this.instances.values()) {
       if (inst.config?.repoPath) await this.resolveRepoIdentity(inst.config.repoPath);
     }
+    // Clean out rows only agents ever created (recorded before they were excluded).
+    const keyOf = (p: string) => this.repoIdentityCache.get(p)?.key ?? `path:${p}`;
+    const humanOnly = dropAgentOnlyRepos(
+      merged,
+      keyOf,
+      Array.from(this.instances.values())
+        .filter((i) => i.config?.repoPath)
+        .map((i) => ({ repoPath: i.config.repoPath, createdBy: i.config.createdBy }))
+    );
+    if (humanOnly.length !== merged.length) this.store.set('recentRepos', humanOnly);
     this.recalculateRepoAgentCounts();
     return { success: true, data: this.store.get('recentRepos', merged) };
   }

@@ -12,6 +12,8 @@ import {
   mergeRecentRepos,
   normalizeRemoteUrl,
   recentReposChanged,
+  countsAsRecentUse,
+  dropAgentOnlyRepos,
   type RepoIdentity,
 } from '../../../shared/recent-repos';
 import type { RecentRepo } from '../../../shared/types';
@@ -110,5 +112,38 @@ describe('mergeRecentRepos', () => {
     const rows = [row('/r/a', '2026-09-02T00:00:00Z'), row('/r/b', '2026-09-01T00:00:00Z')];
     const merged = mergeRecentRepos(rows, identityOf);
     expect(recentReposChanged(rows, merged)).toBe(false);
+  });
+});
+
+describe('agent sessions stay out of Recent Repositories', () => {
+  it('counts only sessions a person started', () => {
+    expect(countsAsRecentUse('ui')).toBe(true);
+    expect(countsAsRecentUse(undefined)).toBe(true); // pre-tracking record = human
+    expect(countsAsRecentUse('mcp')).toBe(false);
+    expect(countsAsRecentUse('adopted')).toBe(false);
+  });
+
+  const keyOf = (p: string) => (p.startsWith('/bench/') ? 'remote:bench/KIT' : `path:${p}`);
+  const rows = [row('/bench/oc/KIT', '2026-10-10T11:00:00Z'), row('/r/basanti', '2026-10-01T00:00:00Z'), row('/r/new', '2026-09-01T00:00:00Z')];
+
+  it('drops a row only agents ever used — the benchmark clones', () => {
+    const kept = dropAgentOnlyRepos(rows, keyOf, [
+      { repoPath: '/bench/pi/KIT', createdBy: 'mcp' },
+      { repoPath: '/bench/oc/KIT', createdBy: 'mcp' },
+      { repoPath: '/r/basanti', createdBy: 'ui' },
+    ]);
+    expect(kept.map((r) => r.path)).toEqual(['/r/basanti', '/r/new']);
+  });
+
+  it('keeps a row a person also used, even if agents used it more', () => {
+    const kept = dropAgentOnlyRepos(rows, keyOf, [
+      { repoPath: '/bench/oc/KIT', createdBy: 'mcp' },
+      { repoPath: '/bench/pi/KIT', createdBy: 'ui' },
+    ]);
+    expect(kept.map((r) => r.path)).toContain('/bench/oc/KIT');
+  });
+
+  it('keeps a row with no known sessions at all', () => {
+    expect(dropAgentOnlyRepos(rows, keyOf, [])).toHaveLength(3);
   });
 });

@@ -107,3 +107,33 @@ export function recentReposChanged(before: RecentRepo[], after: RecentRepo[]): b
       r.lastUsed !== after[i].lastUsed
   );
 }
+
+/**
+ * Only sessions a person started belong in Recent Repositories. An agent
+ * fanning out (or a benchmark harness opening throwaway clones) is not "a repo
+ * you used recently". Absent origin means a pre-tracking record, i.e. a human.
+ */
+export function countsAsRecentUse(createdBy: 'ui' | 'mcp' | 'adopted' | undefined): boolean {
+  return createdBy === undefined || createdBy === 'ui';
+}
+
+/**
+ * Rows recorded before agent sessions were excluded: drop one when every known
+ * session on that repository was agent-created. A row with no known sessions
+ * is kept — absence of evidence is not evidence of an agent.
+ */
+export function dropAgentOnlyRepos(
+  repos: RecentRepo[],
+  keyOf: (path: string) => string,
+  sessions: Array<{ repoPath: string; createdBy?: 'ui' | 'mcp' | 'adopted' }>
+): RecentRepo[] {
+  const human = new Set<string>();
+  const agent = new Set<string>();
+  for (const s of sessions) {
+    (countsAsRecentUse(s.createdBy) ? human : agent).add(keyOf(s.repoPath));
+  }
+  return repos.filter((r) => {
+    const k = keyOf(r.path);
+    return human.has(k) || !agent.has(k);
+  });
+}
