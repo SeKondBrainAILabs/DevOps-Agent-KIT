@@ -81,6 +81,18 @@ type SanityGateResult = {
   retryGuidance?: string;
 };
 
+/**
+ * Whether the structural check below should run on a file. It is a JavaScript-shaped scanner:
+ * it does not know Python's triple-quoted strings, `#` comments or JS regex literals, so on a
+ * file a real parser has already accepted it only adds false refusals (2026-10-13: every
+ * Python file opening with a multi-line docstring was refused as "unterminated double-quoted
+ * string near line 1"). It runs where there is no real parser — TS, TSX, JSX.
+ */
+export function structuralCheckApplies(ext: string, parsedByRealParser: boolean): boolean {
+  if (parsedByRealParser) return false;
+  return ['ts', 'tsx', 'jsx'].includes(ext.toLowerCase());
+}
+
 /** Files we know how to syntax-check quickly. Anything else is skipped. */
 const PARSE_CHECKABLE = /\.(py|js|mjs|cjs|jsx|ts|tsx)$/i;
 /** Single-file shrink threshold that requires force=true. */
@@ -105,7 +117,7 @@ const SHRINK_MIN_LINES = 300;
  * on legitimate code. Balanced-braces on a small file can be wrong (macros,
  * dedented strings) so keep this to modest false-positive risk.
  */
-function structuralSanityCheck(content: string): string | null {
+export function structuralSanityCheck(content: string): string | null {
   // 1. Leftover merge-conflict markers
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -299,9 +311,10 @@ export function registerTools(
         }
       }
 
-      // Structural sanity check — runs for TS/TSX/JSX (where we have no
-      // parser) AND as a second pass on JS/Py files (parsers can occasionally
-      // accept legitimately-truncated files). ~1ms/file, no subprocess.
+      // Structural sanity check — only where there is no real parser (TS/TSX/JSX).
+      // On Py/JS the parser above has decided; truncation is the shrink check's job.
+      // ~1ms/file, no subprocess.
+      if (!structuralCheckApplies(ext, cmd !== null)) continue;
       try {
         const fs = await import('fs/promises');
         const content = await fs.readFile(abs, 'utf8');
