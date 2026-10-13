@@ -1587,6 +1587,12 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     return { success: true, data: services.autoUpdate.getStatus() };
   });
 
+  // The renderer reports that it mounted; the self-updater's "it started" signal.
+  ipcMain.handle(IPC.UPDATE_MARK_STARTED, () => {
+    services.autoUpdate.markStarted();
+    return { success: true };
+  });
+
   // ==========================================================================
   // WORKER PROCESS HANDLERS
   // ==========================================================================

@@ -249,8 +249,9 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // For checking/downloading/installing app updates via GitHub Releases
   const autoUpdate = new AutoUpdateService();
   autoUpdate.setMainWindow(mainWindow);
-  autoUpdate.initialize();
+  // Debug log first: initialize() reports the outcome of the last install.
   autoUpdate.setDebugLog(debugLog);
+  autoUpdate.initialize();
 
   // Initialize Worker Bridge service
   // Spawns a utility process for file monitoring, rebase polling, heartbeat tracking

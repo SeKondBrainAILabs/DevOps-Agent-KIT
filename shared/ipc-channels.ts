@@ -464,6 +464,7 @@ export const IPC = {
   UPDATE_DOWNLOAD: 'update:download',
   UPDATE_INSTALL: 'update:install',
   UPDATE_GET_STATUS: 'update:get-status',
+  UPDATE_MARK_STARTED: 'update:mark-started',
   // Events (main → renderer)
   UPDATE_AVAILABLE: 'update:available',
   UPDATE_NOT_AVAILABLE: 'update:not-available',
@@ -706,6 +707,7 @@ export const REQUEST_CHANNELS = [
   IPC.UPDATE_DOWNLOAD,
   IPC.UPDATE_INSTALL,
   IPC.UPDATE_GET_STATUS,
+  IPC.UPDATE_MARK_STARTED,
   // Worker process channels
   IPC.WORKER_STATUS,
   IPC.WORKER_RESTART,

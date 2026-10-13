@@ -3,14 +3,26 @@
  * Handles app auto-updates via direct GitHub Releases API check.
  * Does NOT use electron's native autoUpdater (Squirrel.Mac) because that
  * requires a Developer ID code signature. Instead we fetch latest-mac.yml
- * directly and open the releases page for the user to install manually.
+ * directly.
+ *
+ * On macOS, when the install can replace itself, MacSelfUpdater downloads,
+ * verifies, test-launches and installs the release (with rollback). Anywhere
+ * else — other platforms, or an app folder this user cannot write — "install"
+ * opens the release page as before.
  */
 
 import { BrowserWindow, app, shell } from 'electron';
+import { join } from 'path';
 import { IPC } from '../../shared/ipc-channels';
 import type { AppUpdateInfo } from '../../shared/types';
 import https from 'https';
 import type { DebugLogService } from './DebugLogService';
+import { MacSelfUpdater, SMOKE_ENV } from './MacSelfUpdater';
+import {
+  appBundleFromExecPath,
+  describeInstallResult,
+  isNewerVersion,
+} from '../../shared/mac-self-update';
 
 const OWNER = 'SeKondBrainAILabs';
 const REPO = 'DevOps-Agent-KIT';
@@ -19,6 +31,15 @@ export class AutoUpdateService {
   private mainWindow: BrowserWindow | null = null;
   private status: AppUpdateInfo;
   private debugLog: DebugLogService | null = null;
+  /** Set only when this install can replace itself (macOS, packaged, writable). */
+  private macUpdater: MacSelfUpdater | null = null;
+  private staged: { stagedAppPath: string; version: string } | null = null;
+  private preparing: Promise<void> | null = null;
+  /** Set once install has handed over to the swap script; further clicks are ignored. */
+  private installing = false;
+  /** What the last install did, if the user needs to know. Survives update checks. */
+  private installNotice: string | undefined;
+  private updatesDir: string | null = null;
 
   constructor() {
     this.status = {
@@ -38,13 +59,59 @@ export class AutoUpdateService {
   }
 
   /**
-   * Initialize — no-op now since we don't use native autoUpdater events.
-   * Kept for API compatibility.
+   * Set up the macOS self-updater when it can work here, report how the last
+   * install went, and record that this version started (the swap script waits
+   * for that marker before declaring an update good).
    */
   initialize(): void {
     if (!app.isPackaged) {
       console.log('[AutoUpdate] Skipping auto-updater setup in development mode');
+      return;
     }
+    if (process.platform !== 'darwin') return;
+
+    const updatesDir = join(app.getPath('userData'), 'updates');
+    this.updatesDir = updatesDir;
+    const appPath = appBundleFromExecPath(process.execPath);
+    if (process.env[SMOKE_ENV]) return; // the isolated test launch never updates anything
+
+    if (appPath) {
+      const updater = new MacSelfUpdater({
+        updatesDir,
+        appPath,
+        currentVersion: app.getVersion(),
+        arch: process.arch,
+        userAgent: `KanvasForKit/${app.getVersion()}`,
+        log: (message, details) => this.debugLog?.info('AutoUpdate', message, details),
+      });
+      const last = updater.takeInstallResult();
+      if (last) {
+        this.debugLog?.info('AutoUpdate', 'Last install', { ...last });
+        if (last.outcome === 'rolled_back') updater.blockVersion(last.to);
+        this.installNotice = describeInstallResult(last, app.getVersion()) ?? undefined;
+        this.status.error = this.installNotice;
+      }
+      const ready = updater.readiness();
+      if (ready.ok) {
+        this.macUpdater = updater;
+      } else {
+        this.debugLog?.warn('AutoUpdate', 'Self-update unavailable; will open the release page', {
+          reason: ready.reason,
+        });
+      }
+    }
+  }
+
+  /**
+   * The renderer calls this once it has mounted. Reaching here proves the
+   * main process, its IPC handlers and the UI all came up, which is what the
+   * swap script and the isolated test launch wait for. A failed page load
+   * (the "failed to load" data: page) never makes this call.
+   */
+  markStarted(): void {
+    if (!this.updatesDir || process.platform !== 'darwin' || !app.isPackaged) return;
+    MacSelfUpdater.writeStartedMarker(this.updatesDir, app.getVersion());
+    if (process.env[SMOKE_ENV]) setTimeout(() => app.quit(), 300);
   }
 
   /**
@@ -59,14 +126,18 @@ export class AutoUpdateService {
     this.debugLog?.info('AutoUpdate', 'Checking for updates', { currentVersion: app.getVersion() });
 
     try {
-      this.status.error = undefined;
+      this.status.error = this.installNotice;
       const latestVersion = await this.fetchLatestVersion();
       if (!latestVersion) {
         return { ...this.status };
       }
 
       const current = app.getVersion();
-      if (this.isNewer(latestVersion, current)) {
+      const blocked = this.macUpdater?.blockedVersion();
+      if (blocked && blocked === latestVersion) {
+        this.debugLog?.info('AutoUpdate', 'Skipping a version that failed to start here', { version: latestVersion });
+      }
+      if (isNewerVersion(latestVersion, current) && blocked !== latestVersion) {
         console.log(`[AutoUpdate] Update available: ${current} → ${latestVersion}`);
         this.status.updateAvailable = true;
         this.status.latestVersion = latestVersion;
@@ -91,23 +162,83 @@ export class AutoUpdateService {
   }
 
   /**
-   * "Download" — for non-signed builds, we just mark as ready immediately
-   * and open the releases page on install. This keeps the UI flow intact.
+   * Download the update. On a self-updating Mac this really downloads,
+   * verifies and test-launches it, reporting progress; elsewhere it marks the
+   * update ready so "install" can open the release page.
    */
   async downloadUpdate(): Promise<void> {
     if (!app.isPackaged) return;
-    // Mark as downloaded so the pill switches to "Restart to update"
-    this.status.downloading = false;
-    this.status.downloaded = true;
-    this.debugLog?.info('AutoUpdate', 'Download complete — marked ready', { version: this.status.latestVersion });
-    this.sendToRenderer(IPC.UPDATE_DOWNLOADED, this.status);
+    if (!this.macUpdater) {
+      this.status.downloading = false;
+      this.status.downloaded = true;
+      this.debugLog?.info('AutoUpdate', 'Download complete — marked ready', { version: this.status.latestVersion });
+      this.sendToRenderer(IPC.UPDATE_DOWNLOADED, this.status);
+      return;
+    }
+    if (this.installing) return;
+    if (this.preparing) return this.preparing;
+    this.preparing = this.prepareMacUpdate().finally(() => {
+      this.preparing = null;
+    });
+    return this.preparing;
+  }
+
+  private async prepareMacUpdate(): Promise<void> {
+    const updater = this.macUpdater!;
+    // Preparing deletes the staging folder, so the old staged bundle is gone.
+    this.staged = null;
+    this.status.error = undefined;
+    this.status.downloading = true;
+    this.status.downloaded = false;
+    this.sendToRenderer(IPC.UPDATE_PROGRESS, this.status);
+    try {
+      // Re-read the feed so the checksum belongs to the version being installed.
+      const feed = await updater.fetchFeed();
+      if (!isNewerVersion(feed.version, app.getVersion())) {
+        throw new Error(`v${feed.version} is not newer than v${app.getVersion()}`);
+      }
+      this.status.latestVersion = feed.version;
+      this.staged = await updater.prepare(feed, (progress) => {
+        this.status.progress = progress;
+        this.sendToRenderer(IPC.UPDATE_PROGRESS, this.status);
+      });
+      this.status.downloading = false;
+      this.status.downloaded = true;
+      this.status.progress = undefined;
+      this.sendToRenderer(IPC.UPDATE_DOWNLOADED, this.status);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.staged = null;
+      this.status.downloading = false;
+      this.status.downloaded = false;
+      this.status.progress = undefined;
+      this.status.error = `Update not installed: ${msg}`;
+      this.debugLog?.error('AutoUpdate', 'Update preparation failed', { error: msg });
+      this.sendToRenderer(IPC.UPDATE_ERROR, this.status);
+      throw err;
+    }
   }
 
   /**
-   * Open the GitHub releases page so the user can download and install manually.
+   * Install. On a self-updating Mac with a verified, test-launched update this
+   * hands over to the swap script and quits; otherwise it opens the release page.
    */
   installUpdate(): void {
     if (!app.isPackaged) return;
+    if (this.macUpdater) {
+      // One hand-over only, and never while a download is still preparing.
+      if (this.installing || this.preparing) return;
+      if (!this.staged) {
+        this.status.error = 'The update is not downloaded yet.';
+        this.sendToRenderer(IPC.UPDATE_ERROR, this.status);
+        return;
+      }
+      this.installing = true;
+      this.debugLog?.info('AutoUpdate', 'Installing update', { version: this.staged.version });
+      this.macUpdater.launchSwap(this.staged.stagedAppPath, this.staged.version);
+      app.quit();
+      return;
+    }
     const version = this.status.latestVersion;
     const releaseUrl = version
       ? `https://github.com/${OWNER}/${REPO}/releases/tag/v${version}`
@@ -127,7 +258,10 @@ export class AutoUpdateService {
   // ---------------------------------------------------------------------------
 
   private fetchLatestVersion(): Promise<string | null> {
-    const startUrl = `https://github.com/${OWNER}/${REPO}/releases/latest/download/latest-mac.yml`;
+    const base = process.env.KIT_UPDATE_FEED_BASE?.replace(/\/+$/, '');
+    const startUrl = base
+      ? `${base}/latest-mac.yml`
+      : `https://github.com/${OWNER}/${REPO}/releases/latest/download/latest-mac.yml`;
     return this.fetchFollowingRedirects(startUrl, 0);
   }
 
@@ -167,16 +301,6 @@ export class AutoUpdateService {
   private parseVersion(yml: string): string | null {
     const match = yml.match(/^version:\s*(.+)$/m);
     return match ? match[1].trim() : null;
-  }
-
-  /** Compare semver: returns true if candidate > current */
-  private isNewer(candidate: string, current: string): boolean {
-    const parse = (v: string) => v.split('.').map(Number);
-    const [ca, cb, cc] = parse(candidate);
-    const [ra, rb, rc] = parse(current);
-    if (ca !== ra) return ca > ra;
-    if (cb !== rb) return cb > rb;
-    return cc > rc;
   }
 
   private sendToRenderer(channel: string, data: AppUpdateInfo): void {

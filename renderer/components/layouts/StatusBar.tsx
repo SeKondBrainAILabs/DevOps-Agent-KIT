@@ -127,7 +127,9 @@ export function StatusBar({ agent }: StatusBarProps): React.ReactElement {
 
     const unsubAvailable = window.api?.update?.onAvailable?.((info) => {
       setUpdateInfo(info);
-      setUpdateAction('idle');
+      // The periodic check re-announces the update; keep "Restart to update"
+      // if it is already downloaded rather than offering the download again.
+      setUpdateAction(info.downloaded ? 'ready' : 'idle');
     });
     const unsubProgress = window.api?.update?.onProgress?.((info) => {
       setUpdateInfo(info);

@@ -26,6 +26,8 @@ import type { ExpiredAgentSessionInfo } from '../shared/types';
 // to lose. We move only our files (data/, logs/, *.json), leaving Chromium
 // state alone in whichever dir it already lives.
 (function migrateLegacyUserDataDir() {
+  // The self-updater's isolated test launch must never move real data.
+  if (process.env.KIT_UPDATE_SMOKE_DIR) return;
   try {
     const appData = app.getPath('appData');
     const legacyDir = join(appData, 'sekondbrain-kanvas');
@@ -284,7 +286,8 @@ async function createWindow(): Promise<void> {
       minimumFontSize: 0,  // Allow sub-12px fonts (KIT eyebrow at 11px)
     },
     backgroundColor: '#ffffff',
-    show: true,
+    // The self-updater's isolated test launch runs without a visible window.
+    show: !process.env.KIT_UPDATE_SMOKE_DIR,
   };
 
   // Only set icon explicitly in development (production uses bundled .icns)
@@ -504,6 +507,19 @@ app.on('open-url', (event: { preventDefault(): void }, url: string) => {
 
 // App lifecycle events
 app.whenReady().then(async () => {
+  // Self-updater test launch: only ever run against its scratch data dir. If
+  // --user-data-dir did not take, stop before anything touches real data.
+  const smokeDir = process.env.KIT_UPDATE_SMOKE_DIR;
+  if (smokeDir) {
+    const { realpathSync } = await import('fs');
+    const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+    if (real(app.getPath('userData')) !== real(smokeDir)) {
+      console.error('[AutoUpdate] Test launch is not isolated; exiting');
+      app.exit(3);
+      return;
+    }
+    app.dock?.hide();
+  }
   if (!app.isDefaultProtocolClient(DEEP_LINK_SCHEME)) {
     app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
   }
