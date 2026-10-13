@@ -99,6 +99,12 @@ export default function App(): React.ReactElement {
   // reappears — the "still seeing this issue" v2.6.85 didn't cover.
   const recoveryDismissedRef = React.useRef(false);
 
+  // Tell the main process the UI is up. The macOS self-updater waits for this
+  // before it accepts a new version as working (and rolls back otherwise).
+  useEffect(() => {
+    window.api?.update?.markStarted?.();
+  }, []);
+
   useEffect(() => {
     // Risky stale sessions (unmerged commits) → prompt the user.
     const unsubFound = window.api?.recovery?.onStaleSessionsFound?.((sessions) => {

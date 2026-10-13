@@ -2512,6 +2512,8 @@ const api = {
 
     getStatus: (): Promise<IpcResult<AppUpdateInfo>> =>
       ipcRenderer.invoke(IPC.UPDATE_GET_STATUS),
+    markStarted: (): Promise<IpcResult<void>> =>
+      ipcRenderer.invoke(IPC.UPDATE_MARK_STARTED),
 
     onAvailable: (callback: (info: AppUpdateInfo) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, info: AppUpdateInfo) => callback(info);
