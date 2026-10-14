@@ -160,6 +160,10 @@ export function structuralSanityCheck(content: string): string | null {
     // Not inside any quote / comment
     if (c === '/' && n === '/') { inLine = true; i++; continue; }
     if (c === '/' && n === '*') { inBlock = true; i++; continue; }
+    // A quote right after a letter or digit is text, not the start of a string: code never
+    // opens a string mid-word, but JSX text does ("can't", "it's"). Seen 2026-10-14 refusing a
+    // SettingsModal.tsx that TypeScript parses cleanly.
+    if ((c === "'" || c === '"') && i > 0 && /[A-Za-z0-9]/.test(content[i - 1])) continue;
     if (c === "'") { inSingle = true; continue; }
     if (c === '"') { inDouble = true; continue; }
     if (c === '`') { inTemplate = true; continue; }
