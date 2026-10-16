@@ -33,6 +33,24 @@ describe('sanity gate structural check', () => {
     expect(structuralCheckApplies('jsx', false)).toBe(true);
   });
 
+  it('reads an apostrophe in JSX text as text, not as a string', () => {
+    const tsx = `export function Help() {
+  return (
+    <span>
+      allow_foreign. It still can't discard uncommitted or unpushed work
+      unless it forces that explicitly.
+    </span>
+  );
+}
+`;
+    expect(structuralSanityCheck(tsx)).toBeNull();
+  });
+
+  it('still catches a quote that really opens a string and never closes', () => {
+    expect(structuralSanityCheck("const a = 'never closed;\nconst b = 1;\n")).toMatch(/unterminated single-quoted/);
+    expect(structuralSanityCheck('const a = f("x", 2;\n')).toMatch(/unbalanced/);
+  });
+
   it('still catches a truncated TypeScript file', () => {
     expect(structuralSanityCheck('export function f() {\n  const s = "unterminated\n')).toMatch(/unterminated/);
     expect(structuralSanityCheck('export function f() {\n  return [1, 2];\n}\n')).toBeNull();
