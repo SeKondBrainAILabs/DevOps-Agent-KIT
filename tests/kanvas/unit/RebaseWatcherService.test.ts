@@ -80,7 +80,10 @@ describe('RebaseWatcherService', () => {
       expect(service.getWatchedSessions()).toContain(defaultConfig.sessionId);
     });
 
-    it('should not watch sessions with non-on-demand frequency', async () => {
+    it("watches 'never' sessions too — for status and fast-forward, not auto-rebase", async () => {
+      // 'never' governs rewriting the session's own work. The watcher still
+      // has to run so the behind count is right and a session with no
+      // commits of its own catches up (see SessionFastForward.test.ts).
       const config: RebaseWatchConfig = {
         ...defaultConfig,
         rebaseFrequency: 'never',
@@ -89,7 +92,7 @@ describe('RebaseWatcherService', () => {
       const result = await service.startWatching(config);
 
       expect(result.success).toBe(true);
-      expect(service.getWatchedSessions()).not.toContain(config.sessionId);
+      expect(service.getWatchedSessions()).toContain(config.sessionId);
     });
 
     it('should fetch initial remote status on start', async () => {

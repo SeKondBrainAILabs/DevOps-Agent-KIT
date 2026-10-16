@@ -339,6 +339,29 @@ export class SessionOrchestrator {
             err
           );
         });
+
+      // The rebase watcher keeps the "behind" count right and fast-forwards a
+      // session with no commits of its own. It used to start only on app
+      // restart, so a new session — even on "daily" — was never kept current.
+      const inst = result.data;
+      const baseBranch = (inst.config?.baseBranch || config.baseBranch || '').replace(/^origin\//, '');
+      if (baseBranch && this.deps.rebaseWatcher.startWatching) {
+        const wt =
+          inst.worktreePath && inst.worktreePath !== config.repoPath ? inst.worktreePath : undefined;
+        Promise.resolve(
+          this.deps.rebaseWatcher.startWatching({
+            sessionId: inst.sessionId!,
+            repoPath: config.repoPath,
+            worktreePath: wt,
+            baseBranch,
+            currentBranch: inst.config?.branchName ?? config.branchName ?? '',
+            rebaseFrequency: inst.config?.rebaseFrequency ?? config.rebaseFrequency ?? 'never',
+            pollIntervalMs: 60_000,
+          })
+        ).catch((err: unknown) => {
+          console.warn('[SessionOrchestrator] Failed to start rebase watcher for new session:', err);
+        });
+      }
     }
 
     return result;
@@ -1278,9 +1301,11 @@ export class SessionOrchestrator {
       patch.rebaseFrequency !== undefined &&
       patch.rebaseFrequency !== instance.config?.rebaseFrequency
     ) {
-      if (patch.rebaseFrequency === 'never') {
+      // 'never' restarts the watcher rather than stopping it: it still keeps
+      // the status right and fast-forwards a session with no commits of its own.
+      if (!this.deps.rebaseWatcher.startWatching) {
         await this.deps.rebaseWatcher.stopWatching(liveId);
-      } else if (this.deps.rebaseWatcher.startWatching) {
+      } else {
         // Stop first: startWatching on an already-watched session would
         // otherwise stack a second interval.
         await this.deps.rebaseWatcher.stopWatching(liveId);

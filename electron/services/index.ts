@@ -337,8 +337,8 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
       merge.executeMerge(repoPath, sourceBranch, targetBranch, options),
   });
   mcpServer.setRebaseWatcherService({
-    performRebaseForPath: (sessionId, repoPath, baseBranch) =>
-      rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch),
+    performRebaseForPath: (sessionId, repoPath, baseBranch, worktreePath) =>
+      rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch, worktreePath),
   });
   mcpServer.setDebugLog(debugLog);
   console.log('[Services] MCP server initialized on port', mcpServer.getPort());

@@ -1668,7 +1668,8 @@ export function registerTools(
       deps.activityService?.log(session_id, 'git', `MCP kit_rebase: onto ${resolvedBase}`, { source: 'mcp', toolName: 'kit_rebase' });
 
       try {
-        const result = await deps.rebaseWatcherService.performRebaseForPath(session_id, repoPath, resolvedBase);
+        // Rebase the session's worktree, not the main checkout at repoPath.
+        const result = await deps.rebaseWatcherService.performRebaseForPath(session_id, repoPath, resolvedBase, worktree);
         return { content: [{ type: 'text', text: JSON.stringify({
           success: !!result.success,
           message: result.message || '',

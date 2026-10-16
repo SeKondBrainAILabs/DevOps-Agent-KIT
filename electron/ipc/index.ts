@@ -1840,9 +1840,11 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
           console.warn(`[IPC] Failed to start file watcher for session ${instance.sessionId}:`, err);
         });
 
-        // Start rebase watcher for all non-never frequencies
+        // Start the rebase watcher for every session, including 'never': it
+        // keeps the "behind" count right and fast-forwards a session with no
+        // commits of its own. 'never' only disables auto-rebase.
         const rebaseFrequency = instance.config?.rebaseFrequency || 'never';
-        if (rebaseFrequency !== 'never' && instance.config?.baseBranch) {
+        if (instance.config?.baseBranch) {
           const rootRepoPath = instance.config?.repoPath;
           const wtPath = instance.worktreePath && instance.worktreePath !== rootRepoPath
             ? instance.worktreePath : undefined;
@@ -1852,7 +1854,7 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
             worktreePath: wtPath,                 // worktree — for actual rebase execution
             baseBranch: (instance.config.baseBranch || 'main').replace(/^origin\//, ''),
             currentBranch: instance.config.branchName,
-            rebaseFrequency: rebaseFrequency as 'on-demand' | 'daily' | 'weekly',
+            rebaseFrequency: rebaseFrequency as 'never' | 'on-demand' | 'daily' | 'weekly',
             pollIntervalMs: 60000,
           }).catch((err) => {
             console.warn(`[IPC] Failed to start rebase watcher for session ${instance.sessionId}:`, err);
