@@ -12,6 +12,13 @@ import type { WorkerBridgeService } from './WorkerBridgeService';
 import type { DebugLogService } from './DebugLogService';
 import type { ActivityService } from './ActivityService';
 import type { IpcResult, RebaseFrequency } from '../../shared/types';
+import { execFile } from 'child_process';
+import { existsSync } from 'fs';
+import { join, resolve } from 'path';
+import { promisify } from 'util';
+import { shouldFastForward } from '../../shared/session-fast-forward';
+
+const execFileAsync = promisify(execFile);
 
 // Watch configuration for a session
 export interface RebaseWatchConfig {
@@ -44,6 +51,8 @@ interface WatchState {
   behindCount: number;
   aheadCount: number;
   lastAutoRebaseAt: Date | null;  // last time a periodic auto-rebase ran
+  /** origin/<base> commit a fast-forward was last refused against (not retried until it moves). */
+  lastFfRefusedFor?: string | null;
   lastRebaseResult: {
     success: boolean;
     message: string;
@@ -155,6 +164,14 @@ export class RebaseWatcherService extends BaseService {
     // Emit updated status to renderer
     this.emitStatus(sessionId);
 
+    // Nothing of its own to rebase: catch up by fast-forward, any frequency.
+    if (ahead === 0 && behind > 0) {
+      this.maybeFastForward(state).catch((err) =>
+        console.warn(`[RebaseWatcher] Fast-forward check failed for ${sessionId}:`, err)
+      );
+      return;
+    }
+
     if (isInitialUpdate) {
       console.log(`[RebaseWatcher] Initial status for ${sessionId}: ${behind} behind (baseline recorded, no rebase triggered)`);
       return;
@@ -221,11 +238,9 @@ export class RebaseWatcherService extends BaseService {
         await this.stopWatching(sessionId);
       }
 
-      // Skip only if explicitly set to 'never'
-      if (config.rebaseFrequency === 'never') {
-        console.log(`[RebaseWatcher] Skipping watch for ${sessionId} - frequency is 'never'`);
-        return;
-      }
+      // 'never' sessions are watched too: the setting governs rewriting the
+      // session's own work, but a session with none still fast-forwards and
+      // its "behind" count must be right. Auto-rebase stays off for them.
 
       const pollInterval = config.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS;
 
@@ -244,7 +259,10 @@ export class RebaseWatcherService extends BaseService {
           lastRebaseResult: null,
         };
         this.watchedSessions.set(sessionId, state);
-        this.workerBridge.startRebaseMonitor(sessionId, config.repoPath, config.baseBranch, 'origin', pollInterval);
+        // Status is measured in the session's own checkout. Measuring it in
+        // repoPath compared the MAIN checkout's HEAD with origin/<base>, so
+        // every worktree session reported the main checkout's "behind".
+        this.workerBridge.startRebaseMonitor(sessionId, this.statusPath(config), config.baseBranch, 'origin', pollInterval);
         console.log(`[RebaseWatcher] Delegated polling to worker for ${sessionId}`);
         this.emitStatus(sessionId);
         return;
@@ -252,7 +270,7 @@ export class RebaseWatcherService extends BaseService {
 
       // Fallback: in-process polling
       // Get initial remote state
-      const initialStatus = await this.checkRemoteStatus(config.repoPath, config.baseBranch);
+      const initialStatus = await this.checkRemoteStatus(this.statusPath(config), config.baseBranch);
 
       const state: WatchState = {
         config: { ...config, pollIntervalMs: pollInterval },
@@ -436,8 +454,8 @@ export class RebaseWatcherService extends BaseService {
   ): Promise<{ hasChanges: boolean }> {
     const { config } = state;
 
-    // Fetch and check remote status
-    const status = await this.checkRemoteStatus(config.repoPath, config.baseBranch);
+    // Fetch and check remote status, in the session's own checkout
+    const status = await this.checkRemoteStatus(this.statusPath(config), config.baseBranch);
 
     // First poll establishes the baseline — don't treat pre-existing behind count
     // as "new commits" that need an immediate rebase on startup.
@@ -449,6 +467,13 @@ export class RebaseWatcherService extends BaseService {
 
     // Emit updated status
     this.emitStatus(config.sessionId);
+
+    // Nothing of its own to rebase: catch up by fast-forward, any frequency,
+    // including on the first poll (a session that starts behind catches up).
+    if (await this.maybeFastForward(state)) {
+      state.lastRemoteCommit = status.lastCommit;
+      return { hasChanges: true };
+    }
 
     if (isInitialPoll) {
       state.lastRemoteCommit = status.lastCommit;
@@ -534,7 +559,8 @@ export class RebaseWatcherService extends BaseService {
   async performRebaseForPath(
     sessionId: string,
     repoPath: string,
-    baseBranch: string
+    baseBranch: string,
+    worktreePath?: string
   ): Promise<{ success: boolean; message: string }> {
     // If the session is already registered, delegate to its state (respects isPaused/isRebasing)
     const existing = this.watchedSessions.get(sessionId);
@@ -546,13 +572,16 @@ export class RebaseWatcherService extends BaseService {
     // Resolve actual branch name so AI analysis gets proper context
     let currentBranch = '';
     try {
-      currentBranch = (await this.gitService.getCurrentBranch(repoPath))?.data || '';
+      currentBranch = (await this.gitService.getCurrentBranch(worktreePath || repoPath))?.data || '';
     } catch { /* fall through — empty is acceptable but not ideal */ }
 
     const state: WatchState = {
       config: {
         sessionId,
         repoPath,
+        // Without this an unwatched session (e.g. rebase "never") was rebased
+        // in repoPath — the main checkout — and the session itself never moved.
+        worktreePath,
         baseBranch,
         currentBranch,
         rebaseFrequency: 'on-demand',
@@ -569,6 +598,82 @@ export class RebaseWatcherService extends BaseService {
       lastRebaseResult: null,
     };
     return this.performAutoRebase(state);
+  }
+
+  /** The session's own checkout: its worktree when it has one that exists, else the repo. */
+  private statusPath(config: RebaseWatchConfig): string {
+    return config.worktreePath && existsSync(config.worktreePath) ? config.worktreePath : config.repoPath;
+  }
+
+  /**
+   * Fast-forward a session that has no commits of its own to origin/<base>.
+   * `--ff-only` never rewrites history, and git refuses on its own if an
+   * uncommitted change would be overwritten — that refusal is logged once and
+   * not retried until the remote moves again.
+   */
+  private async maybeFastForward(state: WatchState): Promise<boolean> {
+    const { config } = state;
+    const path = this.statusPath(config);
+    const ref = `origin/${config.baseBranch}`;
+    const git = (args: string[]) =>
+      execFileAsync('git', args, { cwd: path, timeout: 30_000 }).then((o) => o.stdout.trim());
+
+    let remoteHead: string | null = null;
+    let onBranchAndIdle = false;
+    try {
+      remoteHead = await git(['rev-parse', ref]);
+    } catch { /* no remote base: nothing to do */ }
+    try {
+      await git(['symbolic-ref', '-q', 'HEAD']);
+      const gitDir = resolve(path, await git(['rev-parse', '--git-dir']));
+      onBranchAndIdle = !['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD'].some((n) =>
+        existsSync(join(gitDir, n))
+      );
+    } catch { /* detached HEAD */ }
+
+    if (
+      !shouldFastForward({
+        ahead: state.aheadCount,
+        behind: state.behindCount,
+        isRebasing: state.isRebasing,
+        isPaused: state.isPaused,
+        onBranchAndIdle,
+        remoteHead,
+        lastRefusedFor: state.lastFfRefusedFor ?? null,
+      })
+    ) {
+      return false;
+    }
+
+    const behind = state.behindCount;
+    state.isRebasing = true;
+    this.emitStatus(config.sessionId);
+    try {
+      await git(['merge', '--ff-only', ref]);
+      state.behindCount = 0;
+      state.lastFfRefusedFor = null;
+      const msg = `Fast-forwarded to the latest ${config.baseBranch} (${behind} commit${behind === 1 ? '' : 's'})`;
+      console.log(`[RebaseWatcher] ${msg} for ${config.sessionId}`);
+      this.debugLog?.info('RebaseWatcher', msg, { sessionId: config.sessionId, path });
+      this.activityService?.log(config.sessionId, 'git', msg);
+      return true;
+    } catch (err) {
+      state.lastFfRefusedFor = remoteHead;
+      const reason = err instanceof Error ? err.message.split('\n').find((l) => l.trim()) ?? err.message : String(err);
+      this.debugLog?.warn('RebaseWatcher', 'Fast-forward refused; will retry when the remote moves', {
+        sessionId: config.sessionId,
+        reason,
+      });
+      this.activityService?.log(
+        config.sessionId,
+        'warning',
+        `Could not fast-forward to the latest ${config.baseBranch}: uncommitted changes are in the way. Commit or stash them, or Sync.`
+      );
+      return false;
+    } finally {
+      state.isRebasing = false;
+      this.emitStatus(config.sessionId);
+    }
   }
 
   /**

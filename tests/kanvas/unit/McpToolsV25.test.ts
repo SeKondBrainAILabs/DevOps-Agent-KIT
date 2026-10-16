@@ -359,7 +359,9 @@ describe('MCP v2.5 tools', () => {
     it('kit_rebase resolves repo+base from a PREDECESSOR id', async () => {
       const r = parseResult(await callTool('kit_rebase', { session_id: PRED, cwd: WT }));
       expect(r.error).toBeUndefined();
-      expect(rebaseWatcherService.performRebaseForPath).toHaveBeenCalledWith(PRED, REPO, BASE);
+      // The worktree is passed so an unwatched session rebases its own
+      // checkout; with only REPO it rebased the main checkout instead.
+      expect(rebaseWatcherService.performRebaseForPath).toHaveBeenCalledWith(PRED, REPO, BASE, WT);
       expect(r.baseBranch).toBe(BASE);
     });
 
