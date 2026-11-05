@@ -12,7 +12,12 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { classifyGhFailure, type GhResult } from '../../../shared/github-cli';
+import {
+  classifyGhFailure,
+  resolveGhCommand,
+  toGhResult,
+  type GhResult,
+} from '../../../shared/github-cli';
 
 const result = (over: Partial<GhResult> = {}): GhResult => ({
   ok: false,
@@ -99,5 +104,51 @@ describe('classifyGhFailure — everything else', () => {
 
   it('classifies an empty stderr failure as other rather than guessing', () => {
     expect(classifyGhFailure(result({ stderr: '', code: 1 }))).toBe('other');
+  });
+});
+
+describe('resolveGhCommand — an app started without Homebrew on PATH', () => {
+  const LAUNCHD_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+  const has = (...files: string[]) => (file: string) => files.includes(file);
+
+  it('runs plain gh when gh is on PATH', () => {
+    expect(resolveGhCommand('/opt/homebrew/bin:/usr/bin', has('/opt/homebrew/bin/gh'))).toBe('gh');
+  });
+
+  it('uses the Homebrew gh when PATH is launchd\'s default', () => {
+    expect(resolveGhCommand(LAUNCHD_PATH, has('/opt/homebrew/bin/gh'))).toBe('/opt/homebrew/bin/gh');
+  });
+
+  it('uses /usr/local/bin/gh on an Intel Mac', () => {
+    expect(resolveGhCommand(LAUNCHD_PATH, has('/usr/local/bin/gh'))).toBe('/usr/local/bin/gh');
+  });
+
+  it('falls back to plain gh when it is nowhere, so the spawn error is reported', () => {
+    expect(resolveGhCommand(undefined, has())).toBe('gh');
+  });
+});
+
+describe('toGhResult — failures that carry no stderr', () => {
+  it('reports a spawn failure instead of an empty stderr', () => {
+    const r = toGhResult(
+      { exitCode: undefined, stdout: '', stderr: '', failed: true, shortMessage: 'Command failed with ENOENT: gh pr create\nspawn gh ENOENT' },
+      30_000
+    );
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe(-1);
+    expect(r.stderr).toContain('ENOENT');
+    expect(classifyGhFailure(r)).toBe('not_installed');
+  });
+
+  it('reports a timeout', () => {
+    const r = toGhResult({ exitCode: undefined, stdout: '', stderr: '', timedOut: true }, 30_000);
+    expect(r.stderr).toBe('gh timed out after 30s');
+  });
+
+  it('keeps gh\'s own stderr and a success as they are', () => {
+    expect(toGhResult({ exitCode: 1, stdout: '', stderr: 'boom', message: 'x' }, 30_000).stderr).toBe('boom');
+    expect(toGhResult({ exitCode: 0, stdout: 'url', stderr: '' }, 30_000)).toEqual({
+      ok: true, stdout: 'url', stderr: '', code: 0,
+    });
   });
 });

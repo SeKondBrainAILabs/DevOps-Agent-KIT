@@ -99,6 +99,44 @@ export function describeGhFailure(failure: GhFailure): string {
   }
 }
 
+/** Where gh usually lives on macOS when the app was started without a login-shell PATH. */
+export const GH_FALLBACK_PATHS = ['/opt/homebrew/bin/gh', '/usr/local/bin/gh'];
+
+/**
+ * The gh command to run. An app opened from Finder or a login item gets
+ * launchd's PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which has no Homebrew, so a
+ * bare `gh` fails to spawn even though gh is installed. When gh is not on PATH,
+ * the first fallback path that exists is used instead.
+ *
+ * Pure apart from `exists`, so it is table-testable.
+ */
+export function resolveGhCommand(
+  pathEnv: string | undefined,
+  exists: (file: string) => boolean,
+  fallbacks: string[] = GH_FALLBACK_PATHS
+): string {
+  const dirs = (pathEnv || '').split(':').filter(Boolean);
+  if (dirs.some((dir) => exists(`${dir.replace(/\/+$/, '')}/gh`))) return 'gh';
+  return fallbacks.find((file) => exists(file)) ?? 'gh';
+}
+
+/**
+ * An execa result as a GhResult. With `reject: false`, a spawn failure (ENOENT)
+ * or a timeout comes back with no exit code and an empty stderr, and the reason
+ * only in `message`; it is moved into stderr so callers and classifyGhFailure
+ * see it instead of an empty "unknown error".
+ */
+export function toGhResult(r: any, timeoutMs: number): GhResult {
+  const ok = r?.exitCode === 0;
+  let stderr: string = r?.stderr || '';
+  if (!ok && !stderr) {
+    stderr = r?.timedOut
+      ? `gh timed out after ${Math.round(timeoutMs / 1000)}s`
+      : r?.shortMessage || r?.message || '';
+  }
+  return { ok, stdout: r?.stdout || '', stderr, code: r?.exitCode ?? -1 };
+}
+
 /**
  * The real runner. `execa` is ESM-only, so it is imported dynamically inside
  * the call — which also keeps this module loadable under jest, where a
@@ -118,13 +156,10 @@ export function createGhRunner(timeoutMs = 30_000): GhRunner {
           : typeof mod.default === 'function'
             ? mod.default
             : mod.default?.execa;
-      const r = await execa('gh', args, { cwd, timeout: timeoutMs, reject: false });
-      return {
-        ok: r.exitCode === 0,
-        stdout: r.stdout || '',
-        stderr: r.stderr || '',
-        code: r.exitCode ?? -1,
-      };
+      const { existsSync } = await import('fs');
+      const gh = resolveGhCommand(process.env.PATH, existsSync);
+      const r = await execa(gh, args, { cwd, timeout: timeoutMs, reject: false });
+      return toGhResult(r, timeoutMs);
     } catch (err: any) {
       // A spawn failure lands here rather than as a non-zero exit, which is why
       // classifyGhFailure looks at stderr text and not only at the code.
