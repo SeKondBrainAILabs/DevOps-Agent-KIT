@@ -1,0 +1,26 @@
+{
+  "story_id": "KC-S3.1.5",
+  "status": "completed",
+  "ready_for_qa": true,
+  "implementation": {
+    "git_service_enhanced": true,
+    "mcp_tools_updated": true,
+    "tests_created": true
+  },
+  "acceptance_criteria": {
+    "AC1": true,
+    "AC2": true,
+    "AC3": true,
+    "AC4": true,
+    "AC5": true,
+    "AC6": true,
+    "AC7": true
+  },
+  "problem_solved": "KIT Harness can commit changes while excluding scaffold files from commits while keeping them on disk",
+  "files_changed": [
+    "electron/services/GitService.ts",
+    "electron/services/mcp/tools.ts",
+    "tests/kanvas/unit/GitService.commitExclude.test.ts",
+    "tests/kanvas/unit/McpScaffoldExclude.test.ts"
+  ]
+}

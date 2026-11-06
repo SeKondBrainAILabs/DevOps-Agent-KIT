@@ -1,0 +1,11 @@
+{
+  "status": "ready_for_qa",
+  "story": "KC-S3.1.5",
+  "completed": true,
+  "files": [
+    "electron/services/GitService.ts",
+    "electron/services/mcp/tools.ts",
+    "tests/kanvas/unit/GitService.commitExclude.test.ts",
+    "tests/kanvas/unit/McpScaffoldExclude.test.ts"
+  ]
+}
