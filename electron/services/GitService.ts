@@ -112,4 +112,14 @@ export class GitService {
     // This is a placeholder - actual implementation depends on current structure
     return '';
   }
+  
+  /**
+   * Register a worktree for a session (for testing purposes)
+   * @param sessionId - Session ID
+   * @param repoPath - Repository path
+   * @param worktreePath - Worktree path
+   */
+  public registerWorktree(sessionId: string, repoPath: string, worktreePath: string): void {
+    // Placeholder implementation - would store in memory or DB
+  }
 }
