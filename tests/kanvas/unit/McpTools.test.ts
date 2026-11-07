@@ -450,6 +450,47 @@ describe('MCP Tools', () => {
       expect(data.conflicts[0].file).toBe('src/index.ts');
     });
 
+    it('names the holder LockService reports', async () => {
+      mockLockService.checkConflicts.mockResolvedValueOnce({
+        success: true,
+        data: [{ file: 'src/index.ts', conflictsWith: 'claude', session: 'sess_test_123_other',
+                 reason: 'r', declaredAt: new Date().toISOString() }],
+      });
+      binder.registerSession('sess_test_123_other', '/tmp/worktree-other');
+
+      const data = parseResult(await callTool('kit_lock_file', { session_id: 'sess_test_123', files: ['src/index.ts'] }));
+      expect(data.locked).toBe(false);
+      expect(data.conflicts).toEqual([{ file: 'src/index.ts', heldBy: 'claude', sessionId: 'sess_test_123_other' }]);
+      expect(mockLockService.forceReleaseLock).not.toHaveBeenCalled();
+    });
+
+    it('releases a lock held by a session KIT no longer knows, then locks', async () => {
+      // 2026-11-07: sessions lost in a reboot kept their locks, and every later session failed on them.
+      mockLockService.checkConflicts.mockResolvedValueOnce({
+        success: true,
+        data: [{ file: 'tests/a.test.ts', conflictsWith: 'custom', session: 'sess_gone',
+                 reason: 'r', declaredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() }],
+      });
+
+      const data = parseResult(await callTool('kit_lock_file', { session_id: 'sess_test_123', files: ['tests/a.test.ts'] }));
+      expect(mockLockService.forceReleaseLock).toHaveBeenCalledWith('/tmp/worktree-test', 'tests/a.test.ts');
+      expect(data.locked).toBe(true);
+      expect(data.conflicts).toEqual([]);
+    });
+
+    it('keeps a recent lock of an unknown session: it may still be restoring', async () => {
+      mockLockService.checkConflicts.mockResolvedValueOnce({
+        success: true,
+        data: [{ file: 'tests/a.test.ts', conflictsWith: 'custom', session: 'sess_restoring',
+                 reason: 'r', declaredAt: new Date().toISOString() }],
+      });
+
+      const data = parseResult(await callTool('kit_lock_file', { session_id: 'sess_test_123', files: ['tests/a.test.ts'] }));
+      expect(mockLockService.forceReleaseLock).not.toHaveBeenCalled();
+      expect(data.locked).toBe(false);
+      expect(data.conflicts[0].sessionId).toBe('sess_restoring');
+    });
+
     it('should return error for unknown session', async () => {
       const result = await callTool('kit_lock_file', {
         session_id: 'unknown_sess',

@@ -193,6 +193,30 @@ interface McpCallLogger {
  * generic type inference when combining McpServer.tool() + Zod schemas.
  * TypeScript's type checker hangs (OOM) without this escape hatch.
  */
+// A lock younger than this is never treated as stale: a session being restored may not have
+// re-registered its id yet.
+export const STALE_LOCK_GRACE_MS = 10 * 60 * 1000;
+
+/** Who holds a conflicting lock. LockService reports `conflictsWith` and `session`; older
+ *  callers passed `heldBy` and `sessionId`, which is all this tool used to read, so every
+ *  conflict came back as held by "unknown". */
+export function conflictHolder(c: any): string {
+  return c.heldBy || c.conflictsWith || c.agentType || 'unknown';
+}
+
+export function conflictHolderSession(c: any): string {
+  return c.sessionId || c.session || 'unknown';
+}
+
+/** A conflict whose holder session KIT does not know (live or as a predecessor alias) and whose
+ *  lock is older than the grace period. */
+export function isStaleLock(c: any, isKnown: (sessionId: string) => boolean, now: number = Date.now()): boolean {
+  const holder = c.sessionId || c.session;
+  if (!holder || isKnown(holder)) return false;
+  const declared = Date.parse(c.declaredAt || c.lockedAt || '');
+  return Number.isFinite(declared) && now - declared > STALE_LOCK_GRACE_MS;
+}
+
 export function registerTools(
   server: McpServer,
   binder: McpSessionBinder,
@@ -1216,13 +1240,29 @@ export function registerTools(
 
         // Check for conflicts first
         const conflictResult = await deps.lockService.checkConflicts(lockRoot, files, session_id);
-        const conflicts = conflictResult.success && conflictResult.data?.length > 0
+        const found: any[] = conflictResult.success && conflictResult.data?.length > 0
           ? conflictResult.data
           : [];
 
+        // A lock whose holder KIT no longer knows, live or as a restored session's predecessor
+        // alias, was left by a session lost in a crash or restart. Nothing releases it, so it
+        // blocked every later session on that file for good (2026-11-07: four harness test files
+        // stayed locked by sessions lost in a reboot, and each story's retries failed on them).
+        const stale = found.filter((c: any) => isStaleLock(c, (id) => Boolean(binder.getSession(id))));
+        for (const c of stale) {
+          await deps.lockService.forceReleaseLock(lockRoot, c.file || c.filePath);
+        }
+        if (stale.length > 0) {
+          deps.activityService?.log(session_id, 'info',
+            `Released stale locks: ${stale.map((c: any) => `${c.file || c.filePath} (${conflictHolderSession(c)})`).join(', ')}`,
+            { files: stale.map((c: any) => c.file || c.filePath), source: 'mcp' }
+          );
+        }
+        const conflicts = found.filter((c: any) => !stale.includes(c));
+
         if (conflicts.length > 0) {
           const conflictSummary = conflicts.map((c: any) =>
-            `${c.file || c.filePath} (held by ${c.heldBy || c.agentType || 'unknown session'})`
+            `${c.file || c.filePath} (held by ${conflictHolder(c)})`
           ).join(', ');
           deps.activityService?.log(session_id, 'warning',
             `File lock conflict: ${conflictSummary}`,
@@ -1236,8 +1276,8 @@ export function registerTools(
                 files,
                 conflicts: conflicts.map((c: any) => ({
                   file: c.file || c.filePath,
-                  heldBy: c.heldBy || c.agentType || 'unknown',
-                  sessionId: c.sessionId || 'unknown',
+                  heldBy: conflictHolder(c),
+                  sessionId: conflictHolderSession(c),
                 })),
               }),
             }],
