@@ -62,7 +62,7 @@ async function getSseTransport() {
 // Service interface types (set via setters, not constructor)
 export interface McpServiceDeps {
   gitService?: {
-    commit: (sessionId: string, message: string, repoName?: string) => Promise<any>;
+    commit: (sessionId: string, message: string, repoName?: string, exclude?: string[]) => Promise<any>;
     push: (sessionId: string, repoName?: string, options?: { forceWithLease?: boolean }) => Promise<any>;
     getStatus: (sessionId: string) => Promise<any>;
     getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number) => Promise<any>;
