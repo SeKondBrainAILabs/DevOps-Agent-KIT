@@ -787,8 +787,9 @@ export function registerTools(
       push: z.boolean().optional().default(true).describe('Push to remote after commit. Defaults to TRUE — commits ship to origin so CI runs and other collaborators can see them. Pass push=false ONLY when you explicitly want a local-only commit (rare — mostly for WIP work you plan to squash before pushing).'),
       repo: z.string().optional().describe('Target repo name (multi-repo mode). Omit for primary repo.'),
       force: z.boolean().optional().default(false).describe('Bypass the pre-commit sanity gate (diff-size warning + parser check). Set to true ONLY after re-reading any flagged file and confirming the change is intentional. Parser errors block even with force=true — they always mean the on-disk file is broken.'),
+      exclude: z.array(z.string()).optional().describe('Paths to leave UNSTAGED in this commit (KC-S3.1.5). git add -A stages everything first, so files the worktree setup wrote (houserules.md, an appended .gitignore, a uv.lock from uv sync) would otherwise ride along. These paths are unstaged after staging and stay on disk. If the exclusions leave nothing staged, the commit is refused with "nothing to commit".'),
     },
-    withCallLog('kit_commit', async ({ session_id, message, cwd, push, repo, force }) => {
+    withCallLog('kit_commit', async ({ session_id, message, cwd, push, repo, force, exclude }) => {
       const worktree = binder.getWorktreePathForRepo(session_id, repo);
       if (!worktree) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown session or repo', session_id, repo }) }] };
@@ -831,8 +832,12 @@ export function registerTools(
           ? `[Upgrade From ${primaryRepo}] ${message}`
           : message;
 
-        // 1. Stage + commit via gitService (pass repoName for multi-repo)
-        const commitResult = await deps.gitService.commit(session_id, commitMessage, repo);
+        // 1. Stage + commit via gitService (pass repoName for multi-repo).
+        // `exclude` is forwarded as a 4th argument only when the caller
+        // supplied it, so the existing 3-argument call contract is unchanged.
+        const commitResult = exclude
+          ? await deps.gitService.commit(session_id, commitMessage, repo, exclude)
+          : await deps.gitService.commit(session_id, commitMessage, repo);
         if (!commitResult.success) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: commitResult.error?.message || 'Commit failed' }) }] };
         }
@@ -1883,6 +1888,7 @@ export function registerTools(
           observed_path: derived.config!.observedPath,
           repo_path: derived.config!.repoPath,
           worktree_path: null,
+          setup_changes: [],
           created_at: obs.data.createdAt,
           watcher_started: false,
           mcp: { url: deps.mcpUrl?.() ?? null, tool_prefix: 'kit_' },
@@ -1918,7 +1924,7 @@ export function registerTools(
         }
         baseBranch = pickDefaultBaseBranch({ currentBranch, branches });
       }
-      baseBranch = String(baseBranch).replace(/^origin\//, '');
+      baseBranch = String(baseBranch).replace(/^origin[/]/, '');
 
       const config: any = {
         repoPath,
@@ -1960,6 +1966,21 @@ export function registerTools(
 
       const inst = result.data;
       const mcpUrl = deps.mcpUrl?.() ?? null;
+
+      // KC-S3.1.5 — what the worktree setup left in the new worktree, so the
+      // agent knows which files it did NOT write (houserules.md, an appended
+      // .gitignore, a uv.lock from `uv sync`) and can pass them to
+      // kit_commit's `exclude`. Best-effort: a failed lookup degrades to [].
+      let setupChanges: string[] = [];
+      if (inst.worktreePath && deps.gitService?.getPendingChanges) {
+        try {
+          const pending = await deps.gitService.getPendingChanges(inst.worktreePath);
+          if (pending?.success && Array.isArray(pending.data)) setupChanges = pending.data;
+        } catch {
+          // A lookup failure must not fail the session; setup_changes stays [].
+        }
+      }
+
       return {
         content: [{ type: 'text', text: JSON.stringify({
           ok: true,
@@ -1970,6 +1991,7 @@ export function registerTools(
           parent_session_id: args.session_id ?? null,
           repo_path: repoPath,
           worktree_path: inst.worktreePath ?? repoPath,
+          setup_changes: setupChanges,
           branch: branchName,
           base_branch: baseBranch,
           agent_type: agentType,

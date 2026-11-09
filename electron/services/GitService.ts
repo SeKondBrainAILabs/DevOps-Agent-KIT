@@ -409,7 +409,7 @@ export class GitService extends BaseService {
     return broken;
   }
 
-  async commit(sessionId: string, message: string, repoName?: string): Promise<IpcResult<GitCommit>> {
+  async commit(sessionId: string, message: string, repoName?: string, exclude?: string[]): Promise<IpcResult<GitCommit>> {
     return this.wrap(async () => {
       const cwd = this.getWorkingDir(sessionId, repoName);
 
@@ -421,6 +421,25 @@ export class GitService extends BaseService {
           `[GitService] commit skipped ${staged.skippedSubmodules.length} broken submodule(s): ` +
           staged.skippedSubmodules.join(', ')
         );
+      }
+
+      // Leave the caller's excluded paths unstaged (KC-S3.1.5). `add -A` above
+      // stages everything, including files the worktree setup wrote
+      // (houserules.md, an appended .gitignore, a uv.lock from `uv sync`).
+      // `git reset` unstages them while leaving them on disk. Chunked like
+      // stageAllChanges: a large exclude list can exceed the command-line limit.
+      if (exclude && exclude.length > 0) {
+        const CHUNK = 200;
+        for (let i = 0; i < exclude.length; i += CHUNK) {
+          await this.git(['reset', '-q', '--', ...exclude.slice(i, i + CHUNK)], cwd);
+        }
+
+        // If the exclusions left nothing staged, refuse rather than letting git
+        // fail with its own message — the caller needs the reason, not a raw error.
+        const stagedNames = await this.git(['diff', '--cached', '--name-only'], cwd);
+        if (!stagedNames.trim()) {
+          throw new Error('nothing to commit');
+        }
       }
 
       // Commit
@@ -605,7 +624,7 @@ export class GitService extends BaseService {
           const isRemote = name.startsWith('remotes/');
           // Strip 'remotes/origin/' or 'origin/' prefix so remote tracking
           // branches never appear in the list as 'origin/main'.
-          const cleanName = name.replace(/^remotes\/origin\//, '').replace(/^origin\//, '');
+          const cleanName = name.replace(/^remotes[/]origin[/]/, '').replace(/^origin[/]/, '');
 
           // Skip HEAD pointer entries (e.g. remotes/origin/HEAD -> origin/main)
           // Also skip detached HEAD pseudo-entries like "(HEAD" which appear when
@@ -1151,7 +1170,7 @@ export class GitService extends BaseService {
     incomingCommits?: string[];
   }>> {
     return this.wrap(async () => {
-      baseBranch = baseBranch.replace(/^origin\//, '');
+      baseBranch = baseBranch.replace(/^origin[/]/, '');
       console.log(`[GitService] ========== REBASE OPERATION START ==========`);
       console.log(`[GitService] Repository: ${repoPath}`);
       console.log(`[GitService] Base branch: ${baseBranch}`);
@@ -1262,7 +1281,7 @@ export class GitService extends BaseService {
     resolutions?: import('./MergeConflictService').ResolutionResult[];
   }>> {
     return this.wrap(async () => {
-      baseBranch = baseBranch.replace(/^origin\//, '');
+      baseBranch = baseBranch.replace(/^origin[/]/, '');
       console.log(`[GitService] Starting AI-powered rebase of ${repoPath} onto ${baseBranch}`);
 
       // 1. Fetch latest
