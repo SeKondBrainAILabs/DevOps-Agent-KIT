@@ -3,6 +3,8 @@
  * KIT for DevOps - Desktop DevOps Agent
  */
 
+// Must stay the first import: it fixes PATH before anything can spawn.
+import './bootstrap-path';
 import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'path';
 import { existsSync, mkdirSync, renameSync, rmSync } from 'fs';
