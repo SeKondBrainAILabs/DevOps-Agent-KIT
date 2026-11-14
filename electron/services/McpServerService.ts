@@ -246,7 +246,7 @@ export interface McpServiceDeps {
   /** v2.6.95 — expose on-demand rebase to agents. Calls performRebaseForPath
    *  which uses AI conflict resolution when there are conflicts. */
   rebaseWatcherService?: {
-    performRebaseForPath: (sessionId: string, repoPath: string, baseBranch: string, worktreePath?: string) => Promise<any>;
+    performRebaseForPath: (sessionId: string, repoPath: string, baseBranch: string, worktreePath?: string, opts?: { publish?: boolean }) => Promise<any>;
   };
   debugLog?: DebugLogService | null;
 }

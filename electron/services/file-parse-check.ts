@@ -113,19 +113,32 @@ export function structuralSanityCheck(content: string): string | null {
   return null;
 }
 
-/** The real-parser command for a file extension, or null when there is none (TS/TSX/JSX, others). */
-export function parserCommandFor(ext: string, absPath: string): { bin: string; args: string[] } | null {
+/** A parser invocation: the binary, its arguments, and extra environment. */
+export interface ParserCommand {
+  bin: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * The real-parser command for a file extension, or null when there is none
+ * (TS/TSX/JSX, others). JavaScript is checked with the running runtime
+ * (process.execPath): a packaged Electron app has no `node` on PATH, and
+ * ELECTRON_RUN_AS_NODE=1 makes the Electron binary behave as node (plain
+ * node ignores it).
+ */
+export function parserCommandFor(ext: string, absPath: string): ParserCommand | null {
   const e = ext.toLowerCase();
   if (e === 'py') {
     return { bin: 'python3', args: ['-c', `import ast,sys\nast.parse(open(sys.argv[1]).read())`, absPath] };
   }
   if (e === 'js' || e === 'mjs' || e === 'cjs') {
-    return { bin: 'node', args: ['--check', absPath] };
+    return { bin: process.execPath, args: ['--check', absPath], env: { ELECTRON_RUN_AS_NODE: '1' } };
   }
   return null;
 }
 
-/** Extensions checkContentParses has a real parser for. Anything else returns null unchecked. */
+/** Extensions checkContentParses has a real parser for. Anything else is not checked. */
 const CONTENT_CHECKABLE = new Set(['py', 'js', 'mjs', 'cjs', 'json']);
 
 /** Whether checkContentParses has a real parser for the file at `relPath`. */
@@ -134,47 +147,53 @@ export function hasContentParser(relPath: string): boolean {
 }
 
 /**
- * Whether `content`, as the file at `relPath`, parses with a real parser.
- * Returns null when it does (or there is no parser for the type, or the parser
- * binary is missing), else a short reason. The content is checked from a
- * temporary copy, so nothing in the repository is touched.
+ * The outcome of a parse check: `problem` is null when the content parses;
+ * `skipped` says why no check ran (no parser for the type, parser missing).
  */
-export async function checkContentParses(relPath: string, content: string): Promise<string | null> {
+export interface ParseCheck {
+  problem: string | null;
+  skipped?: string;
+}
+
+/**
+ * Whether `content`, as the file at `relPath`, parses with a real parser. The
+ * content is checked from a temporary copy, so nothing in the repository is
+ * touched. A check that could not run is reported in `skipped`, never as a
+ * problem.
+ */
+export async function checkContentParses(relPath: string, content: string): Promise<ParseCheck> {
   const ext = path.extname(relPath).slice(1).toLowerCase();
-  if (!CONTENT_CHECKABLE.has(ext)) return null;
+  if (!CONTENT_CHECKABLE.has(ext)) return { problem: null, skipped: `no parser for .${ext || '(none)'} files` };
 
   if (ext === 'json') {
     try {
       JSON.parse(content);
-      return null;
+      return { problem: null };
     } catch (err) {
-      return `JSON does not parse: ${err instanceof Error ? err.message : String(err)}`;
+      return { problem: `JSON does not parse: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
 
-  if (ext === 'py' || ext === 'js' || ext === 'mjs' || ext === 'cjs') {
-    const dir = await fs.mkdtemp(path.join(tmpdir(), 'kit-parse-check-'));
-    const abs = path.join(dir, `check.${ext}`);
+  const dir = await fs.mkdtemp(path.join(tmpdir(), 'kit-parse-check-'));
+  const abs = path.join(dir, `check.${ext}`);
+  try {
+    await fs.writeFile(abs, content, 'utf-8');
+    const cmd = parserCommandFor(ext, abs)!;
     try {
-      await fs.writeFile(abs, content, 'utf-8');
-      const cmd = parserCommandFor(ext, abs)!;
-      try {
-        await execFileAsync(cmd.bin, cmd.args, { timeout: 10_000 });
-        return null;
-      } catch (err) {
-        const e = err as { code?: unknown; stderr?: unknown; message?: string };
-        // The parser itself is missing: say so rather than blame the file.
-        if (e.code === 'ENOENT') {
-          console.warn(`[file-parse-check] ${cmd.bin} not found — ${relPath} not parse-checked`);
-          return null;
-        }
-        const detail = String(e.stderr || e.message || '').trim().split('\n').slice(-3).join(' | ');
-        return `${ext === 'py' ? 'Python' : 'JavaScript'} does not parse: ${detail}`;
+      await execFileAsync(cmd.bin, cmd.args, { timeout: 10_000, env: { ...process.env, ...cmd.env } });
+      return { problem: null };
+    } catch (err) {
+      const e = err as { code?: unknown; stderr?: unknown; message?: string };
+      // The parser itself is missing: report the skipped check rather than blame the file.
+      if (e.code === 'ENOENT') {
+        const skipped = `${relPath} not parse-checked: ${cmd.bin} not found`;
+        console.warn(`[file-parse-check] ${skipped}`);
+        return { problem: null, skipped };
       }
-    } finally {
-      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      const detail = String(e.stderr || e.message || '').trim().split('\n').slice(-3).join(' | ');
+      return { problem: `${ext === 'py' ? 'Python' : 'JavaScript'} does not parse: ${detail}` };
     }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
-
-  return null;
 }

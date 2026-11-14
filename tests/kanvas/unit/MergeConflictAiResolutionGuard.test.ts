@@ -16,7 +16,7 @@
 
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { execFile, execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { promisify } from 'util';
@@ -80,57 +80,77 @@ describe('countLines', () => {
 
 describe('aiResolutionRejections', () => {
   const okPy = pyModule(10, 'x');
+  const reasons = async (...args: Parameters<typeof aiResolutionRejections>) =>
+    (await aiResolutionRejections(...args)).reasons;
 
   it('accepts a whole, parseable resolution', async () => {
-    expect(await aiResolutionRejections('m.py', okPy, 'stop', [okPy, okPy])).toEqual([]);
+    expect(await reasons('m.py', okPy, 'stop', [okPy, okPy])).toEqual([]);
   });
 
   it('refuses output the model stopped on length', async () => {
-    const r = await aiResolutionRejections('m.py', okPy, 'length', [okPy]);
-    expect(r.join(' ')).toMatch(/finish_reason=length/);
+    expect((await reasons('m.py', okPy, 'length', [okPy])).join(' ')).toMatch(/finish_reason=length/);
   });
 
   it('refuses a resolution under 70% of the larger side, whichever side is larger', async () => {
     const big = okPy + okPy;
-    expect((await aiResolutionRejections('m.py', okPy, 'stop', [okPy, big])).join(' ')).toMatch(/below 70% of the larger side/);
-    expect((await aiResolutionRejections('m.py', okPy, 'stop', [big, okPy])).join(' ')).toMatch(/below 70% of the larger side/);
+    expect((await reasons('m.py', okPy, 'stop', [okPy, big])).join(' ')).toMatch(/below 70% of the larger side/);
+    expect((await reasons('m.py', okPy, 'stop', [big, okPy])).join(' ')).toMatch(/below 70% of the larger side/);
   });
 
   it('refuses any conflict marker line, even one alone', async () => {
-    const r = await aiResolutionRejections('notes.txt', 'a\n=======\nb\n', 'stop', ['a\nb\n', 'a\nc\n']);
-    expect(r.join(' ')).toMatch(/conflict marker/);
+    expect((await reasons('notes.txt', 'a\n=======\nb\n', 'stop', ['a\nb\n', 'a\nc\n'])).join(' ')).toMatch(/conflict marker/);
   });
 
   it('refuses Python that no longer parses when both sides do', async () => {
-    const r = await aiResolutionRejections('m.py', 'def f(:\n    pass\n', 'stop', ['def f():\n    pass\n', 'def g():\n    pass\n']);
+    const r = await reasons('m.py', 'def f(:\n    pass\n', 'stop', ['def f():\n    pass\n', 'def g():\n    pass\n']);
     expect(r.join(' ')).toMatch(/no longer parses \(both sides do\): Python/);
   });
 
   it('does not blame the resolution when a side does not parse either (e.g. a python3 older than the file)', async () => {
-    const r = await aiResolutionRejections('m.py', 'def f(:\n    pass\n', 'stop', ['def f(:\n    pass\n', 'def g():\n    pass\n']);
-    expect(r).toEqual([]);
+    const v = await aiResolutionRejections('m.py', 'def f(:\n    pass\n', 'stop', ['def f(:\n    pass\n', 'def g():\n    pass\n']);
+    expect(v.reasons).toEqual([]);
+    expect(v.skippedChecks.join(' ')).toMatch(/does not parse either/);
   });
 
   it('refuses JavaScript that no longer parses when both sides do', async () => {
-    const r = await aiResolutionRejections('m.js', 'function f( {\n', 'stop', ['function f() {}\n', 'function g() {}\n']);
+    const r = await reasons('m.js', 'function f( {\n', 'stop', ['function f() {}\n', 'function g() {}\n']);
     expect(r.join(' ')).toMatch(/no longer parses \(both sides do\): JavaScript/);
   });
 
   it('refuses JSON that no longer parses when both sides do', async () => {
-    const r = await aiResolutionRejections('c.json', '{"a": 1,\n', 'stop', ['{"a": 1}\n', '{"a": 2}\n']);
+    const r = await reasons('c.json', '{"a": 1,\n', 'stop', ['{"a": 1}\n', '{"a": 2}\n']);
     expect(r.join(' ')).toMatch(/no longer parses \(both sides do\): JSON/);
   });
 
   it('accepts JSONC (comments) when neither side is plain JSON', async () => {
     const jsonc = '{\n  // a comment\n  "a": 1\n}\n';
-    expect(await aiResolutionRejections('tsconfig.json', jsonc, 'stop', [jsonc, jsonc.replace('1', '2')])).toEqual([]);
+    expect(await reasons('tsconfig.json', jsonc, 'stop', [jsonc, jsonc.replace('1', '2')])).toEqual([]);
   });
 
   it('does not parse-check TS/TSX/JSX: valid code with a regex literal is accepted', async () => {
     const tsx = 'const re = /["\'`]/g;\nexport const C = () => <div>{re.source}</div>;\n';
     expect(structuralSanityCheck(tsx)).not.toBeNull(); // the scanner the old check used gets this wrong
-    expect(await aiResolutionRejections('c.tsx', tsx, 'stop', [tsx, tsx])).toEqual([]);
-    expect(await aiResolutionRejections('c.ts', tsx, 'stop', [tsx, tsx])).toEqual([]);
+    const v = await aiResolutionRejections('c.tsx', tsx, 'stop', [tsx, tsx]);
+    expect(v.reasons).toEqual([]);
+    expect(v.skippedChecks.join(' ')).toMatch(/no parser for c\.tsx/);
+    expect(await reasons('c.ts', tsx, 'stop', [tsx, tsx])).toEqual([]);
+  });
+
+  describe('with no `node` or `python3` on PATH (a packaged app)', () => {
+    let prevPath: string | undefined;
+    beforeEach(() => { prevPath = process.env.PATH; process.env.PATH = '/nonexistent'; });
+    afterEach(() => { process.env.PATH = prevPath; });
+
+    it('still checks JavaScript, with the running runtime', async () => {
+      const r = await reasons('m.js', 'function f( {\n', 'stop', ['function f() {}\n', 'function g() {}\n']);
+      expect(r.join(' ')).toMatch(/no longer parses \(both sides do\): JavaScript/);
+    });
+
+    it('reports a Python check it could not run instead of passing it silently', async () => {
+      const v = await aiResolutionRejections('m.py', 'def f(:\n    pass\n', 'stop', ['def f():\n    pass\n', 'def g():\n    pass\n']);
+      expect(v.reasons).toEqual([]);
+      expect(v.skippedChecks.join(' ')).toMatch(/m\.py not parse-checked: python3 not found/);
+    });
   });
 });
 
@@ -148,6 +168,23 @@ describe('AIService.sendWithModeDetailed', () => {
       variables: { file_path: 'a.py', language: 'python', current_branch: 'a', incoming_branch: 'b', conflicted_content: 'x' },
     });
     expect(r.success).toBe(true);
+    expect(r.data).toEqual({ content: 'partial', finishReason: 'length' });
+  });
+
+  it('returns the finish_reason from the fallback model too', async () => {
+    const ai = new AIService({} as never);
+    const create = jest.fn()
+      .mockRejectedValueOnce(new Error('404 model_not_found: openai/gpt-oss-20b') as never)
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'partial' }, finish_reason: 'length' }] } as never);
+    (ai as unknown as { getClient: () => unknown }).getClient = () => ({ chat: { completions: { create } } });
+    const r = await ai.sendWithModeDetailed({
+      modeId: 'merge_conflict_resolver',
+      promptKey: 'resolve_conflict',
+      variables: { file_path: 'a.py', language: 'python', current_branch: 'a', incoming_branch: 'b', conflicted_content: 'x' },
+      modelOverride: 'gpt-oss-20b',
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect((create.mock.calls[1][0] as { model: string }).model).toBe('openai/gpt-oss-120b');
     expect(r.data).toEqual({ content: 'partial', finishReason: 'length' });
   });
 });
@@ -190,27 +227,28 @@ describe('rebaseWithResolution in a session worktree (real git)', () => {
    * base on main; the session commits `session` (one commit each) in a linked
    * worktree; someone else pushes `main` to origin/main afterwards.
    */
-  function scenario(base: string, session: string[], main: string) {
+  function scenario(base: string, session: string[], main: string, file = FILE) {
     const remote = join(dir, 'remote.git');
     git(dir, 'init', '-q', '--bare', '-b', 'main', remote);
     git(dir, 'clone', '-q', remote, repo);
     configure(repo);
     git(repo, 'symbolic-ref', 'HEAD', 'refs/heads/main');
-    writeFileSync(join(repo, FILE), base);
-    git(repo, 'add', FILE);
+    if (file.includes('/')) mkdirSync(join(repo, file, '..'), { recursive: true });
+    writeFileSync(join(repo, file), base);
+    git(repo, 'add', file);
     git(repo, 'commit', '-q', '-m', 'base');
     git(repo, 'push', '-q', 'origin', 'main');
 
     git(repo, 'worktree', 'add', '-q', '-b', 'session', wt, 'main');
     session.forEach((content, i) => {
-      writeFileSync(join(wt, FILE), content);
+      writeFileSync(join(wt, file), content);
       git(wt, 'commit', '-q', '-am', `session change ${i + 1}`);
     });
     sessionTip = git(wt, 'rev-parse', 'HEAD');
 
     git(dir, 'clone', '-q', remote, other);
     configure(other);
-    writeFileSync(join(other, FILE), main);
+    writeFileSync(join(other, file), main);
     git(other, 'commit', '-q', '-am', 'main change');
     git(other, 'push', '-q', 'origin', 'main');
   }
@@ -220,11 +258,11 @@ describe('rebaseWithResolution in a session worktree (real git)', () => {
   }
 
   /** Aborted cleanly: no rebase left, the session branch and its file exactly as before. */
-  function expectUntouched(sessionContent: string) {
+  function expectUntouched(sessionContent: string, file = FILE) {
     expect(rebaseInProgress()).toBe(false);
     expect(git(wt, 'rev-parse', 'HEAD')).toBe(sessionTip);
     expect(git(wt, 'branch', '--show-current')).toBe('session');
-    expect(readFileSync(join(wt, FILE), 'utf-8')).toBe(sessionContent);
+    expect(readFileSync(join(wt, file), 'utf-8')).toBe(sessionContent);
   }
 
   beforeEach(() => {
@@ -344,6 +382,60 @@ describe('rebaseWithResolution in a session worktree (real git)', () => {
     expect(r.data?.success).toBe(false);
     expect(r.data?.message).toMatch(/could not complete/);
     expectUntouched(commits[2]);
+  });
+
+  it('checks every round: a good first resolution, then a truncated one after --continue, aborts the whole rebase', async () => {
+    const commits = [pyModule(N, 's1'), pyModule(N, 's2')]; // both conflict with main in turn
+    scenario(pyModule(N, 'base'), commits, pyModule(N, 'main'));
+    const truncated = pyModule(N, 'merged2').split('\n').slice(0, 80).join('\n');
+    const { svc, ai } = serviceReplying(
+      { content: pyModule(N, 'merged1'), finishReason: 'stop' },
+      { content: truncated, finishReason: 'length' },
+    );
+
+    const r = await svc.rebaseWithResolution(wt, 'main');
+
+    expect(ai.sendWithModeDetailed).toHaveBeenCalledTimes(2);
+    expect(r.data?.success).toBe(false);
+    expect(r.data?.message).toMatch(/finish_reason=length/);
+    expect(r.data?.message).toMatch(/below 70% of the larger side/);
+    expectUntouched(commits[1]);
+  });
+
+  describe('rule-based (non-AI) resolutions', () => {
+    const BOOK = '.vscode/settings.json'; // resolved keep-ours by rule, no model involved
+    const settings = (v: string, extra: string[] = []) =>
+      ['{', `  "kit.session": "${v}",`, ...extra, '  "editor.tabSize": 2', '}', ''].join('\n');
+
+    it("are not polluted by a diff3 base section: the rebase forces merge.conflictStyle=merge", async () => {
+      scenario(settings('base'), [settings('session')], settings('main'), BOOK);
+      git(repo, 'config', 'merge.conflictStyle', 'diff3'); // shared by the worktree
+      const { svc, ai } = serviceReplying({ content: 'unused', finishReason: 'stop' });
+
+      const r = await svc.rebaseWithResolution(wt, 'main');
+
+      expect(ai.sendWithModeDetailed).not.toHaveBeenCalled();
+      expect(r.data?.success).toBe(true);
+      const after = readFileSync(join(wt, BOOK), 'utf-8');
+      expect(conflictMarkerLines(after)).toEqual([]);
+      expect(after).toContain('"kit.session": "main"');
+      expect(rebaseInProgress()).toBe(false);
+    });
+
+    it('are refused when they still hold a marker line', async () => {
+      const session = settings('session');
+      // The kept side itself carries a marker-shaped line inside the conflicting hunk.
+      scenario(settings('base'), [session], settings('main', ['||||||| left in by hand']), BOOK);
+      git(repo, 'config', 'merge.conflictStyle', 'diff3');
+      const { svc } = serviceReplying({ content: 'unused', finishReason: 'stop' });
+
+      const r = await svc.rebaseWithResolution(wt, 'main');
+
+      expect(r.data?.success).toBe(false);
+      expect(r.data?.message).toContain(BOOK);
+      expect(r.data?.message).toMatch(/conflict marker/);
+      expectUntouched(session, BOOK);
+    });
   });
 
   it('stages a whole, parseable resolution and completes the rebase without an editor', async () => {

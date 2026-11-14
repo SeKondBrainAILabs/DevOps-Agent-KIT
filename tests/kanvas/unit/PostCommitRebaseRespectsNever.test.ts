@@ -131,6 +131,18 @@ describe('attemptPostCommitRebase — when it must not run', () => {
     expect(rebaseWatcher.performRebaseForPath).toHaveBeenCalledWith('s1', '/repo', 'main', wt);
   });
 
+  it('without a rebase watcher, the fallback rebases the worktree, not the main checkout', async () => {
+    gitService.rebase.mockResolvedValueOnce({ success: true, data: { success: true, message: 'ok', incomingCommits: [] } });
+    const { svc } = makeWatcher(inst(), gitService);
+    (svc as unknown as { rebaseWatcher: unknown }).rebaseWatcher = null;
+
+    const r = await svc.attemptPostCommitRebase('s1');
+
+    expect(gitService.rebase).toHaveBeenCalledTimes(1);
+    expect(gitService.rebase).toHaveBeenCalledWith(wt, 'main');
+    expect(r).toMatchObject({ ok: true, rewrote: true, commitsIntegrated: 4 });
+  });
+
   it('uses the repo\'s own worktree in multi-repo mode', async () => {
     const wt2 = mkdtempSync(join(tmpdir(), 'kit-pcr-wt2-'));
     try {

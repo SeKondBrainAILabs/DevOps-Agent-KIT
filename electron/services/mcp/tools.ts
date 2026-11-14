@@ -236,7 +236,7 @@ export function registerTools(
               : typeof mod.default === 'function' ? mod.default
               : mod.default?.execa;
           }
-          await _execa!(cmd.bin, cmd.args, { cwd: worktreePath, timeout: 5_000 });
+          await _execa!(cmd.bin, cmd.args, { cwd: worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
         } catch (err: any) {
           const stderr = (err?.stderr || err?.message || '').toString();
           parseFailures.push({ file: rel, error: stderr.split('\n').slice(0, 4).join('\n') });
@@ -1618,13 +1618,17 @@ export function registerTools(
 
       try {
         // Rebase the session's worktree, not the main checkout at repoPath.
-        const result = await deps.rebaseWatcherService.performRebaseForPath(session_id, repoPath, resolvedBase, worktree);
+        // publish: a rebase that rewrote a pushed branch pushes it (force-with-lease),
+        // since the next kit_commit pushes without force.
+        const result = await deps.rebaseWatcherService.performRebaseForPath(session_id, repoPath, resolvedBase, worktree, { publish: true });
         return { content: [{ type: 'text', text: JSON.stringify({
           success: !!result.success,
           message: result.message || '',
           incomingCommits: result.incomingCommits,
           commitsAdded: result.commitsAdded,
           baseBranch: resolvedBase,
+          published: result.published,
+          publishMessage: result.publishMessage,
         }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({
