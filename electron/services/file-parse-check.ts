@@ -1,14 +1,16 @@
 /**
  * Syntax checks for a single file, shared by the kit_commit sanity gate
  * (mcp/tools.ts preCommitSanityCheck) and the AI merge-conflict resolver
- * (MergeConflictService), so a resolution is held to the same bar as a commit.
+ * (MergeConflictService).
  *
+ * Real parsers (parserCommandFor / checkContentParses):
  *   .py               python3 -c "import ast; ast.parse(...)"
  *   .js / .mjs / .cjs node --check
- *   .json             JSON.parse
- *   .ts / .tsx / .jsx structuralSanityCheck — NOT a real parser (no TypeScript
- *                     parser ships with the app); catches truncation, unbalanced
- *                     brackets and leftover conflict markers.
+ *   .json             JSON.parse (checkContentParses only)
+ *
+ * structuralSanityCheck is NOT a parser: the commit gate runs it on TS/TSX/JSX
+ * because no TypeScript parser ships with the app. It mis-reads regex
+ * literals, so checkContentParses does not use it.
  */
 
 import { execFile } from 'child_process';
@@ -123,13 +125,19 @@ export function parserCommandFor(ext: string, absPath: string): { bin: string; a
   return null;
 }
 
-/** Extensions checkContentParses has an opinion on. Anything else returns null unchecked. */
-const CONTENT_CHECKABLE = new Set(['py', 'js', 'mjs', 'cjs', 'json', 'ts', 'tsx', 'jsx']);
+/** Extensions checkContentParses has a real parser for. Anything else returns null unchecked. */
+const CONTENT_CHECKABLE = new Set(['py', 'js', 'mjs', 'cjs', 'json']);
+
+/** Whether checkContentParses has a real parser for the file at `relPath`. */
+export function hasContentParser(relPath: string): boolean {
+  return CONTENT_CHECKABLE.has(path.extname(relPath).slice(1).toLowerCase());
+}
 
 /**
- * Whether `content`, as the file at `relPath`, still parses. Returns null when
- * it does (or the type is not checked), else a short reason. The content is
- * checked from a temporary copy, so nothing in the repository is touched.
+ * Whether `content`, as the file at `relPath`, parses with a real parser.
+ * Returns null when it does (or there is no parser for the type, or the parser
+ * binary is missing), else a short reason. The content is checked from a
+ * temporary copy, so nothing in the repository is touched.
  */
 export async function checkContentParses(relPath: string, content: string): Promise<string | null> {
   const ext = path.extname(relPath).slice(1).toLowerCase();
@@ -168,6 +176,5 @@ export async function checkContentParses(relPath: string, content: string): Prom
     }
   }
 
-  const problem = structuralSanityCheck(content);
-  return problem ? `structural check failed: ${problem}` : null;
+  return null;
 }

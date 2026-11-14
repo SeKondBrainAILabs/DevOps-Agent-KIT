@@ -1016,6 +1016,20 @@ export class GitService extends BaseService {
     }, 'GIT_COUNT_BEHIND_FAILED');
   }
 
+  /**
+   * Whether a rebase is in progress in `checkoutPath`. Uses `--git-path`, which
+   * resolves correctly in a linked worktree. False when git cannot tell.
+   */
+  async isRebaseInProgress(checkoutPath: string): Promise<boolean> {
+    try {
+      for (const name of ['rebase-merge', 'rebase-apply']) {
+        const p = path.resolve(checkoutPath, await this.git(['rev-parse', '--git-path', name], checkoutPath));
+        if (existsSync(p)) return true;
+      }
+    } catch { /* not a checkout */ }
+    return false;
+  }
+
   /** `git rebase --abort` in `checkoutPath`; a no-op when no rebase is in progress. */
   async abortRebase(checkoutPath: string): Promise<void> {
     try {

@@ -1054,6 +1054,8 @@ export class WatcherService extends BaseService {
   ): Promise<PostCommitRebaseResult> {
     let baseBranch: string | undefined;
     let worktreePath: string | undefined;
+    // Only a rebase this call started is ever aborted here.
+    let rebaseStarted = false;
 
     try {
       const inst = this.agentInstanceService?.getInstance(sessionId)?.data ?? null;
@@ -1083,6 +1085,12 @@ export class WatcherService extends BaseService {
         return this.skipPostCommitRebase(sessionId, 'the session has no worktree to rebase');
       }
 
+      // A rebase someone else started (the agent, a human, the watcher) is
+      // left alone: no rebase of ours, no abort of theirs, no push.
+      if (await this.gitService.isRebaseInProgress(worktreePath)) {
+        return this.rebaseNotOurs(sessionId, baseBranch, 'a rebase is already in progress in the session worktree');
+      }
+
       // 1. Fetch so origin/<base> reflects the current remote. Worktrees
       //    share refs with the main checkout, so fetching there is enough.
       await this.gitService.fetchRemote(repoPath);
@@ -1096,6 +1104,7 @@ export class WatcherService extends BaseService {
       }
 
       console.log(`[WatcherService] Post-commit rebase: ${behind} commits behind ${baseBranch} in ${worktreePath}`);
+      rebaseStarted = true;
       const rebaseResult = this.rebaseWatcher
         ? await this.rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch, worktreePath)
         : await this.gitService.rebase(worktreePath, baseBranch).then(r => ({
@@ -1115,6 +1124,12 @@ export class WatcherService extends BaseService {
         return { ok: true, rewrote: true, commitsIntegrated: behind, baseBranch, message: msg };
       }
 
+      // The watcher refused because a rebase of this session is already
+      // running elsewhere — that one is not ours to abort.
+      if (/already in progress/i.test(rebaseResult.message || '')) {
+        return this.rebaseNotOurs(sessionId, baseBranch, rebaseResult.message);
+      }
+
       // Rebase failed (conflicts, or an AI resolution was rejected). Abort
       // any in-progress state so the tree is clean, then surface an
       // actionable message. Push must NOT happen after a failed rebase.
@@ -1131,12 +1146,20 @@ export class WatcherService extends BaseService {
         conflictFiles: (rebaseResult as { conflictFiles?: string[] }).conflictFiles,
       };
     } catch (rebaseError) {
-      if (worktreePath) await this.gitService.abortRebase(worktreePath);
+      if (worktreePath && rebaseStarted) await this.gitService.abortRebase(worktreePath);
       const errMsg = rebaseError instanceof Error ? rebaseError.message : String(rebaseError);
       console.warn(`[WatcherService] Post-commit rebase threw:`, rebaseError);
       this.activityService.log(sessionId, 'warning', `Post-commit rebase failed: ${errMsg}. Push skipped.`);
       return { ok: false, rewrote: false, commitsIntegrated: 0, baseBranch, message: `Post-commit rebase threw: ${errMsg}` };
     }
+  }
+
+  /** Another rebase is running: leave it alone and do not push. */
+  private rebaseNotOurs(sessionId: string, baseBranch: string | undefined, why: string): PostCommitRebaseResult {
+    const message = `Post-commit rebase not run: ${why}. Left as is; push skipped.`;
+    console.warn(`[WatcherService] ${message} (${sessionId})`);
+    this.activityService.log(sessionId, 'warning', message);
+    return { ok: false, rewrote: false, commitsIntegrated: 0, baseBranch, message };
   }
 
   /** A post-commit rebase that did not run: nothing fetched, nothing rewritten. */

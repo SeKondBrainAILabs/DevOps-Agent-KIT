@@ -57,7 +57,7 @@ function makeWatcher(inst: Inst | null, gitService: unknown) {
     performRebaseForPath: jest.fn(async () => ({ success: true, message: 'rebased' })),
   };
   const svc = new WatcherService(gitService as never, activity as never);
-  svc.setAgentInstanceService({ getInstance: () => ({ success: true, data: inst }) } as never);
+  svc.setAgentInstanceService({ getInstance: () => ({ success: true, data: inst }), updateLastProcessedCommit: jest.fn() } as never);
   svc.setRebaseWatcher(rebaseWatcher as never);
   return { svc, activity, rebaseWatcher };
 }
@@ -72,6 +72,7 @@ describe('attemptPostCommitRebase — when it must not run', () => {
     checkRemoteChanges: jest.Mock;
     rebase: jest.Mock;
     abortRebase: jest.Mock;
+    isRebaseInProgress: jest.Mock;
   };
 
   beforeEach(() => {
@@ -82,6 +83,7 @@ describe('attemptPostCommitRebase — when it must not run', () => {
       checkRemoteChanges: jest.fn(async () => ({ success: true, data: { behind: 9, ahead: 0 } })),
       rebase: jest.fn(),
       abortRebase: jest.fn(async () => undefined),
+      isRebaseInProgress: jest.fn(async () => false),
     };
   });
   afterEach(() => rmSync(wt, { recursive: true, force: true }));
@@ -163,6 +165,98 @@ describe('attemptPostCommitRebase — when it must not run', () => {
     expect(gitService.abortRebase).toHaveBeenCalledWith(wt);
     expect(mayPushAfterPostCommitRebase(r)).toBe(false);
     expect(postCommitPushOptions(r)).toBeUndefined();
+  });
+
+  it('leaves a rebase someone else started in the worktree alone, and does not push', async () => {
+    gitService.isRebaseInProgress.mockResolvedValueOnce(true);
+    const { svc, rebaseWatcher } = makeWatcher(inst(), gitService);
+
+    const r = await svc.attemptPostCommitRebase('s1');
+
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/already in progress/);
+    expect(gitService.isRebaseInProgress).toHaveBeenCalledWith(wt);
+    expect(rebaseWatcher.performRebaseForPath).not.toHaveBeenCalled();
+    expect(gitService.abortRebase).not.toHaveBeenCalled();
+    expect(mayPushAfterPostCommitRebase(r)).toBe(false);
+  });
+
+  it('does not abort when the watcher reports a rebase of this session already running', async () => {
+    const { svc, rebaseWatcher } = makeWatcher(inst(), gitService);
+    rebaseWatcher.performRebaseForPath.mockResolvedValueOnce({ success: false, message: 'Rebase already in progress' });
+
+    const r = await svc.attemptPostCommitRebase('s1');
+
+    expect(r.ok).toBe(false);
+    expect(gitService.abortRebase).not.toHaveBeenCalled();
+  });
+
+  it('does not abort anything when it fails before starting a rebase', async () => {
+    gitService.fetchRemote.mockRejectedValueOnce(new Error('network down'));
+    const { svc } = makeWatcher(inst(), gitService);
+
+    const r = await svc.attemptPostCommitRebase('s1');
+
+    expect(r.ok).toBe(false);
+    expect(gitService.abortRebase).not.toHaveBeenCalled();
+  });
+});
+
+// ─── The .devops-commit path pushes according to the rebase result ─────────
+
+describe('.devops-commit commit path — push after the post-commit rebase', () => {
+  let wt: string;
+
+  beforeEach(() => {
+    wt = mkdtempSync(join(tmpdir(), 'kit-pcr-msg-'));
+  });
+  afterEach(() => rmSync(wt, { recursive: true, force: true }));
+
+  async function commitVia(rebase: Record<string, unknown>) {
+    const gitService = {
+      commit: jest.fn(async () => ({ success: true, data: { hash: 'abc123def', shortHash: 'abc123' } })),
+      getStatus: jest.fn(async () => ({ success: true, data: { changes: [] } })),
+      push: jest.fn(async () => ({ success: true })),
+    };
+    const { svc, activity } = makeWatcher(null, gitService);
+    (svc as unknown as { emitToRenderer: unknown }).emitToRenderer = jest.fn();
+    const attempt = jest.fn(async () => rebase);
+    (svc as unknown as { attemptPostCommitRebase: unknown }).attemptPostCommitRebase = attempt;
+
+    const msgFile = join(wt, '.devops-commit-s1.msg');
+    writeFileSync(msgFile, 'feat: a change\n');
+    await (svc as unknown as { triggerCommit: (i: unknown) => Promise<void> }).triggerCommit({
+      sessionId: 's1', worktreePath: wt, repoPath: wt, agentType: 'claude', branchName: 'session',
+      watcher: null, commitMsgFile: msgFile, claudeCommitMsgFile: join(wt, '.claude-commit-msg'),
+    });
+
+    // The commit runs on a 1 s debounce; wait for the push decision.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const decided = gitService.push.mock.calls.length > 0 ||
+        activity.log.mock.calls.some((c) => /Push skipped/.test(String(c[2])));
+      if (attempt.mock.calls.length > 0 && decided) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await svc.dispose();
+    return { gitService, activity, attempt };
+  }
+
+  it('does not push after a failed rebase', async () => {
+    const { gitService, activity, attempt } = await commitVia({ ok: false, rewrote: false, commitsIntegrated: 0, message: 'Rejected AI resolution(s): big.py' });
+    expect(attempt).toHaveBeenCalled();
+    expect(gitService.push).not.toHaveBeenCalled();
+    expect(activity.log).toHaveBeenCalledWith('s1', 'warning', expect.stringMatching(/Push skipped/));
+  });
+
+  it('pushes without force after a skipped rebase', async () => {
+    const { gitService } = await commitVia({ ok: true, rewrote: true, skipped: true, commitsIntegrated: 0, message: 'skipped' });
+    expect(gitService.push).toHaveBeenCalledWith('s1', undefined, undefined);
+  });
+
+  it('force-pushes with lease only after a rebase that ran and rewrote history', async () => {
+    const { gitService } = await commitVia({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased' });
+    expect(gitService.push).toHaveBeenCalledWith('s1', undefined, { forceWithLease: true });
   });
 });
 

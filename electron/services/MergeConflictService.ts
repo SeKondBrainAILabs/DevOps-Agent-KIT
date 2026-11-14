@@ -21,7 +21,7 @@ import type { AIService, GroqModelKey } from './AIService';
 import type { DebugLogService } from './DebugLogService';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { checkContentParses } from './file-parse-check';
+import { checkContentParses, hasContentParser } from './file-parse-check';
 
 // Dynamic import helper for execa (ESM-only module)
 // Handles various bundling scenarios with fallback patterns
@@ -267,14 +267,19 @@ export function conflictMarkerLines(content: string): number[] {
 
 /**
  * Reasons to refuse an AI-written resolution of `filePath`, or [] to accept it.
- * `sideLineCounts` are the line counts of the two sides of the conflict
- * (`git show :2:<f>` and `:3:<f>`), when they exist.
+ * `sides` are the two sides of the conflict (`git show :2:<f>` and `:3:<f>`),
+ * those that exist.
+ *
+ * The parse rule only applies to types with a real parser (.py, .js/.mjs/.cjs,
+ * .json), and only when BOTH sides parse with that parser and the resolution
+ * does not — so JSONC, or a system python3 older than the file's syntax, does
+ * not refuse a good resolution. TS/TSX/JSX rely on the size and marker rules.
  */
 export async function aiResolutionRejections(
   filePath: string,
   content: string,
   finishReason: string | null | undefined,
-  sideLineCounts: number[],
+  sides: string[],
 ): Promise<string[]> {
   const reasons: string[] = [];
 
@@ -282,7 +287,7 @@ export async function aiResolutionRejections(
     reasons.push('the model stopped on its output token limit (finish_reason=length), so the output is truncated');
   }
 
-  const largerSide = sideLineCounts.length > 0 ? Math.max(...sideLineCounts) : 0;
+  const largerSide = sides.length > 0 ? Math.max(...sides.map(countLines)) : 0;
   const lines = countLines(content);
   if (largerSide > 0 && lines < MIN_RESOLUTION_LINE_RATIO * largerSide) {
     reasons.push(
@@ -295,8 +300,15 @@ export async function aiResolutionRejections(
     reasons.push(`the resolution still contains conflict marker lines (line ${markers.slice(0, 5).join(', ')})`);
   }
 
-  const parseProblem = await checkContentParses(filePath, content);
-  if (parseProblem) reasons.push(`the resolution no longer parses: ${parseProblem}`);
+  if (sides.length === 2 && hasContentParser(filePath)) {
+    const parseProblem = await checkContentParses(filePath, content);
+    if (parseProblem) {
+      const sideProblems = await Promise.all(sides.map((side) => checkContentParses(filePath, side)));
+      if (sideProblems.every((p) => p === null)) {
+        reasons.push(`the resolution no longer parses (both sides do): ${parseProblem}`);
+      }
+    }
+  }
 
   return reasons;
 }
@@ -331,10 +343,32 @@ export class MergeConflictService extends BaseService {
   /**
    * Execute a git command
    */
-  private async git(args: string[], cwd: string): Promise<string> {
+  private async git(args: string[], cwd: string, env?: Record<string, string>): Promise<string> {
     const execa = await getExeca();
-    const { stdout } = await execa('git', args, { cwd });
+    const { stdout } = await execa('git', args, env ? { cwd, env: { ...process.env, ...env } } : { cwd });
     return stdout.trim();
+  }
+
+  /**
+   * `git rebase --continue` that never waits on an editor. Without
+   * GIT_EDITOR=true git opens (or fails to open) the commit-message editor
+   * and the rebase is left in progress.
+   */
+  private async rebaseContinue(cwd: string): Promise<void> {
+    await this.git(['rebase', '--continue'], cwd, { GIT_EDITOR: 'true' });
+  }
+
+  /**
+   * Whether a rebase is in progress at `cwd`. `--git-path` resolves the state
+   * directory correctly in a linked worktree too, where `--git-dir` is an
+   * absolute path under the main repo's .git/worktrees/. Throws if git fails.
+   */
+  private async rebaseStateExists(cwd: string): Promise<boolean> {
+    for (const name of ['rebase-merge', 'rebase-apply']) {
+      const p = path.resolve(cwd, await this.git(['rev-parse', '--git-path', name], cwd));
+      if (await fs.access(p).then(() => true).catch(() => false)) return true;
+    }
+    return false;
   }
 
   /**
@@ -1048,10 +1082,10 @@ export class MergeConflictService extends BaseService {
     content: string,
     finishReason: string | null | undefined,
   ): Promise<string[]> {
-    const sides: number[] = [];
+    const sides: string[] = [];
     for (const stage of [2, 3]) {
       try {
-        sides.push(countLines(await this.git(['show', `:${stage}:${filePath}`], repoPath)));
+        sides.push(await this.git(['show', `:${stage}:${filePath}`], repoPath));
       } catch { /* that side does not exist */ }
     }
     return aiResolutionRejections(filePath, content, finishReason, sides);
@@ -1524,7 +1558,7 @@ export class MergeConflictService extends BaseService {
         for (let round = 0; round < MAX_AUTO_ROUNDS; round++) {
           let continueErr: unknown = null;
           try {
-            await this.git(['rebase', '--continue'], repoPath);
+            await this.rebaseContinue(repoPath);
           } catch (err) {
             continueErr = err;
           }
@@ -1617,14 +1651,7 @@ export class MergeConflictService extends BaseService {
   async isRebaseInProgress(repoPath: string): Promise<IpcResult<boolean>> {
     return this.wrap(async () => {
       try {
-        const gitDir = await this.git(['rev-parse', '--git-dir'], repoPath);
-        const rebaseMergePath = path.join(repoPath, gitDir, 'rebase-merge');
-        const rebaseApplyPath = path.join(repoPath, gitDir, 'rebase-apply');
-
-        const mergeExists = await fs.access(rebaseMergePath).then(() => true).catch(() => false);
-        const applyExists = await fs.access(rebaseApplyPath).then(() => true).catch(() => false);
-
-        return mergeExists || applyExists;
+        return await this.rebaseStateExists(repoPath);
       } catch {
         return false;
       }
@@ -1726,7 +1753,7 @@ export class MergeConflictService extends BaseService {
         if (conflictedFiles.length === 0) {
           // No more conflicts, continue rebase
           try {
-            await this.git(['rebase', '--continue'], repoPath);
+            await this.rebaseContinue(repoPath);
             continue;
           } catch {
             break;
@@ -1886,7 +1913,7 @@ export class MergeConflictService extends BaseService {
 
         // Try to continue the rebase
         try {
-          await this.git(['rebase', '--continue'], repoPath);
+          await this.rebaseContinue(repoPath);
         } catch {
           // More conflicts or rebase complete
         }
@@ -1894,17 +1921,12 @@ export class MergeConflictService extends BaseService {
         retries++;
       }
 
-      // Check if rebase is complete
+      // Check if rebase is complete. A rebase still in progress here (retries
+      // exhausted, or --continue failed) is aborted and reported as a failure
+      // so nothing gets pushed.
       try {
-        await this.git(['status'], repoPath);
-
-        const gitDir = await this.git(['rev-parse', '--git-dir'], repoPath);
-        const rebaseInProgress = await fs.access(path.join(repoPath, gitDir, 'rebase-merge'))
-          .then(() => true)
-          .catch(() => false);
-
-        if (rebaseInProgress) {
-          await this.git(['rebase', '--abort'], repoPath);
+        if (await this.rebaseStateExists(repoPath)) {
+          try { await this.git(['rebase', '--abort'], repoPath); } catch { /* reported below */ }
           metrics.totalLatencyMs = Date.now() - startTime;
           return {
             success: false,
@@ -1926,10 +1948,11 @@ export class MergeConflictService extends BaseService {
           metrics,
         };
       } catch {
+        try { await this.git(['rebase', '--abort'], repoPath); } catch { /* none in progress */ }
         metrics.totalLatencyMs = Date.now() - startTime;
         return {
           success: false,
-          message: 'Rebase status check failed',
+          message: 'Rebase status check failed — rebase aborted',
           conflictsResolved,
           conflictsFailed,
           resolutions,

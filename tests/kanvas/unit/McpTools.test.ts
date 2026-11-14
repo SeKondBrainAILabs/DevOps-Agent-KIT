@@ -916,5 +916,39 @@ describe('MCP Tools', () => {
       expect(data.commits[0].pushed).toBe(true);
       expect(mockGitService.push).toHaveBeenCalled();
     });
+
+    // Same rules as kit_commit: no force after a skipped rebase, no push after a failed one.
+    describe('push after the post-commit rebase', () => {
+      const commitAllAndPush = async (rebase: Record<string, unknown>) => {
+        binder.registerMultiRepoSession('sess_multi_rebase', [
+          { repoName: 'primary', worktreePath: '/tmp/wt-rebase', role: 'primary' },
+        ]);
+        deps.postCommitRebase = (jest.fn() as any).mockResolvedValue(rebase);
+        return parseResult(await callTool('kit_commit_all', {
+          session_id: 'sess_multi_rebase',
+          message: 'feat: push all after rebase',
+          push: true,
+        }));
+      };
+
+      it('pushes without force when the rebase was skipped', async () => {
+        const data = await commitAllAndPush({ ok: true, rewrote: true, skipped: true, commitsIntegrated: 0, message: 'Post-commit rebase skipped' });
+        expect(deps.postCommitRebase).toHaveBeenCalledWith('sess_multi_rebase', 'primary');
+        expect(mockGitService.push).toHaveBeenCalledWith('sess_multi_rebase', undefined, undefined) // the primary repo pushes as the session default;
+        expect(data.commits[0].rebase.skipped).toBe(true);
+      });
+
+      it('does not push at all when the rebase failed (e.g. a rejected AI resolution)', async () => {
+        const data = await commitAllAndPush({ ok: false, rewrote: false, commitsIntegrated: 0, message: 'Rejected AI resolution(s): big.py' });
+        expect(mockGitService.push).not.toHaveBeenCalled();
+        expect(data.commits[0].pushed).toBe(false);
+        expect(data.commits[0].pushError).toMatch(/Push skipped/);
+      });
+
+      it('force-pushes with lease only after a rebase that ran and rewrote history', async () => {
+        await commitAllAndPush({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased' });
+        expect(mockGitService.push).toHaveBeenCalledWith('sess_multi_rebase', undefined, { forceWithLease: true });
+      });
+    });
   });
 });
