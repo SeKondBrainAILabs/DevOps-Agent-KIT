@@ -1618,17 +1618,13 @@ export function registerTools(
 
       try {
         // Rebase the session's worktree, not the main checkout at repoPath.
-        // publish: a rebase that rewrote a pushed branch pushes it (force-with-lease),
-        // since the next kit_commit pushes without force.
-        const result = await deps.rebaseWatcherService.performRebaseForPath(session_id, repoPath, resolvedBase, worktree, { publish: true });
+        const result = await deps.rebaseWatcherService.performRebaseForPath(session_id, repoPath, resolvedBase, worktree);
         return { content: [{ type: 'text', text: JSON.stringify({
           success: !!result.success,
           message: result.message || '',
           incomingCommits: result.incomingCommits,
           commitsAdded: result.commitsAdded,
           baseBranch: resolvedBase,
-          published: result.published,
-          publishMessage: result.publishMessage,
         }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({

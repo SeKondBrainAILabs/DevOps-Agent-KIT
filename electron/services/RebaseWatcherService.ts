@@ -20,24 +20,6 @@ import { shouldFastForward } from '../../shared/session-fast-forward';
 
 const execFileAsync = promisify(execFile);
 
-export interface RebaseRunOptions {
-  /**
-   * After a successful rebase that rewrote history, push the session branch
-   * to its upstream with --force-with-lease. Set for KIT's own rebases
-   * (periodic, manual trigger, kit_rebase); not for the post-commit rebase,
-   * whose caller pushes the new commit itself.
-   */
-  publish?: boolean;
-}
-
-export interface RebaseRunResult {
-  success: boolean;
-  message: string;
-  /** Set when publish was requested: whether the rewritten branch was pushed. */
-  published?: boolean;
-  publishMessage?: string;
-}
-
 // Watch configuration for a session
 export interface RebaseWatchConfig {
   sessionId: string;
@@ -220,7 +202,7 @@ export class RebaseWatcherService extends BaseService {
         // see isRebasing=true and don't schedule a second concurrent rebase.
         state.isRebasing = true;
         this.emitStatus(sessionId);
-        this.performAutoRebase(state, { publish: true }).catch((err) =>
+        this.performAutoRebase(state).catch((err) =>
           console.error(`[RebaseWatcher] Auto-rebase error for ${sessionId}:`, err)
         );
       }
@@ -434,7 +416,7 @@ export class RebaseWatcherService extends BaseService {
         return { success: false, message: 'Rebase already in progress' };
       }
 
-      return await this.performAutoRebase(state, { publish: true });
+      return await this.performAutoRebase(state);
     }, 'REBASE_TRIGGER_FAILED');
   }
 
@@ -531,7 +513,7 @@ export class RebaseWatcherService extends BaseService {
       if (shouldAutoRebase && status.behind > 0) {
         console.log(`[RebaseWatcher] Auto-rebasing ${config.sessionId} (frequency: ${freq})`);
         state.lastAutoRebaseAt = new Date();
-        await this.performAutoRebase(state, { publish: true });
+        await this.performAutoRebase(state);
       }
 
       return { hasChanges: true };
@@ -578,13 +560,24 @@ export class RebaseWatcherService extends BaseService {
     sessionId: string,
     repoPath: string,
     baseBranch: string,
-    worktreePath?: string,
-    opts: RebaseRunOptions = {}
-  ): Promise<RebaseRunResult> {
-    // If the session is already registered, delegate to its state (respects isPaused/isRebasing)
+    worktreePath?: string
+  ): Promise<{ success: boolean; message: string }> {
+    // If the session is already registered FOR THIS CHECKOUT AND BASE, delegate
+    // to its state (respects isPaused/isRebasing). A watched state for another
+    // checkout or base must not redirect the rebase there: the caller named the
+    // worktree to rebase, and the abort on failure must happen in it too.
     const existing = this.watchedSessions.get(sessionId);
     if (existing) {
-      return this.performAutoRebase(existing, opts);
+      const sameCheckout =
+        resolve(existing.config.worktreePath ?? existing.config.repoPath) === resolve(worktreePath ?? repoPath);
+      const sameBase =
+        existing.config.baseBranch.replace(/^origin\//, '') === baseBranch.replace(/^origin\//, '');
+      if (sameCheckout && sameBase) {
+        return this.performAutoRebase(existing);
+      }
+      if (existing.isRebasing) {
+        return { success: false, message: 'Rebase already in progress' };
+      }
     }
 
     // Otherwise create a transient state for this single rebase
@@ -616,69 +609,7 @@ export class RebaseWatcherService extends BaseService {
       lastAutoRebaseAt: null,
       lastRebaseResult: null,
     };
-    return this.performAutoRebase(state, opts);
-  }
-
-  private async headOf(path: string): Promise<string | null> {
-    try {
-      return (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, timeout: 30_000 })).stdout.trim();
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * After a successful rebase in `path`, push the rewritten session branch to
-   * its upstream with --force-with-lease. Does nothing when nothing was
-   * rewritten or the branch has no upstream. Refuses when the upstream holds
-   * commits the branch did not have before the rebase (someone else pushed),
-   * and the lease is the upstream commit seen here, so a push that raced in
-   * is never overwritten. Never throws.
-   */
-  async publishRebasedBranch(
-    path: string,
-    headBefore: string
-  ): Promise<{ published: boolean; attempted: boolean; message: string }> {
-    const git = async (args: string[]) =>
-      (await execFileAsync('git', args, {
-        cwd: path,
-        timeout: 60_000,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      })).stdout.trim();
-    const optional = (args: string[]) => git(args).catch(() => '');
-
-    const headAfter = await optional(['rev-parse', 'HEAD']);
-    if (!headAfter || headAfter === headBefore) {
-      return { published: false, attempted: false, message: 'Nothing rewritten — no push needed' };
-    }
-    const branch = await optional(['symbolic-ref', '--short', '-q', 'HEAD']);
-    const remote = branch ? await optional(['config', `branch.${branch}.remote`]) : '';
-    const mergeRef = branch ? await optional(['config', `branch.${branch}.merge`]) : '';
-    if (!branch || !remote || remote === '.' || !mergeRef.startsWith('refs/heads/')) {
-      return { published: false, attempted: false, message: 'Session branch has no upstream — not pushed' };
-    }
-    const tracking = `refs/remotes/${remote}/${mergeRef.slice('refs/heads/'.length)}`;
-    const upstreamSha = await optional(['rev-parse', '--verify', '-q', tracking]);
-    if (!upstreamSha) {
-      return { published: false, attempted: false, message: `Upstream ${tracking} not found — not pushed` };
-    }
-    try {
-      await git(['merge-base', '--is-ancestor', upstreamSha, headBefore]);
-    } catch {
-      return {
-        published: false,
-        attempted: true,
-        message: `Rebased ${branch} not pushed: ${remote} has commits on it that the branch did not have before the rebase. Pull them in, then push.`,
-      };
-    }
-    try {
-      await git(['push', `--force-with-lease=${mergeRef}:${upstreamSha}`, remote, `HEAD:${mergeRef}`]);
-      return { published: true, attempted: true, message: `Pushed rebased ${branch} to ${remote} (force-with-lease)` };
-    } catch (err) {
-      const e = err as { stderr?: unknown; message?: string };
-      const detail = String(e.stderr || e.message || '').trim().split('\n').slice(-2).join(' | ');
-      return { published: false, attempted: true, message: `Push of rebased ${branch} failed: ${detail}` };
-    }
+    return this.performAutoRebase(state);
   }
 
   /** The session's own checkout: its worktree when it has one that exists, else the repo. */
@@ -768,7 +699,7 @@ export class RebaseWatcherService extends BaseService {
   /**
    * Perform automatic rebase
    */
-  private async performAutoRebase(state: WatchState, opts: RebaseRunOptions = {}): Promise<RebaseRunResult> {
+  private async performAutoRebase(state: WatchState): Promise<{ success: boolean; message: string }> {
     const { config } = state;
 
     if (state.isRebasing) {
@@ -806,10 +737,6 @@ export class RebaseWatcherService extends BaseService {
       aheadCount: state.aheadCount,
     });
     console.log(`[RebaseWatcher] Starting auto-rebase for ${config.sessionId} onto ${config.baseBranch}`);
-
-    // The tip before the rebase: tells whether history was rewritten, and is
-    // the lease for publishing it.
-    const headBefore = opts.publish ? await this.headOf(rebasePath) : null;
 
     try {
       // Use AI-powered rebase if MergeConflictService is available
@@ -920,18 +847,6 @@ export class RebaseWatcherService extends BaseService {
       }
 
       this.emitStatus(config.sessionId);
-
-      // A KIT rebase that rewrote a published branch publishes itself: the
-      // next commit's push is a plain one and would otherwise be rejected.
-      if (rebaseResult.success && opts.publish && headBefore) {
-        const pub = await this.publishRebasedBranch(rebasePath, headBefore);
-        if (pub.published) {
-          this.activityService?.log(config.sessionId, 'git', pub.message);
-        } else if (pub.attempted) {
-          this.activityService?.log(config.sessionId, 'warning', pub.message);
-        }
-        return { success: true, message: rebaseResult.message, published: pub.published, publishMessage: pub.message };
-      }
 
       return { success: rebaseResult.success, message: rebaseResult.message };
     } catch (error) {

@@ -15,6 +15,11 @@ export interface PostCommitRebaseResult {
   message: string;
   /** When ok=false because of conflicts or a rejected AI resolution. */
   conflictFiles?: string[];
+  /**
+   * Where origin/<session branch> was BEFORE the fetch and rebase: the lease
+   * for the force-push. Absent when the branch was not on the remote.
+   */
+  leaseSha?: string;
 }
 
 /** Whether a commit may be pushed after its post-commit rebase. */
@@ -24,12 +29,13 @@ export function mayPushAfterPostCommitRebase(result: PostCommitRebaseResult | un
 
 /**
  * Push options after a post-commit rebase. Force-with-lease only when a rebase
- * actually ran, succeeded and rewrote history; a skipped or failed rebase
- * never leads to a force-push.
+ * actually ran, succeeded and rewrote history, and always with the explicit
+ * lease read before the rebase; a skipped or failed rebase never leads to a
+ * force-push. A rewritten branch that was not on the remote needs no force.
  */
 export function postCommitPushOptions(
   result: PostCommitRebaseResult | undefined,
-): { forceWithLease: true } | undefined {
-  if (!result || !result.ok || result.skipped || !result.rewrote) return undefined;
-  return { forceWithLease: true };
+): { forceWithLease: true; expectedRemoteSha: string } | undefined {
+  if (!result || !result.ok || result.skipped || !result.rewrote || !result.leaseSha) return undefined;
+  return { forceWithLease: true, expectedRemoteSha: result.leaseSha };
 }

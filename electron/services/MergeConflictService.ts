@@ -251,8 +251,8 @@ const MIGRATION_PATTERNS = [
  */
 const REBASE_CONFIG = ['-c', 'merge.conflictStyle=merge'];
 
-/** An AI resolution shorter than this fraction of the larger side is refused. */
-export const MIN_RESOLUTION_LINE_RATIO = 0.7;
+/** An AI resolution with fewer lines than this percentage of the larger side is refused. */
+export const MIN_RESOLUTION_LINE_PCT = 70;
 
 /** Lines in `content`, not counting one trailing newline. */
 export function countLines(content: string): number {
@@ -314,9 +314,10 @@ export async function aiResolutionRejections(
 
   const largerSide = sides.length > 0 ? Math.max(...sides.map(countLines)) : 0;
   const lines = countLines(content);
-  if (largerSide > 0 && lines < MIN_RESOLUTION_LINE_RATIO * largerSide) {
+  // Integer arithmetic: no floating-point drift at the boundary.
+  if (largerSide > 0 && lines * 100 < MIN_RESOLUTION_LINE_PCT * largerSide) {
     reasons.push(
-      `the resolution has ${lines} lines, below ${Math.round(MIN_RESOLUTION_LINE_RATIO * 100)}% of the larger side (${largerSide} lines)`
+      `the resolution has ${lines} lines, below ${MIN_RESOLUTION_LINE_PCT}% of the larger side (${largerSide} lines)`
     );
   }
 
@@ -566,8 +567,10 @@ export class MergeConflictService extends BaseService {
    * Keeps HEAD content first, then incoming content (chronological order)
    */
   private resolveAppendBoth(content: string): string | null {
-    // Match conflict blocks: <<<<<<< ... ======= ... >>>>>>>
-    const conflictRegex = /<<<<<<< [^\n]*\n([\s\S]*?)=======\n([\s\S]*?)>>>>>>> [^\n]*/g;
+    // Match conflict blocks: <<<<<<< ... ======= ... >>>>>>>. Each marker must be
+    // a whole line (m flag): unanchored, a `# ==========` comment inside a hunk
+    // ended the first section early.
+    const conflictRegex = /^<<<<<<<(?: [^\n]*)?\n([\s\S]*?)^=======\n([\s\S]*?)^>>>>>>>(?: [^\n]*)?$/gm;
     let resolved = content;
     let hadConflicts = false;
 
@@ -591,7 +594,8 @@ export class MergeConflictService extends BaseService {
    * Resolve a keep_current conflict by taking the HEAD version
    */
   private resolveKeepCurrent(content: string): string | null {
-    const conflictRegex = /<<<<<<< [^\n]*\n([\s\S]*?)=======\n[\s\S]*?>>>>>>> [^\n]*/g;
+    // Whole-line markers, as in resolveAppendBoth.
+    const conflictRegex = /^<<<<<<<(?: [^\n]*)?\n([\s\S]*?)^=======\n[\s\S]*?^>>>>>>>(?: [^\n]*)?$/gm;
     let resolved = content;
     let hadConflicts = false;
 
@@ -609,7 +613,8 @@ export class MergeConflictService extends BaseService {
    * Resolve a keep_incoming conflict by taking the incoming version
    */
   private resolveKeepIncoming(content: string): string | null {
-    const conflictRegex = /<<<<<<< [^\n]*\n[\s\S]*?=======\n([\s\S]*?)>>>>>>> [^\n]*/g;
+    // Whole-line markers, as in resolveAppendBoth.
+    const conflictRegex = /^<<<<<<<(?: [^\n]*)?\n[\s\S]*?^=======\n([\s\S]*?)^>>>>>>>(?: [^\n]*)?$/gm;
     let resolved = content;
     let hadConflicts = false;
 
@@ -1559,8 +1564,8 @@ export class MergeConflictService extends BaseService {
         // Use user-modified content if provided, otherwise use AI proposed content
         const contentToApply = preview.userModifiedContent || preview.proposedContent;
 
-        // Verify no conflict markers in content to apply (any single marker line counts)
-        if (this.hasConflictMarkers(contentToApply) || markerRejection(contentToApply)) {
+        // Verify no conflict markers in content to apply
+        if (this.hasConflictMarkers(contentToApply)) {
           this.debugLog?.error('MergeConflict', `Cannot apply resolution — content still has conflict markers`, { filePath: preview.file, repoPath });
           console.error(`[MergeConflict] Cannot apply ${preview.file} - still has conflict markers`);
           failed.push(preview.file);
@@ -1619,7 +1624,7 @@ export class MergeConflictService extends BaseService {
               const resolved = isKitBookkeepingFile(file)
                 ? this.resolveKeepCurrent(content)
                 : this.resolveKeepIncoming(content);
-              if (resolved && !markerRejection(resolved)) {
+              if (resolved) {
                 const applyR = await this.applyResolution(repoPath, file, resolved);
                 if (applyR.success) staged = true;
               }

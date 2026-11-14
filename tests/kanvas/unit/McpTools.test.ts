@@ -220,8 +220,8 @@ describe('MCP Tools', () => {
       });
 
       it('force-pushes with lease only after a rebase that ran and rewrote history', async () => {
-        await commitAndPush({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased' });
-        expect(mockGitService.push).toHaveBeenCalledWith('sess_test_123', undefined, { forceWithLease: true });
+        await commitAndPush({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased', leaseSha: 'abc999' });
+        expect(mockGitService.push).toHaveBeenCalledWith('sess_test_123', undefined, { forceWithLease: true, expectedRemoteSha: 'abc999' });
       });
     });
 
@@ -946,8 +946,8 @@ describe('MCP Tools', () => {
       });
 
       it('force-pushes with lease only after a rebase that ran and rewrote history', async () => {
-        await commitAllAndPush({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased' });
-        expect(mockGitService.push).toHaveBeenCalledWith('sess_multi_rebase', undefined, { forceWithLease: true });
+        await commitAllAndPush({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased', leaseSha: 'abc999' });
+        expect(mockGitService.push).toHaveBeenCalledWith('sess_multi_rebase', undefined, { forceWithLease: true, expectedRemoteSha: 'abc999' });
       });
     });
   });

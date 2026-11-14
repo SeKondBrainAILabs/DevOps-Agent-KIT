@@ -64,7 +64,7 @@ async function getSseTransport() {
 export interface McpServiceDeps {
   gitService?: {
     commit: (sessionId: string, message: string, repoName?: string, exclude?: string[]) => Promise<any>;
-    push: (sessionId: string, repoName?: string, options?: { forceWithLease?: boolean }) => Promise<any>;
+    push: (sessionId: string, repoName?: string, options?: { forceWithLease?: boolean; expectedRemoteSha?: string }) => Promise<any>;
     getStatus: (sessionId: string) => Promise<any>;
     getCommitHistory: (repoPath: string, baseBranch?: string, limit?: number) => Promise<any>;
     // Paths a commit changed (KC-S3.1.1). Optional so older fakes keep working.
@@ -246,7 +246,7 @@ export interface McpServiceDeps {
   /** v2.6.95 — expose on-demand rebase to agents. Calls performRebaseForPath
    *  which uses AI conflict resolution when there are conflicts. */
   rebaseWatcherService?: {
-    performRebaseForPath: (sessionId: string, repoPath: string, baseBranch: string, worktreePath?: string, opts?: { publish?: boolean }) => Promise<any>;
+    performRebaseForPath: (sessionId: string, repoPath: string, baseBranch: string, worktreePath?: string) => Promise<any>;
   };
   debugLog?: DebugLogService | null;
 }

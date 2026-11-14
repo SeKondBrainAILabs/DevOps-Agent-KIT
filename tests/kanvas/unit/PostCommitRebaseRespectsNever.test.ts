@@ -73,6 +73,7 @@ describe('attemptPostCommitRebase — when it must not run', () => {
     rebase: jest.Mock;
     abortRebase: jest.Mock;
     isRebaseInProgress: jest.Mock;
+    remoteBranchSha: jest.Mock;
   };
 
   beforeEach(() => {
@@ -84,6 +85,7 @@ describe('attemptPostCommitRebase — when it must not run', () => {
       rebase: jest.fn(),
       abortRebase: jest.fn(async () => undefined),
       isRebaseInProgress: jest.fn(async () => false),
+      remoteBranchSha: jest.fn(async () => 'lease123'),
     };
   });
   afterEach(() => rmSync(wt, { recursive: true, force: true }));
@@ -121,8 +123,16 @@ describe('attemptPostCommitRebase — when it must not run', () => {
     expect(gitService.countBehindBase).toHaveBeenCalledWith(wt, 'main');
     expect(gitService.checkRemoteChanges).not.toHaveBeenCalled(); // the main checkout's view is not used
     expect(rebaseWatcher.performRebaseForPath).toHaveBeenCalledWith('s1', '/repo', 'main', wt);
-    expect(r).toMatchObject({ ok: true, rewrote: true, commitsIntegrated: 4 });
-    expect(postCommitPushOptions(r)).toEqual({ forceWithLease: true });
+    expect(r).toMatchObject({ ok: true, rewrote: true, commitsIntegrated: 4, leaseSha: 'lease123' });
+    expect(postCommitPushOptions(r)).toEqual({ forceWithLease: true, expectedRemoteSha: 'lease123' });
+  });
+
+  it('reads the lease before the fetch that moves origin/<branch>', async () => {
+    const { svc } = makeWatcher(inst(), gitService);
+    await svc.attemptPostCommitRebase('s1');
+    expect(gitService.remoteBranchSha).toHaveBeenCalledWith(wt);
+    expect(gitService.remoteBranchSha.mock.invocationCallOrder[0])
+      .toBeLessThan(gitService.fetchRemote.mock.invocationCallOrder[0]);
   });
 
   it('a UI session set to on-demand is rebased in its worktree', async () => {
@@ -267,8 +277,8 @@ describe('.devops-commit commit path — push after the post-commit rebase', () 
   });
 
   it('force-pushes with lease only after a rebase that ran and rewrote history', async () => {
-    const { gitService } = await commitVia({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased' });
-    expect(gitService.push).toHaveBeenCalledWith('s1', undefined, { forceWithLease: true });
+    const { gitService } = await commitVia({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased', leaseSha: 'lease123' });
+    expect(gitService.push).toHaveBeenCalledWith('s1', undefined, { forceWithLease: true, expectedRemoteSha: 'lease123' });
   });
 });
 
@@ -344,11 +354,91 @@ describe('attemptPostCommitRebase measures behind in the session worktree (real 
 });
 
 describe('postCommitPushOptions', () => {
-  it('force-pushes only after a rebase that ran, succeeded and rewrote history', () => {
-    expect(postCommitPushOptions({ ok: true, rewrote: true, commitsIntegrated: 1, message: '' })).toEqual({ forceWithLease: true });
-    expect(postCommitPushOptions({ ok: true, rewrote: true, skipped: true, commitsIntegrated: 0, message: '' })).toBeUndefined();
+  it('force-pushes only after a rebase that ran, succeeded and rewrote history, with the explicit lease', () => {
+    expect(postCommitPushOptions({ ok: true, rewrote: true, commitsIntegrated: 1, message: '', leaseSha: 'abc' }))
+      .toEqual({ forceWithLease: true, expectedRemoteSha: 'abc' });
+    // Not on the remote before: nothing to overwrite, so no force.
+    expect(postCommitPushOptions({ ok: true, rewrote: true, commitsIntegrated: 1, message: '' })).toBeUndefined();
+    expect(postCommitPushOptions({ ok: true, rewrote: true, skipped: true, commitsIntegrated: 0, message: '', leaseSha: 'abc' })).toBeUndefined();
     expect(postCommitPushOptions({ ok: false, rewrote: true, commitsIntegrated: 0, message: '' })).toBeUndefined();
     expect(postCommitPushOptions({ ok: true, rewrote: false, commitsIntegrated: 0, message: '' })).toBeUndefined();
     expect(postCommitPushOptions(undefined)).toBeUndefined();
+  });
+});
+
+// ─── The explicit lease (real git) ──────────────────────────────────────────
+
+describe('GitService.push with an explicit lease (real git)', () => {
+  let dir: string;
+  let remote: string;
+  let wt: string;
+  let theirs: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'kit-pcr-lease-'));
+    remote = join(dir, 'origin.git');
+    wt = join(dir, 'wt');
+    theirs = join(dir, 'theirs');
+    git(dir, 'init', '-q', '--bare', '-b', 'main', remote);
+    for (const p of [wt, theirs]) {
+      git(dir, 'clone', '-q', remote, p);
+      git(p, 'config', 'user.email', 't@example.com');
+      git(p, 'config', 'user.name', 'T');
+      git(p, 'config', 'commit.gpgsign', 'false');
+    }
+    git(wt, 'symbolic-ref', 'HEAD', 'refs/heads/sess');
+    writeFileSync(join(wt, 'a.txt'), 'a\n');
+    git(wt, 'add', 'a.txt');
+    git(wt, 'commit', '-q', '-m', 'session work');
+    git(wt, 'push', '-q', '-u', 'origin', 'sess');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** Read the lease, then someone pushes to sess, then a fetch moves origin/sess, then history is rewritten. */
+  async function raceAndRewrite() {
+    const svc = new GitService();
+    svc.registerWorktree('s1', wt, wt);
+    const lease = await svc.remoteBranchSha(wt);
+    expect(lease).toBe(git(wt, 'rev-parse', 'HEAD'));
+    git(theirs, 'fetch', '-q', 'origin', 'sess');
+    git(theirs, 'checkout', '-q', '-b', 'sess', 'origin/sess');
+    writeFileSync(join(theirs, 'theirs.txt'), 'theirs\n');
+    git(theirs, 'add', 'theirs.txt');
+    git(theirs, 'commit', '-q', '-m', 'their push');
+    git(theirs, 'push', '-q', 'origin', 'sess');
+    const theirTip = git(theirs, 'rev-parse', 'HEAD');
+    git(wt, 'fetch', '-q', 'origin'); // the post-commit fetch: origin/sess now = their tip
+    git(wt, 'commit', '-q', '--amend', '-m', 'session work, rewritten');
+    return { svc, lease: lease!, theirTip };
+  }
+
+  it('refuses to overwrite a push that landed after the lease was read', async () => {
+    const { svc, lease, theirTip } = await raceAndRewrite();
+
+    const r = await svc.push('s1', undefined, { forceWithLease: true, expectedRemoteSha: lease });
+
+    expect(r.success).toBe(false);
+    expect(git(remote, 'rev-parse', 'refs/heads/sess')).toBe(theirTip);
+  });
+
+  it('(a bare --force-with-lease after that fetch would have overwritten it)', async () => {
+    const { svc, theirTip } = await raceAndRewrite();
+
+    const r = await svc.push('s1', undefined, { forceWithLease: true });
+
+    expect(r.success).toBe(true);
+    expect(git(remote, 'rev-parse', 'refs/heads/sess')).not.toBe(theirTip);
+  });
+
+  it('force-pushes when the remote is still where the lease says', async () => {
+    const svc = new GitService();
+    svc.registerWorktree('s1', wt, wt);
+    const lease = (await svc.remoteBranchSha(wt))!;
+    git(wt, 'commit', '-q', '--amend', '-m', 'rewritten');
+
+    const r = await svc.push('s1', undefined, { forceWithLease: true, expectedRemoteSha: lease });
+
+    expect(r.success).toBe(true);
+    expect(git(remote, 'rev-parse', 'refs/heads/sess')).toBe(git(wt, 'rev-parse', 'HEAD'));
   });
 });

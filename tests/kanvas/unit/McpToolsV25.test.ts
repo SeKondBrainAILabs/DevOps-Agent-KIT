@@ -361,9 +361,7 @@ describe('MCP v2.5 tools', () => {
       expect(r.error).toBeUndefined();
       // The worktree is passed so an unwatched session rebases its own
       // checkout; with only REPO it rebased the main checkout instead.
-      // publish: a rebase that rewrote a pushed branch pushes it itself, since
-      // the next kit_commit pushes without force.
-      expect(rebaseWatcherService.performRebaseForPath).toHaveBeenCalledWith(PRED, REPO, BASE, WT, { publish: true });
+      expect(rebaseWatcherService.performRebaseForPath).toHaveBeenCalledWith(PRED, REPO, BASE, WT);
       expect(r.baseBranch).toBe(BASE);
     });
 

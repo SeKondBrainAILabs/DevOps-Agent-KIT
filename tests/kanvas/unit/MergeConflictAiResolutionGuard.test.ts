@@ -154,6 +154,49 @@ describe('aiResolutionRejections', () => {
   });
 });
 
+/** `n` plain lines; `edit` replaces line 10. */
+const textLines = (n: number, edit = 'line 10') =>
+  Array.from({ length: n }, (_, i) => (i === 9 ? edit : `line ${i + 1}`)).join('\n') + '\n';
+
+describe('the 70% boundary', () => {
+  const larger = textLines(100);
+  const smaller = textLines(60);
+
+  it('rejects 69 lines against a 100-line larger side and accepts 70', async () => {
+    const at69 = await aiResolutionRejections('notes.txt', textLines(69), 'stop', [smaller, larger]);
+    expect(at69.reasons.join(' ')).toMatch(/has 69 lines, below 70% of the larger side \(100 lines\)/);
+    const at70 = await aiResolutionRejections('notes.txt', textLines(70), 'stop', [smaller, larger]);
+    expect(at70.reasons).toEqual([]);
+  });
+});
+
+describe('rule-based resolvers match whole marker lines only', () => {
+  // A `# ==========` divider inside a hunk used to end the first section early.
+  const hunk = [
+    'a',
+    '<<<<<<< HEAD',
+    '# ==========',
+    'y = 2',
+    '=======',
+    '# ==========',
+    'y = 3',
+    '>>>>>>> origin/main',
+    'b',
+    '',
+  ].join('\n');
+  const svc = new MergeConflictService({} as never) as unknown as Record<string, (c: string) => string | null>;
+
+  it('keep_current keeps the whole current side (y = 2)', () => {
+    expect(svc.resolveKeepCurrent(hunk)).toBe('a\n# ==========\ny = 2\nb\n');
+  });
+  it('keep_incoming keeps the whole incoming side (y = 3)', () => {
+    expect(svc.resolveKeepIncoming(hunk)).toBe('a\n# ==========\ny = 3\nb\n');
+  });
+  it('append_both keeps both sides whole', () => {
+    expect(svc.resolveAppendBoth(hunk)).toBe('a\n# ==========\ny = 2\n# ==========\ny = 3\nb\n');
+  });
+});
+
 // ─── AIService surfaces finish_reason ───────────────────────────────────────
 
 describe('AIService.sendWithModeDetailed', () => {
@@ -400,6 +443,27 @@ describe('rebaseWithResolution in a session worktree (real git)', () => {
     expect(r.data?.message).toMatch(/finish_reason=length/);
     expect(r.data?.message).toMatch(/below 70% of the larger side/);
     expectUntouched(commits[1]);
+  });
+
+  it.each([
+    [69, false],
+    [70, true],
+  ])('at the 70%% boundary a %i-line resolution of a 100-line larger side is accepted: %s', async (n, accepted) => {
+    const NOTES = 'notes.txt';
+    const session = textLines(100, 'line 10 session');
+    scenario(textLines(60), [session], textLines(60, 'line 10 main'), NOTES);
+    const { svc } = serviceReplying({ content: textLines(n, 'line 10 merged'), finishReason: 'stop' });
+
+    const r = await svc.rebaseWithResolution(wt, 'main');
+
+    expect(r.data?.success).toBe(accepted);
+    if (accepted) {
+      expect(rebaseInProgress()).toBe(false);
+      expect(countLines(readFileSync(join(wt, NOTES), 'utf-8'))).toBe(n);
+    } else {
+      expect(r.data?.message).toMatch(/has 69 lines, below 70% of the larger side \(100 lines\)/);
+      expectUntouched(session, NOTES);
+    }
   });
 
   describe('rule-based (non-AI) resolutions', () => {

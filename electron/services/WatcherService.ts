@@ -1091,6 +1091,10 @@ export class WatcherService extends BaseService {
         return this.rebaseNotOurs(sessionId, baseBranch, 'a rebase is already in progress in the session worktree');
       }
 
+      // The lease for a force-push after the rebase: where the session branch
+      // is on the remote as last seen, read BEFORE the fetch below moves it.
+      const leaseSha = (await this.gitService.remoteBranchSha(worktreePath)) ?? undefined;
+
       // 1. Fetch so origin/<base> reflects the current remote. Worktrees
       //    share refs with the main checkout, so fetching there is enough.
       await this.gitService.fetchRemote(repoPath);
@@ -1121,7 +1125,7 @@ export class WatcherService extends BaseService {
         const msg = `Rebased onto ${baseBranch} (${behind} commit${behind !== 1 ? 's' : ''} integrated${commitDetails})`;
         this.terminalLogService?.log('info', msg, { sessionId, source: 'Watcher' });
         this.activityService.log(sessionId, 'git', msg);
-        return { ok: true, rewrote: true, commitsIntegrated: behind, baseBranch, message: msg };
+        return { ok: true, rewrote: true, commitsIntegrated: behind, baseBranch, message: msg, leaseSha };
       }
 
       // The watcher refused because a rebase of this session is already

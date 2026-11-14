@@ -572,16 +572,23 @@ export class GitService extends BaseService {
   async push(
     sessionId: string,
     repoName?: string,
-    options?: { forceWithLease?: boolean }
+    options?: { forceWithLease?: boolean; expectedRemoteSha?: string }
   ): Promise<IpcResult<void>> {
     return this.wrap(async () => {
       const cwd = this.getWorkingDir(sessionId, repoName);
       const branch = await this.git(['branch', '--show-current'], cwd);
       const args = ['push', '-u', 'origin', branch];
       // v2.7.5 — force-with-lease when a post-commit rebase rewrote history.
-      // Regular push would fail "not fast-forward"; --force-with-lease is
-      // safe (refuses if someone else pushed since our last fetch).
-      if (options?.forceWithLease) args.push('--force-with-lease');
+      // Regular push would fail "not fast-forward". With expectedRemoteSha the
+      // lease is explicit: the remote branch must still be at the commit seen
+      // BEFORE the fetch and rebase. A bare --force-with-lease leases against
+      // the remote-tracking ref, which that fetch has just moved, so it would
+      // overwrite a push that landed in between.
+      if (options?.forceWithLease) {
+        args.push(options.expectedRemoteSha
+          ? `--force-with-lease=refs/heads/${branch}:${options.expectedRemoteSha}`
+          : '--force-with-lease');
+      }
       await this.git(args, cwd);
     }, 'GIT_PUSH_FAILED');
   }
@@ -1014,6 +1021,21 @@ export class GitService extends BaseService {
         return { behind: 0, ahead: 0 };
       }
     }, 'GIT_COUNT_BEHIND_FAILED');
+  }
+
+  /**
+   * The commit origin/<current branch> points at in `checkoutPath`'s view of
+   * the remote, or null when the branch has never been fetched or pushed.
+   * Does not fetch: read it before a fetch to get the lease for a later push.
+   */
+  async remoteBranchSha(checkoutPath: string): Promise<string | null> {
+    try {
+      const branch = await this.git(['branch', '--show-current'], checkoutPath);
+      if (!branch) return null;
+      return await this.git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`], checkoutPath) || null;
+    } catch {
+      return null;
+    }
   }
 
   /**
