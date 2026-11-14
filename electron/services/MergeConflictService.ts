@@ -21,6 +21,7 @@ import type { AIService, GroqModelKey } from './AIService';
 import type { DebugLogService } from './DebugLogService';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { checkContentParses } from './file-parse-check';
 
 // Dynamic import helper for execa (ESM-only module)
 // Handles various bundling scenarios with fallback patterns
@@ -95,6 +96,9 @@ export interface ResolutionResult {
   analysis?: ConflictAnalysis;
   skippedReason?: string;  // Why the file was skipped (e.g., safety restriction)
   proposedDeletion?: boolean;  // Resolution is to delete the file (modify/delete conflict resolved toward a deletion)
+  aiResolved?: boolean;  // `content` was written by a model (not a deterministic rule)
+  finishReason?: string | null;  // Why the model stopped on the output in `content` ('length' = truncated)
+  rejectedReasons?: string[];  // Why an AI resolution was refused before staging
 }
 
 /** Preview of a proposed conflict resolution — user must approve before applying */
@@ -228,6 +232,74 @@ const MIGRATION_PATTERNS = [
   /\.migration\./i,
   /\d{14}.*\.(sql|ts|js)$/,  // Timestamp-prefixed migration files
 ];
+
+// ==========================================================================
+// AI resolution acceptance checks
+// ==========================================================================
+//
+// On 2026-11-14 a model with max_tokens 4096 was handed a whole 4475-line
+// conflicted Python file, stopped on length, and its 229-line output was
+// staged, committed and force-pushed. Every AI-written resolution now has to
+// pass these checks before it is staged, or the rebase is aborted.
+
+/** An AI resolution shorter than this fraction of the larger side is refused. */
+export const MIN_RESOLUTION_LINE_RATIO = 0.7;
+
+/** Lines in `content`, not counting one trailing newline. */
+export function countLines(content: string): number {
+  if (content.length === 0) return 0;
+  return content.replace(/\n$/, '').split('\n').length;
+}
+
+/**
+ * Lines that are a git conflict marker: `<<<<<<<` / `>>>>>>>` / `|||||||`
+ * at the start of a line, or `=======` alone on a line. Returns 1-based line
+ * numbers. Unlike hasConflictMarkers, ONE marker is enough.
+ */
+export function conflictMarkerLines(content: string): number[] {
+  const hits: number[] = [];
+  content.split('\n').forEach((raw, i) => {
+    const line = raw.replace(/\r$/, '');
+    if (/^(<{7}|>{7}|\|{7})(\s|$)/.test(line) || /^={7}\s*$/.test(line)) hits.push(i + 1);
+  });
+  return hits;
+}
+
+/**
+ * Reasons to refuse an AI-written resolution of `filePath`, or [] to accept it.
+ * `sideLineCounts` are the line counts of the two sides of the conflict
+ * (`git show :2:<f>` and `:3:<f>`), when they exist.
+ */
+export async function aiResolutionRejections(
+  filePath: string,
+  content: string,
+  finishReason: string | null | undefined,
+  sideLineCounts: number[],
+): Promise<string[]> {
+  const reasons: string[] = [];
+
+  if (finishReason === 'length') {
+    reasons.push('the model stopped on its output token limit (finish_reason=length), so the output is truncated');
+  }
+
+  const largerSide = sideLineCounts.length > 0 ? Math.max(...sideLineCounts) : 0;
+  const lines = countLines(content);
+  if (largerSide > 0 && lines < MIN_RESOLUTION_LINE_RATIO * largerSide) {
+    reasons.push(
+      `the resolution has ${lines} lines, below ${Math.round(MIN_RESOLUTION_LINE_RATIO * 100)}% of the larger side (${largerSide} lines)`
+    );
+  }
+
+  const markers = conflictMarkerLines(content);
+  if (markers.length > 0) {
+    reasons.push(`the resolution still contains conflict marker lines (line ${markers.slice(0, 5).join(', ')})`);
+  }
+
+  const parseProblem = await checkContentParses(filePath, content);
+  if (parseProblem) reasons.push(`the resolution no longer parses: ${parseProblem}`);
+
+  return reasons;
+}
 
 // ==========================================================================
 // Service
@@ -835,7 +907,7 @@ export class MergeConflictService extends BaseService {
       if (analysis?.resolutionPlan) {
         // Phase 2: Use the analysis plan from Phase 1
         console.log(`[MergeConflict] Phase 2 resolve_with_plan for ${filePath} (model: ${modelOverride || 'default'})`);
-        result = await this.aiService.sendWithMode({
+        result = await this.aiService.sendWithModeDetailed({
           modeId: 'merge_conflict_resolver',
           promptKey: 'resolve_with_plan',
           variables: {
@@ -860,7 +932,7 @@ export class MergeConflictService extends BaseService {
       } else {
         // Fallback: single-shot resolve without analysis
         console.log(`[MergeConflict] Fallback to single-shot resolve for ${filePath}`);
-        result = await this.aiService.sendWithMode({
+        result = await this.aiService.sendWithModeDetailed({
           modeId: 'merge_conflict_resolver',
           promptKey: 'resolve_conflict',
           variables: {
@@ -875,7 +947,7 @@ export class MergeConflictService extends BaseService {
         });
       }
 
-      if (!result.success || !result.data) {
+      if (!result.success || !result.data?.content) {
         const reason = !result.success
           ? (result.error?.message || result.error?.code || 'unknown API error')
           : 'empty response from model';
@@ -886,7 +958,7 @@ export class MergeConflictService extends BaseService {
           model: modelUsed,
           errorCode: result.error?.code,
           errorMessage: result.error?.message,
-          hadData: !!result.data,
+          hadData: !!result.data?.content,
         });
         console.error(`[MergeConflict] ${errorMsg} for ${filePath}`);
         return {
@@ -896,7 +968,8 @@ export class MergeConflictService extends BaseService {
         };
       }
 
-      let resolvedContent = result.data;
+      let resolvedContent = result.data.content;
+      let finishReason = result.data.finishReason;
 
       // Extract code from markdown code blocks if present
       const codeBlockMatch = resolvedContent.match(/```(?:\w+)?\n([\s\S]*?)```/);
@@ -910,7 +983,7 @@ export class MergeConflictService extends BaseService {
         console.warn(`[MergeConflict] AI output still has conflict markers, retrying...`);
 
         // Retry with stronger instruction using reasoning model
-        const retryResult = await this.aiService.sendWithMode({
+        const retryResult = await this.aiService.sendWithModeDetailed({
           modeId: 'merge_conflict_resolver',
           promptKey: 'resolve_with_plan',
           variables: {
@@ -933,8 +1006,9 @@ export class MergeConflictService extends BaseService {
           // Always use reasoning model for retry
         });
 
-        if (retryResult.success && retryResult.data) {
-          resolvedContent = retryResult.data;
+        if (retryResult.success && retryResult.data?.content) {
+          resolvedContent = retryResult.data.content;
+          finishReason = retryResult.data.finishReason;
           const retryCodeBlock = resolvedContent.match(/```(?:\w+)?\n([\s\S]*?)```/);
           if (retryCodeBlock) {
             resolvedContent = retryCodeBlock[1];
@@ -956,8 +1030,31 @@ export class MergeConflictService extends BaseService {
         resolved: true,
         content: resolvedContent.trim(),
         analysis,
+        aiResolved: true,
+        finishReason,
       };
     }, 'RESOLVE_FILE_CONFLICT_FAILED');
+  }
+
+  /**
+   * Reasons to refuse an AI-written resolution of `filePath` in the rebase in
+   * progress at `repoPath`, or [] to accept it. Compares against both sides of
+   * the conflict (`:2:` and `:3:` in the index); a side that does not exist
+   * (add/delete) is left out of the size check.
+   */
+  async checkAiResolution(
+    repoPath: string,
+    filePath: string,
+    content: string,
+    finishReason: string | null | undefined,
+  ): Promise<string[]> {
+    const sides: number[] = [];
+    for (const stage of [2, 3]) {
+      try {
+        sides.push(countLines(await this.git(['show', `:${stage}:${filePath}`], repoPath)));
+      } catch { /* that side does not exist */ }
+    }
+    return aiResolutionRejections(filePath, content, finishReason, sides);
   }
 
   /**
@@ -1580,6 +1677,7 @@ export class MergeConflictService extends BaseService {
       metrics.backupTag = backupTag;
 
       const resolutions: ResolutionResult[] = [];
+      const rejected: Array<{ file: string; reasons: string[] }> = [];
       let conflictsResolved = 0;
       let conflictsFailed = 0;
       let retries = 0;
@@ -1715,6 +1813,23 @@ export class MergeConflictService extends BaseService {
                 allResolved = false;
               }
             } else if (resolution.data.resolved && resolution.data.content) {
+              // An AI resolution that would lose or break the file is never staged.
+              const rejections = resolution.data.aiResolved
+                ? await this.checkAiResolution(repoPath, file, resolution.data.content, resolution.data.finishReason)
+                : [];
+              if (rejections.length > 0) {
+                console.warn(`[MergeConflict] Rejected AI resolution of ${file}: ${rejections.join('; ')}`);
+                this.debugLog?.error('MergeConflict', 'Rejected AI resolution', { repoPath, file, reasons: rejections });
+                resolution.data.resolved = false;
+                resolution.data.content = undefined;
+                resolution.data.rejectedReasons = rejections;
+                resolution.data.error = `AI resolution rejected: ${rejections.join('; ')}`;
+                rejected.push({ file, reasons: rejections });
+                conflictsFailed++;
+                allResolved = false;
+                continue;
+              }
+
               // Apply the resolution
               const applyResult = await this.applyResolution(
                 repoPath,
@@ -1756,9 +1871,12 @@ export class MergeConflictService extends BaseService {
             // Ignore abort errors
           }
           metrics.totalLatencyMs = Date.now() - startTime;
+          const rejectedDetail = rejected.length > 0
+            ? ` Rejected AI resolution(s): ${rejected.map((r) => `${r.file} (${r.reasons.join('; ')})`).join(', ')}.`
+            : '';
           return {
             success: false,
-            message: `Failed to resolve ${conflictsFailed} conflict(s). Rebase aborted.${backupTag ? ` Backup: ${backupTag}` : ''}`,
+            message: `Failed to resolve ${conflictsFailed} conflict(s). Rebase aborted.${rejectedDetail}${backupTag ? ` Backup: ${backupTag}` : ''}`,
             conflictsResolved,
             conflictsFailed,
             resolutions,

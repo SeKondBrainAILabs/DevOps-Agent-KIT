@@ -194,6 +194,37 @@ describe('MCP Tools', () => {
       );
     });
 
+    // 2026-11-14: a post-commit rebase on a 'never' session was followed by a
+    // force-push of an AI resolution that had cut a file to 5% of its size.
+    describe('push after the post-commit rebase', () => {
+      const commitAndPush = async (rebase: Record<string, unknown>) => {
+        deps.postCommitRebase = (jest.fn() as any).mockResolvedValue(rebase);
+        return parseResult(await callTool('kit_commit', {
+          session_id: 'sess_test_123',
+          message: 'feat: push after rebase',
+          push: true,
+        }));
+      };
+
+      it('pushes without force when the rebase was skipped', async () => {
+        const data = await commitAndPush({ ok: true, rewrote: true, skipped: true, commitsIntegrated: 0, message: 'Post-commit rebase skipped' });
+        expect(mockGitService.push).toHaveBeenCalledWith('sess_test_123', undefined, undefined);
+        expect(data.rebase.skipped).toBe(true);
+      });
+
+      it('does not push at all when the rebase failed (e.g. a rejected AI resolution)', async () => {
+        const data = await commitAndPush({ ok: false, rewrote: false, commitsIntegrated: 0, message: 'Rejected AI resolution(s): big.py' });
+        expect(mockGitService.push).not.toHaveBeenCalled();
+        expect(data.pushed).toBe(false);
+        expect(data.pushError).toMatch(/Push skipped/);
+      });
+
+      it('force-pushes with lease only after a rebase that ran and rewrote history', async () => {
+        await commitAndPush({ ok: true, rewrote: true, commitsIntegrated: 2, message: 'Rebased' });
+        expect(mockGitService.push).toHaveBeenCalledWith('sess_test_123', undefined, { forceWithLease: true });
+      });
+    });
+
     it('should not push by default', async () => {
       await callTool('kit_commit', {
         session_id: 'sess_test_123',

@@ -25,6 +25,7 @@ import type { RebaseWatcherService } from './RebaseWatcherService';
 import { databaseService } from './DatabaseService';
 import { resolveRepoRootFromWorktree } from '../../shared/worktree-path';
 import { evaluateAutoCommitGuardForWorktree } from './GitRewriteGuardIO';
+import { postCommitPushOptions, type PostCommitRebaseResult } from '../../shared/post-commit-rebase';
 import type { AgentType } from '../../shared/types';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { promises as fs } from 'fs';
@@ -1002,7 +1003,7 @@ export class WatcherService extends BaseService {
             await this.gitService.push(
               sessionId,
               instance.repoName,
-              rebaseInfo.rewrote ? { forceWithLease: true } : undefined,
+              postCommitPushOptions(rebaseInfo),
             );
           } catch (err) {
             this.activityService.log(sessionId, 'warning', `Push failed after commit: ${err instanceof Error ? err.message : String(err)}`);
@@ -1023,57 +1024,70 @@ export class WatcherService extends BaseService {
   }
 
   /**
-   * Fire the "on-demand" rebase logic after a successful commit. Attempts,
-   * in order:
+   * Bring a session's branch up to date with origin/<base> after a successful
+   * commit, before it is pushed. Called by the debounced .devops-commit path
+   * and by the MCP kit_commit / kit_commit_all handlers.
    *
-   *   1. `rebaseWatcher.forceCheck(sessionId)` — works when the session is
-   *      registered with the rebase watcher (i.e. rebaseFrequency !== 'never').
-   *      For on-demand sessions this is the intended path.
-   *   2. Direct fallback — resolve the instance's baseBranch, fetch origin,
-   *      and if we're behind, run `performRebaseForPath` (AI-assisted so
-   *      conflicts auto-resolve). Covers sessions with rebaseFrequency:
-   *      'never' or where the watcher wasn't registered on this app run.
+   * Skipped (no fetch, no rebase, `skipped: true`) unless the caller passes
+   * `optIn: true` when:
+   *   - the session's rebaseFrequency is 'never' (or unset, which defaults to
+   *     'never'), or
+   *   - the session was created by an agent over MCP (createdBy === 'mcp').
+   *     An agent that wants its branch rebased calls kit_rebase itself.
+   * On 2026-11-14 this rebase ran on a 'never' session, an AI conflict
+   * resolution cut a 4475-line file to 229 lines, and the push that followed
+   * was a force-push. A skipped rebase rewrites nothing, so callers must push
+   * without force.
+   *
+   * "Behind" is measured in the session's own checkout (`origin/<base>...HEAD`
+   * in its worktree), never in the main checkout, and the rebase always runs
+   * in that worktree.
    *
    * Non-fatal — a rebase failure is logged as a warning and doesn't propagate.
-   * Public so both the debounced .commit-msg-file path AND the MCP kit_commit
-   * handler can call it; before extraction, only the .commit-msg path fired
-   * a post-commit rebase and agent-driven MCP commits silently skipped it.
+   * `ok: false` means the branch was left at its pre-rebase state and the
+   * caller must not push.
    */
-  async attemptPostCommitRebase(sessionId: string, repoName?: string): Promise<{
-    ok: boolean;
-    rewrote: boolean;
-    commitsIntegrated: number;
-    baseBranch?: string;
-    message: string;
-    conflictFiles?: string[];
-  }> {
-    // Best-effort abort helper. Called when the rebase raised or conflicted so
-    // we leave a clean tree behind rather than a half-applied rebase state.
-    // ENOENT and "no rebase in progress" both come back as thrown errors — we
-    // swallow both since they mean the tree is already clean.
-    const abortIfInProgress = async (cwd: string): Promise<void> => {
-      try { await this.gitService.rebase(cwd, `--abort`); } catch { /* clean already */ }
-    };
-
+  async attemptPostCommitRebase(
+    sessionId: string,
+    repoName?: string,
+    opts: { optIn?: boolean } = {},
+  ): Promise<PostCommitRebaseResult> {
     let baseBranch: string | undefined;
-    let repoPath: string | undefined;
+    let worktreePath: string | undefined;
 
     try {
-      if (this.agentInstanceService) {
-        const instResult = this.agentInstanceService.getInstance(sessionId);
-        const inst = instResult?.data;
-        baseBranch = inst?.config?.baseBranch || 'main';
-        // Use ROOT repo path — worktrees can vanish, source repo is always present.
-        repoPath = inst?.config?.repoPath;
-      }
-      if (!repoPath || !baseBranch) {
-        return { ok: true, rewrote: false, commitsIntegrated: 0, message: 'Post-commit rebase skipped: session config unresolved' };
+      const inst = this.agentInstanceService?.getInstance(sessionId)?.data ?? null;
+      if (!inst) {
+        return this.skipPostCommitRebase(sessionId, 'session config unresolved');
       }
 
-      // 1. Fetch so origin/<base> reflects the current remote.
+      const frequency = inst.config?.rebaseFrequency || 'never';
+      const createdBy = (inst.config as { createdBy?: string } | undefined)?.createdBy;
+      if (!opts.optIn) {
+        if (frequency === 'never') {
+          return this.skipPostCommitRebase(sessionId, "the session's rebase frequency is 'never'");
+        }
+        if (createdBy === 'mcp') {
+          return this.skipPostCommitRebase(sessionId, 'the session was created by an agent over MCP (use kit_rebase to rebase it)');
+        }
+      }
+
+      // The session's own checkout. In multi-repo mode each repo has its own.
+      const entry = repoName
+        ? inst.multiRepoEntries?.find((e) => e.repoName === repoName)
+        : undefined;
+      const repoPath = entry?.repoPath || inst.config?.repoPath;
+      worktreePath = entry?.worktreePath || inst.worktreePath;
+      baseBranch = (entry?.baseBranch || inst.config?.baseBranch || 'main').replace(/^origin\//, '');
+      if (!repoPath || !worktreePath || !existsSync(worktreePath)) {
+        return this.skipPostCommitRebase(sessionId, 'the session has no worktree to rebase');
+      }
+
+      // 1. Fetch so origin/<base> reflects the current remote. Worktrees
+      //    share refs with the main checkout, so fetching there is enough.
       await this.gitService.fetchRemote(repoPath);
-      const checkResult = await this.gitService.checkRemoteChanges(repoPath, baseBranch);
-      const behind = checkResult.success && checkResult.data ? (checkResult.data.behind || 0) : 0;
+      const behindResult = await this.gitService.countBehindBase(worktreePath, baseBranch);
+      const behind = behindResult.success && behindResult.data ? behindResult.data.behind : 0;
 
       if (behind === 0) {
         // Up-to-date — no rebase needed, no history rewrite, push can go
@@ -1081,10 +1095,10 @@ export class WatcherService extends BaseService {
         return { ok: true, rewrote: false, commitsIntegrated: 0, baseBranch, message: `Already up to date with ${baseBranch}` };
       }
 
-      console.log(`[WatcherService] Post-commit rebase: ${behind} commits behind ${baseBranch}`);
+      console.log(`[WatcherService] Post-commit rebase: ${behind} commits behind ${baseBranch} in ${worktreePath}`);
       const rebaseResult = this.rebaseWatcher
-        ? await this.rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch)
-        : await this.gitService.rebase(repoPath, `origin/${baseBranch}`).then(r => ({
+        ? await this.rebaseWatcher.performRebaseForPath(sessionId, repoPath, baseBranch, worktreePath)
+        : await this.gitService.rebase(worktreePath, baseBranch).then(r => ({
             success: r.success && !!r.data?.success,
             message: r.data?.message || r.error?.message || '',
             incomingCommits: r.data?.incomingCommits,
@@ -1101,10 +1115,10 @@ export class WatcherService extends BaseService {
         return { ok: true, rewrote: true, commitsIntegrated: behind, baseBranch, message: msg };
       }
 
-      // Rebase failed. Abort any in-progress state so the tree is clean,
-      // then surface an actionable message. Push should NOT happen after a
-      // failed rebase — otherwise the agent publishes a stale-base commit.
-      await abortIfInProgress(repoPath);
+      // Rebase failed (conflicts, or an AI resolution was rejected). Abort
+      // any in-progress state so the tree is clean, then surface an
+      // actionable message. Push must NOT happen after a failed rebase.
+      await this.gitService.abortRebase(worktreePath);
       const errMsg = `Rebase onto ${baseBranch} failed — session branch left at pre-rebase state. Push skipped. ${rebaseResult.message || 'Resolve conflicts and retry via kit_rebase.'}`;
       console.warn(`[WatcherService] Post-commit rebase failed:`, rebaseResult.message);
       this.activityService.log(sessionId, 'warning', errMsg, { detail: rebaseResult.message });
@@ -1117,12 +1131,20 @@ export class WatcherService extends BaseService {
         conflictFiles: (rebaseResult as { conflictFiles?: string[] }).conflictFiles,
       };
     } catch (rebaseError) {
-      if (repoPath) await abortIfInProgress(repoPath);
+      if (worktreePath) await this.gitService.abortRebase(worktreePath);
       const errMsg = rebaseError instanceof Error ? rebaseError.message : String(rebaseError);
       console.warn(`[WatcherService] Post-commit rebase threw:`, rebaseError);
       this.activityService.log(sessionId, 'warning', `Post-commit rebase failed: ${errMsg}. Push skipped.`);
       return { ok: false, rewrote: false, commitsIntegrated: 0, baseBranch, message: `Post-commit rebase threw: ${errMsg}` };
     }
+  }
+
+  /** A post-commit rebase that did not run: nothing fetched, nothing rewritten. */
+  private skipPostCommitRebase(sessionId: string, why: string): PostCommitRebaseResult {
+    const message = `Post-commit rebase skipped: ${why}`;
+    console.log(`[WatcherService] ${message} (${sessionId})`);
+    this.activityService.log(sessionId, 'info', message);
+    return { ok: true, rewrote: false, skipped: true, commitsIntegrated: 0, message };
   }
 
   private async getWorktreePath(sessionId: string): Promise<string | null> {

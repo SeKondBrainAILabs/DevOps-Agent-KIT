@@ -55,6 +55,12 @@ export interface ModeRequestOptions {
   modelOverride?: GroqModelKey;  // Override mode's default model (e.g., fast model for simple conflicts)
 }
 
+/** A mode completion and why the model stopped ('stop', 'length', ... or null when not reported). */
+export interface ModeCompletion {
+  content: string;
+  finishReason: string | null;
+}
+
 export class AIService extends BaseService {
   private configService: ConfigService;
   private groq: Groq | null = null;
@@ -309,10 +315,23 @@ export class AIService extends BaseService {
   }
 
   /**
+   * Like sendWithMode, but also returns why the model stopped. A
+   * `finishReason` of 'length' means the output hit max_tokens and is
+   * truncated — callers that write the output to a file must not trust it.
+   */
+  async sendWithModeDetailed(options: ModeRequestOptions): Promise<IpcResult<ModeCompletion>> {
+    return this.wrap(() => this.completeWithModeDetailed(options), 'AI_MODE_CHAT_FAILED');
+  }
+
+  /**
    * Run a mode's prompt and return the raw completion text. Throws on failure;
    * callers that need an IpcResult go through sendWithMode.
    */
   private async completeWithMode(options: ModeRequestOptions): Promise<string> {
+    return (await this.completeWithModeDetailed(options)).content;
+  }
+
+  private async completeWithModeDetailed(options: ModeRequestOptions): Promise<ModeCompletion> {
     const registry = getAIConfigRegistry();
     const mode = registry.getMode(options.modeId);
 
@@ -338,7 +357,10 @@ export class AIService extends BaseService {
     const client = this.getClient();
     try {
       const response = await client.chat.completions.create({ model: modelId, ...request });
-      return response.choices[0]?.message?.content || '';
+      return {
+        content: response.choices[0]?.message?.content || '',
+        finishReason: response.choices[0]?.finish_reason ?? null,
+      };
     } catch (primaryError) {
       // If primary model fails with 404/model-not-found, fall back to a live model
       const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
@@ -346,7 +368,10 @@ export class AIService extends BaseService {
       if (isModelError && modelId !== GROQ_MODELS[FALLBACK_MODEL]) {
         console.warn(`[AIService] Model ${modelId} unavailable (${errMsg.slice(0, 80)}), falling back to ${FALLBACK_MODEL}`);
         const fallbackResponse = await client.chat.completions.create({ model: GROQ_MODELS[FALLBACK_MODEL], ...request });
-        return fallbackResponse.choices[0]?.message?.content || '';
+        return {
+          content: fallbackResponse.choices[0]?.message?.content || '',
+          finishReason: fallbackResponse.choices[0]?.finish_reason ?? null,
+        };
       }
       throw primaryError;
     }

@@ -996,6 +996,34 @@ export class GitService extends BaseService {
   }
 
   /**
+   * How far the checkout at `checkoutPath` (its HEAD — pass a session's
+   * worktree, not the main checkout) is behind and ahead of origin/<base>.
+   * Does not fetch. A missing origin/<base> counts as 0/0.
+   */
+  async countBehindBase(checkoutPath: string, baseBranch: string): Promise<IpcResult<{ behind: number; ahead: number }>> {
+    return this.wrap(async () => {
+      const base = baseBranch.replace(/^origin\//, '');
+      try {
+        const counts = await this.git(
+          ['rev-list', '--left-right', '--count', `origin/${base}...HEAD`],
+          checkoutPath
+        );
+        const [behind, ahead] = counts.split(/\s+/).map(Number);
+        return { behind: behind || 0, ahead: ahead || 0 };
+      } catch {
+        return { behind: 0, ahead: 0 };
+      }
+    }, 'GIT_COUNT_BEHIND_FAILED');
+  }
+
+  /** `git rebase --abort` in `checkoutPath`; a no-op when no rebase is in progress. */
+  async abortRebase(checkoutPath: string): Promise<void> {
+    try {
+      await this.git(['rebase', '--abort'], checkoutPath);
+    } catch { /* no rebase in progress, or the path is gone */ }
+  }
+
+  /**
    * Stash uncommitted changes
    */
   async stash(repoPath: string, message?: string): Promise<IpcResult<boolean>> {
