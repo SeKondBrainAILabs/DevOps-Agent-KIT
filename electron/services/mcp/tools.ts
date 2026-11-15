@@ -48,6 +48,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
 import { evaluateAutoCommitGuardForWorktree } from '../GitRewriteGuardIO';
+import { structuralCheckApplies, structuralSanityCheck, parserCommandFor } from '../file-parse-check';
+import { mayPushAfterPostCommitRebase, postCommitPushOptions, type PostCommitRebaseResult } from '../../../shared/post-commit-rebase';
+
+// Re-exported: the sanity-gate tests and other callers import them from here.
+export { structuralCheckApplies, structuralSanityCheck };
 
 // Dynamic execa (ESM-only) for the worktree-divergence guards. Mirrors the
 // resolution fallbacks used in AgentInstanceService for bundler compatibility.
@@ -81,18 +86,6 @@ type SanityGateResult = {
   retryGuidance?: string;
 };
 
-/**
- * Whether the structural check below should run on a file. It is a JavaScript-shaped scanner:
- * it does not know Python's triple-quoted strings, `#` comments or JS regex literals, so on a
- * file a real parser has already accepted it only adds false refusals (2026-10-13: every
- * Python file opening with a multi-line docstring was refused as "unterminated double-quoted
- * string near line 1"). It runs where there is no real parser — TS, TSX, JSX.
- */
-export function structuralCheckApplies(ext: string, parsedByRealParser: boolean): boolean {
-  if (parsedByRealParser) return false;
-  return ['ts', 'tsx', 'jsx'].includes(ext.toLowerCase());
-}
-
 /** Files we know how to syntax-check quickly. Anything else is skipped. */
 const PARSE_CHECKABLE = /\.(py|js|mjs|cjs|jsx|ts|tsx)$/i;
 /** Single-file shrink threshold that requires force=true. */
@@ -100,86 +93,6 @@ const SHRINK_PCT_THRESHOLD = 0.5;
 /** Below this line count the shrink check is skipped — tiny files routinely
  *  shrink during refactors and would create false positives. */
 const SHRINK_MIN_LINES = 300;
-
-/**
- * Cheap structural sanity check for TS/TSX/JSX (and anything else parser-check
- * can't handle). Not a real parser — catches the truncation/conflict-marker
- * class of breakage that KIT itself introduced (f7f05bb, Kanvas auto-merge
- * mangles) at ~1ms per file. Returns null when the file looks structurally
- * sound; a short error string when it's obviously broken.
- *
- * Checks:
- *   - No leftover conflict markers (<<<<<<< / ======= / >>>>>>> at line start)
- *   - Balanced brackets and parens, respecting strings and comments
- *   - No unterminated single-quoted / double-quoted / template string at EOF
- *
- * Deliberately conservative — we'd rather miss a subtle bug than false-positive
- * on legitimate code. Balanced-braces on a small file can be wrong (macros,
- * dedented strings) so keep this to modest false-positive risk.
- */
-export function structuralSanityCheck(content: string): string | null {
-  // 1. Leftover merge-conflict markers
-  const lines = content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    if (l.startsWith('<<<<<<<') || l.startsWith('=======') && lines[i].length === 7 || l.startsWith('>>>>>>>')) {
-      // Skip the '=======' one — it collides too often with divider comments.
-      // Only fire on <<<<<<< / >>>>>>> which are unambiguous.
-      if (l.startsWith('<<<<<<<') || l.startsWith('>>>>>>>')) {
-        return `unresolved conflict marker at line ${i + 1}: ${l.slice(0, 40)}`;
-      }
-    }
-  }
-
-  // 2. Bracket balance + string-terminator tracking. Single-pass character
-  //    machine that respects //, /* */, ' ', " ", and template literals.
-  let depthBrace = 0, depthParen = 0, depthBracket = 0;
-  let inLine = false; // //-comment
-  let inBlock = false; // /* */
-  let inSingle = false, inDouble = false, inTemplate = false;
-  let templateExprDepth = 0; // ${...} inside template
-
-  for (let i = 0; i < content.length; i++) {
-    const c = content[i];
-    const n = content[i + 1];
-    if (inLine) { if (c === '\n') inLine = false; continue; }
-    if (inBlock) { if (c === '*' && n === '/') { inBlock = false; i++; } continue; }
-    if (inSingle) { if (c === '\\') { i++; continue; } if (c === "'") inSingle = false; if (c === '\n') return `unterminated single-quoted string near line ${content.slice(0, i).split('\n').length}`; continue; }
-    if (inDouble) { if (c === '\\') { i++; continue; } if (c === '"') inDouble = false; if (c === '\n') return `unterminated double-quoted string near line ${content.slice(0, i).split('\n').length}`; continue; }
-    if (inTemplate) {
-      if (c === '\\') { i++; continue; }
-      if (c === '`' && templateExprDepth === 0) { inTemplate = false; continue; }
-      if (c === '$' && n === '{') { templateExprDepth++; i++; continue; }
-      if (c === '}' && templateExprDepth > 0) { templateExprDepth--; continue; }
-      // Inside ${...} we still fall through so brackets in the expression
-      // are balanced — but only when templateExprDepth > 0 does '}' pop the
-      // expression rather than the outer stack. Skip the outer bracket
-      // machine for characters inside the template body.
-      continue;
-    }
-    // Not inside any quote / comment
-    if (c === '/' && n === '/') { inLine = true; i++; continue; }
-    if (c === '/' && n === '*') { inBlock = true; i++; continue; }
-    if (c === "'") { inSingle = true; continue; }
-    if (c === '"') { inDouble = true; continue; }
-    if (c === '`') { inTemplate = true; continue; }
-    if (c === '{') depthBrace++;
-    else if (c === '}') { depthBrace--; if (depthBrace < 0) return `unmatched '}' near line ${content.slice(0, i).split('\n').length}`; }
-    else if (c === '(') depthParen++;
-    else if (c === ')') { depthParen--; if (depthParen < 0) return `unmatched ')' near line ${content.slice(0, i).split('\n').length}`; }
-    else if (c === '[') depthBracket++;
-    else if (c === ']') { depthBracket--; if (depthBracket < 0) return `unmatched ']' near line ${content.slice(0, i).split('\n').length}`; }
-  }
-
-  if (inSingle) return 'unterminated single-quoted string at EOF';
-  if (inDouble) return 'unterminated double-quoted string at EOF';
-  if (inTemplate) return 'unterminated template literal at EOF';
-  if (inBlock) return 'unterminated /* */ comment at EOF';
-  if (depthBrace !== 0) return `unbalanced braces (${depthBrace > 0 ? '+' : ''}${depthBrace}) at EOF — file may be truncated`;
-  if (depthParen !== 0) return `unbalanced parens (${depthParen > 0 ? '+' : ''}${depthParen}) at EOF — file may be truncated`;
-  if (depthBracket !== 0) return `unbalanced brackets (${depthBracket > 0 ? '+' : ''}${depthBracket}) at EOF — file may be truncated`;
-  return null;
-}
 
 /** Interface for the McpServerService to log calls */
 interface McpCallLogger {
@@ -311,14 +224,10 @@ export function registerTools(
       const abs = join(worktreePath, rel);
       if (!existsSync(abs)) continue;
       const ext = rel.toLowerCase().split('.').pop() || '';
-      let cmd: { bin: string; args: string[] } | null = null;
-      if (ext === 'py') {
-        cmd = { bin: 'python3', args: ['-c', `import ast,sys\nast.parse(open(sys.argv[1]).read())`, abs] };
-      } else if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {
-        cmd = { bin: 'node', args: ['--check', abs] };
-      }
       // TS/TSX/JSX have no cheap parser here (tsc is too heavy, node --check
-      // rejects TS syntax). Fall through to the structural check below.
+      // rejects TS syntax): parserCommandFor returns null and the structural
+      // check below runs instead.
+      const cmd = parserCommandFor(ext, abs);
       if (cmd) {
         try {
           if (!_execa) {
@@ -327,7 +236,7 @@ export function registerTools(
               : typeof mod.default === 'function' ? mod.default
               : mod.default?.execa;
           }
-          await _execa!(cmd.bin, cmd.args, { cwd: worktreePath, timeout: 5_000 });
+          await _execa!(cmd.bin, cmd.args, { cwd: worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
         } catch (err: any) {
           const stderr = (err?.stderr || err?.message || '').toString();
           parseFailures.push({ file: rel, error: stderr.split('\n').slice(0, 4).join('\n') });
@@ -874,14 +783,7 @@ export function registerTools(
         //    so failures are visible to the agent and can block the push.
         //    If the rebase fails, the branch is left at pre-rebase state
         //    and push is skipped so we don't publish a stale-base commit.
-        let rebaseInfo: {
-          ok: boolean;
-          rewrote: boolean;
-          commitsIntegrated: number;
-          baseBranch?: string;
-          message: string;
-          conflictFiles?: string[];
-        } | undefined;
+        let rebaseInfo: PostCommitRebaseResult | undefined;
         try {
           rebaseInfo = await deps.postCommitRebase?.(session_id, repo);
         } catch (err) {
@@ -889,17 +791,17 @@ export function registerTools(
         }
 
         // 5. Push — only when rebase either succeeded or wasn't needed.
-        //    Force-with-lease if the rebase rewrote history (replayed local
-        //    commits on top of new base ⇒ non-fast-forward push otherwise).
+        //    Force-with-lease only if a rebase ran, succeeded and rewrote
+        //    history; a skipped rebase ('never' / MCP session) pushes plain.
         let pushed = false;
         let pushError: string | undefined;
-        const rebaseFailed = rebaseInfo && !rebaseInfo.ok;
+        const rebaseFailed = !mayPushAfterPostCommitRebase(rebaseInfo);
         if (push && !rebaseFailed) {
           try {
             const pushResult = await deps.gitService.push(
               session_id,
               repo,
-              rebaseInfo?.rewrote ? { forceWithLease: true } : undefined,
+              postCommitPushOptions(rebaseInfo),
             );
             pushed = pushResult.success === true;
             if (!pushed) pushError = pushResult.error?.message || 'Push returned failure';
@@ -940,6 +842,7 @@ export function registerTools(
           result.rebase = {
             ok: rebaseInfo.ok,
             rewrote: rebaseInfo.rewrote,
+            skipped: rebaseInfo.skipped === true,
             commitsIntegrated: rebaseInfo.commitsIntegrated,
             baseBranch: rebaseInfo.baseBranch,
             message: rebaseInfo.message,
@@ -1055,23 +958,24 @@ export function registerTools(
           // v2.7.5 — Post-commit rebase awaited BEFORE push (same rationale
           // as kit_commit). Failure blocks the push so no stale-base commit
           // ships to origin.
-          let rebaseInfo: { ok: boolean; rewrote: boolean; commitsIntegrated: number; baseBranch?: string; message: string; conflictFiles?: string[]; } | undefined;
+          let rebaseInfo: PostCommitRebaseResult | undefined;
           try {
             rebaseInfo = await deps.postCommitRebase?.(session_id, repo.repoName);
           } catch (err) {
             rebaseInfo = { ok: false, rewrote: false, commitsIntegrated: 0, message: err instanceof Error ? err.message : 'Rebase threw' };
           }
 
-          // Push (only after rebase succeeded or was not needed).
+          // Push (only after rebase succeeded or was not needed; force only
+          // after a rebase that ran, succeeded and rewrote history).
           let pushed = false;
           let pushError: string | undefined;
-          const rebaseFailed = rebaseInfo && !rebaseInfo.ok;
+          const rebaseFailed = !mayPushAfterPostCommitRebase(rebaseInfo);
           if (push && !rebaseFailed) {
             try {
               const pushResult = await deps.gitService.push(
                 session_id,
                 repoName,
-                rebaseInfo?.rewrote ? { forceWithLease: true } : undefined,
+                postCommitPushOptions(rebaseInfo),
               );
               pushed = pushResult.success === true;
               if (!pushed) pushError = pushResult.error?.message || 'Push returned failure';
@@ -1093,7 +997,7 @@ export function registerTools(
 
           const repoResult: Record<string, unknown> = { repoName: repo.repoName, commitHash: hash, filesChanged, files: repoFiles, pushed };
           if (pushError) repoResult.pushError = pushError;
-          if (rebaseInfo) repoResult.rebase = { ok: rebaseInfo.ok, rewrote: rebaseInfo.rewrote, commitsIntegrated: rebaseInfo.commitsIntegrated, baseBranch: rebaseInfo.baseBranch, message: rebaseInfo.message, conflictFiles: rebaseInfo.conflictFiles };
+          if (rebaseInfo) repoResult.rebase = { ok: rebaseInfo.ok, rewrote: rebaseInfo.rewrote, skipped: rebaseInfo.skipped === true, commitsIntegrated: rebaseInfo.commitsIntegrated, baseBranch: rebaseInfo.baseBranch, message: rebaseInfo.message, conflictFiles: rebaseInfo.conflictFiles };
           results.push(repoResult as any);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : 'Failed';

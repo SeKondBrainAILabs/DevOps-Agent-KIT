@@ -562,10 +562,22 @@ export class RebaseWatcherService extends BaseService {
     baseBranch: string,
     worktreePath?: string
   ): Promise<{ success: boolean; message: string }> {
-    // If the session is already registered, delegate to its state (respects isPaused/isRebasing)
+    // If the session is already registered FOR THIS CHECKOUT AND BASE, delegate
+    // to its state (respects isPaused/isRebasing). A watched state for another
+    // checkout or base must not redirect the rebase there: the caller named the
+    // worktree to rebase, and the abort on failure must happen in it too.
     const existing = this.watchedSessions.get(sessionId);
     if (existing) {
-      return this.performAutoRebase(existing);
+      const sameCheckout =
+        resolve(existing.config.worktreePath ?? existing.config.repoPath) === resolve(worktreePath ?? repoPath);
+      const sameBase =
+        existing.config.baseBranch.replace(/^origin\//, '') === baseBranch.replace(/^origin\//, '');
+      if (sameCheckout && sameBase) {
+        return this.performAutoRebase(existing);
+      }
+      if (existing.isRebasing) {
+        return { success: false, message: 'Rebase already in progress' };
+      }
     }
 
     // Otherwise create a transient state for this single rebase
