@@ -233,7 +233,10 @@ describe('PortConfig', () => {
       
       const config = getPortConfig();
       
-      expect(config.preferredPort).toBe(5173);
+      // When KANVAS_PORT is unset but KANVAS_PORT_RANGE is set,
+      // and the default port (5173) is outside the range,
+      // preferredPort should be adjusted to range.start (9000)
+      expect(config.preferredPort).toBe(9000);
       expect(config.portRange.start).toBe(9000);
       expect(config.portRange.end).toBe(9010);
     });
