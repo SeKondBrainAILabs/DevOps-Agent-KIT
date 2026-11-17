@@ -18,6 +18,7 @@ import { join } from 'path';
 import type { IpcResult } from '../../shared/types';
 import {
   classifyGhFailure,
+  describeGhFailure,
   type GhFailure,
   type GhRunner,
 } from '../../shared/github-cli';
@@ -252,6 +253,83 @@ export async function listPullRequests(
   } catch {
     return [];
   }
+}
+
+export interface PrStateInfo {
+  number: number;
+  url: string;
+  state: 'OPEN' | 'MERGED' | 'CLOSED';
+  base: string;
+  head: string;
+  is_draft: boolean;
+}
+
+export type PrStateResult =
+  | { ok: true; pr: PrStateInfo | null; reason?: 'not_github'; message?: string }
+  | { ok: false; error: 'GH_UNAVAILABLE' | 'GH_ERROR'; reason?: GhFailure; message: string };
+
+/**
+ * The state of the branch's pull request, for kit_get_pr_state. Read-only:
+ * one `gh pr view`, nothing created or edited.
+ *
+ * `gh pr view <branch>` prefers an open PR and otherwise returns the most
+ * recent merged or closed one, which is the answer a caller needs before it
+ * pushes more commits to the branch. "No pull requests found" is an answer
+ * (pr: null); any other gh failure is an error, so a network problem is never
+ * reported as "this branch has no PR".
+ */
+export async function getPullRequestState(
+  deps: PrReviewDeps,
+  worktreePath: string,
+  branchName: string
+): Promise<PrStateResult> {
+  const r = await deps.gh(
+    ['pr', 'view', branchName, '--json', 'number,url,state,baseRefName,headRefName,isDraft'],
+    worktreePath
+  );
+
+  const failure = classifyGhFailure(r);
+  if (failure === 'not_installed' || failure === 'not_authenticated') {
+    return { ok: false, error: 'GH_UNAVAILABLE', reason: failure, message: describeGhFailure(failure) };
+  }
+  if (failure === 'not_github') {
+    return { ok: true, pr: null, reason: 'not_github', message: describeGhFailure(failure) };
+  }
+  if (failure === 'other') {
+    if (/no (open )?pull requests? found/i.test(r.stderr)) return { ok: true, pr: null };
+    return { ok: false, error: 'GH_ERROR', message: r.stderr.trim() || 'gh pr view failed.' };
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(r.stdout);
+  } catch {
+    return { ok: false, error: 'GH_ERROR', message: 'Could not parse the gh pr view output.' };
+  }
+  const state = String(parsed?.state ?? '').toUpperCase();
+  if (state !== 'OPEN' && state !== 'MERGED' && state !== 'CLOSED') {
+    return { ok: false, error: 'GH_ERROR', message: `Unexpected pull request state: ${parsed?.state}` };
+  }
+  // A purely numeric branch name is read by gh as a PR number. Never report
+  // another branch's PR as this one's, and never guess "no PR" either.
+  if (parsed?.headRefName && parsed.headRefName !== branchName) {
+    return {
+      ok: false,
+      error: 'GH_ERROR',
+      message: `gh pr view ${branchName} returned the PR for branch ${parsed.headRefName} (a numeric branch name is read as a PR number); this branch's PR state is unknown.`,
+    };
+  }
+  return {
+    ok: true,
+    pr: {
+      number: Number(parsed.number),
+      url: String(parsed.url ?? ''),
+      state,
+      base: String(parsed.baseRefName ?? ''),
+      head: String(parsed.headRefName ?? branchName),
+      is_draft: parsed.isDraft === true,
+    },
+  };
 }
 
 /**

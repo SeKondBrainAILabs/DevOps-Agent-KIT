@@ -1880,7 +1880,9 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
         const RESTART_GAP_MS = 2500;
         for (const sessionId of activeSessions) {
           try {
-            const restart = await services.agentInstance.restartInstance(sessionId, undefined, true);
+            // commitChanges unset: commit pending work, except in an adopted
+            // session with auto-commit off (shared/auto-commit-policy.ts).
+            const restart = await services.agentInstance.restartInstance(sessionId, undefined, undefined);
             if (restart.success && restart.data?.sessionId) {
               const watchPath = restart.data.worktreePath || restart.data.config?.repoPath;
               if (watchPath) {

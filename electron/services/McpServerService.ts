@@ -136,6 +136,23 @@ export interface McpServiceDeps {
       reason?: string;
       message?: string;
     }>;
+    /** Read-only PR state for kit_get_pr_state. Optional so older fakes keep working. */
+    getPullRequestState?: (worktreePath: string, branchName: string) => Promise<
+      | {
+          ok: true;
+          pr: {
+            number: number;
+            url: string;
+            state: 'OPEN' | 'MERGED' | 'CLOSED';
+            base: string;
+            head: string;
+            is_draft: boolean;
+          } | null;
+          reason?: string;
+          message?: string;
+        }
+      | { ok: false; error: string; reason?: string; message: string }
+    >;
   };
   agentInstanceService?: {
     listInstances: () => { success: boolean; data?: any[] };

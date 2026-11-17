@@ -97,6 +97,8 @@ export const MCP_TOOLS = {
   GET_DIFF: 'kit_get_diff',
   // Read-only, allowed for observers: the KIT Harness policy set in Kanvas (KC-S1.11.6)
   GET_HARNESS_POLICY: 'kit_get_harness_policy',
+  // Read-only, allowed for observers: a branch's pull request state (open / merged / closed)
+  GET_PR_STATE: 'kit_get_pr_state',
   // Session info + activity
   GET_SESSION_INFO: 'kit_get_session_info',
   LOG_ACTIVITY: 'kit_log_activity',

@@ -85,6 +85,7 @@ import {
   type WorktreeStatus,
 } from '../../shared/worktree-outcome';
 import { isObserverSession, refuseDestructiveForObserver } from '../../shared/observer-session';
+import { commitOnRestart } from '../../shared/auto-commit-policy';
 import {
   countsAsRecentUse,
   dropAgentOnlyRepos,
@@ -3484,7 +3485,9 @@ ${DEVOPS_KIT_DIR}/
       agentType?: AgentType;
       task?: string;
     },
-    commitChanges = true
+    // Unset means "the default": commit, except in an adopted session with
+    // auto-commit off (shared/auto-commit-policy.ts). true/false are honoured.
+    commitChanges?: boolean
   ): Promise<IpcResult<AgentInstance>> {
     const shortSessionId = sessionId.replace('sess_', '').slice(0, 8);
     this.terminalLogService?.logSystem(`Starting restart for session ${shortSessionId}...`, sessionId);
@@ -3553,7 +3556,7 @@ ${DEVOPS_KIT_DIR}/
 
         // Optionally commit any pending changes before creating new session
         const worktreePath = sessionData.worktreePath || config.repoPath;
-        if (commitChanges) {
+        if (commitOnRestart(commitChanges, config)) {
           this.terminalLogService?.info(`Checking for uncommitted changes...`, sessionId, 'Restart');
           const commitResult = await this.commitPendingChangesOnRestart(sessionId, worktreePath);
           if (commitResult.committed) {
@@ -3562,6 +3565,8 @@ ${DEVOPS_KIT_DIR}/
           } else {
             this.terminalLogService?.info(`No uncommitted changes found`, sessionId, 'Restart');
           }
+        } else if (commitChanges === undefined) {
+          this.terminalLogService?.info(`Skipping commit — auto-commit is off for this adopted session; uncommitted work stays in the worktree`, sessionId, 'Restart');
         } else {
           this.terminalLogService?.info(`Skipping commit — user chose to discard uncommitted changes`, sessionId, 'Restart');
         }
@@ -3627,8 +3632,11 @@ ${DEVOPS_KIT_DIR}/
       console.log(`[AgentInstanceService] Restarting session ${sessionId} in ${worktreePath}`);
       this.terminalLogService?.info(`Found stored instance, restarting in ${worktreePath}`, sessionId, 'Restart');
 
-      // Check for uncommitted changes and optionally commit them
-      if (commitChanges) {
+      // Check for uncommitted changes and optionally commit them. By default
+      // never on an adopted branch with auto-commit off: the restart reuses its
+      // checkout, so the work is kept without KIT committing to someone else's
+      // branch. An explicit commit_changes: true still commits.
+      if (commitOnRestart(commitChanges, config)) {
         this.terminalLogService?.info(`Checking for uncommitted changes...`, sessionId, 'Restart');
         const commitResult = await this.commitPendingChangesOnRestart(sessionId, worktreePath);
         if (commitResult.committed) {
@@ -3637,6 +3645,8 @@ ${DEVOPS_KIT_DIR}/
         } else {
           this.terminalLogService?.info(`No uncommitted changes found`, sessionId, 'Restart');
         }
+      } else if (commitChanges === undefined) {
+        this.terminalLogService?.info(`Skipping commit — auto-commit is off for this adopted session; uncommitted work stays in the worktree`, sessionId, 'Restart');
       } else {
         this.terminalLogService?.info(`Skipping commit — user chose to discard uncommitted changes`, sessionId, 'Restart');
       }

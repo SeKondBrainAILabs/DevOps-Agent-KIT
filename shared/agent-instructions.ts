@@ -86,6 +86,9 @@ gets its own branch, worktree and auto-commit watcher.
   its original id too, so a subagent already launched does not break.
 - \`kit_adopt_session\` — bring an EXISTING branch under KIT management. It is
   recorded as human-owned: you can manage it, never destructively close it.
+  KIT does not commit to it on its own unless you pass \`auto_commit: true\`.
+  Before revising a PR branch, check \`kit_get_pr_state\`: on a MERGED or
+  CLOSED PR's branch, \`kit_request_review\` opens a new pull request.
 - \`kit_update_session\` — change task, base branch, auto-commit or TTL.
 - \`kit_extend_session\` — push your expiry out if you need longer.
 
@@ -305,6 +308,7 @@ EOF
 | \`kit_unlock_file\` | session_id, files | Release file locks |
 | \`kit_get_commit_history\` | session_id | Recent commits for session branch |
 | \`kit_request_review\` | session_id, summary, **cwd** | Signal work ready for review |
+| \`kit_get_pr_state\` | session_id, or repo_path + branch | Read-only: the branch's PR is OPEN, MERGED or CLOSED (or none) |
 
 ⚠️ **\`cwd\` is REQUIRED on \`kit_commit\`, \`kit_commit_all\`, \`kit_lock_file\`, and \`kit_request_review\`.**
 Pass the output of \`pwd\` (your current shell directory). KIT verifies it matches this session's worktree (\`${vars.repoPath}\`) AND that the worktree is on branch \`${vars.branchName || 'YOUR_SESSION_BRANCH'}\`. If you have \`cd\`'d elsewhere or run \`git checkout\`/detached HEAD, the call is **rejected** with a correction message — your work would otherwise be committed to the wrong place or lost. Always \`cd\` back into the worktree and stay on your session branch before committing.
@@ -312,7 +316,7 @@ Pass the output of \`pwd\` (your current shell directory). KIT verifies it match
 ### ⚠️ FALLBACK: If MCP tools are NOT in your available tools list
 If the \`kit_commit\` MCP tool is not listed in your tools (MCP connection failed):
 1. Stage and commit directly: \`git add -A && git commit -m "your message"\`
-2. Or write commit message to \`.devops-commit-${shortSessionId}.msg\` or \`.claude-commit-msg\` — the KIT watcher will auto-commit.
+2. Or write commit message to \`.devops-commit-${shortSessionId}.msg\` or \`.claude-commit-msg\` — the KIT watcher will auto-commit (not in a session adopted without \`auto_commit: true\`, where the file is ignored and cleared).
 
 ⛔ **CRITICAL GIT PUSH RULES (read even if MCP is working):**
 - If you need to push manually, ONLY push to your session branch: \`git push origin HEAD:${vars.branchName || 'YOUR_SESSION_BRANCH'}\`
@@ -322,7 +326,7 @@ If the \`kit_commit\` MCP tool is not listed in your tools (MCP connection faile
 - If you cannot commit via MCP or git, STOP and ask the user — do not invent alternative push strategies` : `
 📝 **To commit**, either:
 1. Stage and commit directly: \`git add -A && git commit -m "your message"\`
-2. Or write your commit message to \`.devops-commit-${shortSessionId}.msg\` or \`.claude-commit-msg\` — the KIT watcher will auto-commit.
+2. Or write your commit message to \`.devops-commit-${shortSessionId}.msg\` or \`.claude-commit-msg\` — the KIT watcher will auto-commit (not in a session adopted without \`auto_commit: true\`, where the file is ignored and cleared).
 
 ⛔ **CRITICAL GIT PUSH RULES:**
 - ONLY push to your session branch — NEVER to \`main\`, \`master\`, or any base/production branch
