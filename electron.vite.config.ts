@@ -31,11 +31,32 @@ function copyConfigPlugin() {
 }
 
 // Get port configuration from environment variables (KANVAS_PORT, KANVAS_PORT_RANGE)
-const { preferredPort } = getPortConfig();
+const { preferredPort, portRange } = getPortConfig();
 
 export default defineConfig(async () => {
-  // Find an available port starting from preferredPort
-  const availablePort = await detectPort(preferredPort);
+  // Find an available port within the range
+  // Try preferredPort first, then each port from portRange.start to portRange.end
+  let availablePort = preferredPort;
+  
+  // First try the preferred port
+  availablePort = await detectPort(preferredPort);
+  
+  // If the detected port is outside the range, iterate through the range to find a free port
+  if (availablePort < portRange.start || availablePort > portRange.end) {
+    // Try each port in the range
+    for (let p = portRange.start; p <= portRange.end; p++) {
+      const candidatePort = await detectPort(p);
+      if (candidatePort === p) {
+        availablePort = p;
+        break;
+      }
+    }
+  }
+  
+  // Check if we found a free port in the range
+  if (availablePort < portRange.start || availablePort > portRange.end) {
+    throw new Error(`No free Kanvas port in ${portRange.start}-${portRange.end}`);
+  }
 
   if (availablePort !== preferredPort) {
     console.log(`[Kanvas] Port ${preferredPort} is busy, using port ${availablePort}`);
