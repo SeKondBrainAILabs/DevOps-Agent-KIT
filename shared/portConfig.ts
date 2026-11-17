@@ -52,14 +52,5 @@ export function getPortConfig(): PortConfig {
     }
   }
 
-  // Ensure preferredPort is within range when range is set
-  if (kanvasPortRange !== undefined && kanvasPortRange !== '' && 
-      portRange.start !== DEFAULT_RANGE_START && portRange.end !== DEFAULT_RANGE_END) {
-    if (preferredPort < portRange.start || preferredPort > portRange.end) {
-      // Constrain preferredPort to be within the range
-      preferredPort = Math.max(portRange.start, Math.min(portRange.end, preferredPort));
-    }
-  }
-
   return { preferredPort, portRange };
 }
