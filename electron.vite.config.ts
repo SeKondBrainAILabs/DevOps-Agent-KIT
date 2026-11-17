@@ -30,7 +30,7 @@ function copyConfigPlugin() {
   };
 }
 
-// Get port configuration from environment variables
+// Get port configuration from environment variables (KANVAS_PORT, KANVAS_PORT_RANGE)
 const { preferredPort } = getPortConfig();
 
 export default defineConfig(async () => {
