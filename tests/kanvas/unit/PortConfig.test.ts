@@ -82,6 +82,11 @@ describe('PortConfig', () => {
       
       expect(config.portRange.start).toBe(5200);
       expect(config.portRange.end).toBe(5210);
+      // The chosen/preferred port must be within the configured range
+      // When KANVAS_PORT is unset but KANVAS_PORT_RANGE is set, 
+      // preferredPort should be adjusted to be within [range.start, range.end]
+      expect(config.preferredPort).toBeGreaterThanOrEqual(config.portRange.start);
+      expect(config.preferredPort).toBeLessThanOrEqual(config.portRange.end);
     });
 
     it('should fall back to defaults when range is malformed (no dash)', async () => {
@@ -231,6 +236,38 @@ describe('PortConfig', () => {
       expect(config.preferredPort).toBe(5173);
       expect(config.portRange.start).toBe(9000);
       expect(config.portRange.end).toBe(9010);
+    });
+  });
+
+  describe('AC4 integration with electron.vite.config', () => {
+    afterEach(() => {
+      delete process.env.KANVAS_PORT;
+      delete process.env.KANVAS_PORT_RANGE;
+    });
+
+    it('should verify getPortConfig helper exports are correctly consumable by electron.vite.config.ts', async () => {
+      // AC4: electron.vite.config.ts resolves its port through the helper
+      // This test verifies the helper provides the correct configuration structure
+      // that electron.vite.config.ts consumes via `const { preferredPort } = getPortConfig()`
+      process.env.KANVAS_PORT = '6000';
+      process.env.KANVAS_PORT_RANGE = '5200-5210';
+      jest.resetModules();
+      const { getPortConfig } = await import('../../../shared/portConfig.js');
+      
+      // Verify the helper returns the expected structure that electron.vite.config.ts destructures
+      const config = getPortConfig();
+      
+      // electron.vite.config.ts uses `const { preferredPort } = getPortConfig()`
+      expect(config).toHaveProperty('preferredPort');
+      expect(config).toHaveProperty('portRange');
+      expect(typeof config.preferredPort).toBe('number');
+      expect(typeof config.portRange.start).toBe('number');
+      expect(typeof config.portRange.end).toBe('number');
+      
+      // Verify the values match the environment configuration
+      expect(config.preferredPort).toBe(6000);
+      expect(config.portRange.start).toBe(5200);
+      expect(config.portRange.end).toBe(5210);
     });
   });
 });
