@@ -243,8 +243,8 @@ export function registerTools(
         }
       }
 
-      // TS/TSX/JSX: a syntax-only parse with the TypeScript compiler of the
-      // repository being committed (the app's own if it has none); the
+      // TS/TSX/JSX: a syntax-only parse with the app's own TypeScript compiler
+      // (never one from the worktree: the coding engine can write it); the
       // structural scanner only when no TypeScript loads, and then only for
       // breakage HEAD does not already have. On Py/JS the parser above has
       // decided; truncation is the shrink check's job.
@@ -255,7 +255,6 @@ export function registerTools(
         const failure = await checkTypeScriptLikeFile({
           rel,
           content,
-          searchRoots: [worktreePath, resolveRepoRootFromWorktree(worktreePath)?.root ?? ''],
           readHead: async () => {
             try {
               return (await gitInWorktree(['show', `HEAD:${rel}`], worktreePath)).stdout;

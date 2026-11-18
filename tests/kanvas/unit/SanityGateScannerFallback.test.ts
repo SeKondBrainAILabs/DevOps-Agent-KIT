@@ -45,7 +45,7 @@ jest.mock('zod', () => ({ z: zodChain() }));
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({}));
 jest.mock('../../../electron/services/McpServerService', () => ({}));
 
-import { loadTypeScriptFor } from '../../../electron/services/file-parse-check';
+import { loadAppTypeScript } from '../../../electron/services/file-parse-check';
 import { GitService } from '../../../electron/services/GitService';
 import { McpSessionBinder } from '../../../electron/services/mcp/session-binder';
 
@@ -97,7 +97,7 @@ describe('kit_commit sanity gate without TypeScript (scanner fallback)', () => {
     JSON.parse((await handlers.get('kit_commit')!({ session_id: 'sess_a', message, cwd: repo })).content[0].text);
 
   it('has no TypeScript to load here', () => {
-    expect(loadTypeScriptFor([repo])).toBeNull();
+    expect(loadAppTypeScript()).toBeNull();
   });
 
   it('commits a change to a file whose scanner false positive is already on HEAD', async () => {

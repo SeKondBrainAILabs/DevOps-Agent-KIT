@@ -9,8 +9,10 @@
  *   .json             JSON.parse (checkContentParses only)
  *
  * TS/TSX/JSX in the commit gate (checkTypeScriptLikeFile): parsed, syntax
- * only, with the TypeScript compiler of the repository being committed (or the
- * app's own when the repository has none). No type check.
+ * only, with the app's own TypeScript compiler (a runtime dependency, shipped
+ * in the packaged app). No type check. Never one from the repository being
+ * committed: a sandboxed coding engine can write that worktree's node_modules,
+ * and loading it would run its code in this process on the host.
  *
  * structuralSanityCheck is NOT a parser: it mis-reads regex literals, JSX text
  * apostrophes and multi-line JSX attributes. The commit gate uses it only when
@@ -20,7 +22,7 @@
  */
 
 import { execFile } from 'child_process';
-import { promises as fs, readFileSync } from 'fs';
+import { promises as fs } from 'fs';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -124,11 +126,10 @@ export function structuralSanityCheck(content: string): string | null {
 
 type TypeScriptModule = typeof import('typescript');
 
-/** Loaded TypeScript compilers keyed by version, and resolution results keyed by resolved path. */
-const tsByVersion = new Map<string, TypeScriptModule>();
-const tsByResolvedPath = new Map<string, TypeScriptModule | null>();
+/** The app's TypeScript compiler once resolved (null: none usable). */
+let appTypeScript: TypeScriptModule | null | undefined;
 
-/** Where the app's own modules resolve from (the dev checkout; a packaged app ships no typescript). */
+/** Where the app's own modules resolve from (dist/electron in the packaged app, electron/services in a checkout). */
 function appModuleDir(): string {
   return typeof __dirname === 'string' ? __dirname : process.cwd();
 }
@@ -145,45 +146,22 @@ function usableTypeScript(ts: any): ts is TypeScriptModule {
 }
 
 /**
- * The TypeScript compiler for a commit: resolved from each of `searchRoots` in
- * turn (the worktree being committed, then its repository), then from the app
- * itself. Null when none can be loaded or the one found cannot be used.
+ * The TypeScript compiler the commit gate parses with: the app's own, resolved
+ * from the app's module directory only. Never from a worktree or repository
+ * being committed (their node_modules are writable by the sandboxed coding
+ * engines). Null when it cannot be loaded or cannot be used.
  */
-export function loadTypeScriptFor(searchRoots: string[]): TypeScriptModule | null {
-  for (const root of [...searchRoots.filter(Boolean), appModuleDir()]) {
-    let req: NodeRequire;
-    let resolved: string;
-    try {
-      req = createRequire(path.join(root, 'noop.js'));
-      resolved = req.resolve('typescript');
-    } catch {
-      continue;
-    }
-    if (tsByResolvedPath.has(resolved)) {
-      const cached = tsByResolvedPath.get(resolved);
-      if (cached) return cached;
-      continue;
-    }
-    let mod: TypeScriptModule | null = null;
-    try {
-      let version = '';
-      try {
-        const pkg = JSON.parse(readFileSync(path.join(path.dirname(resolved), '..', 'package.json'), 'utf8'));
-        if (pkg?.name === 'typescript' && typeof pkg.version === 'string') version = pkg.version;
-      } catch { /* unknown version: load it */ }
-      const loaded = version ? tsByVersion.get(version) : undefined;
-      const candidate = loaded ?? req(resolved);
-      if (usableTypeScript(candidate)) {
-        mod = candidate;
-        if (version) tsByVersion.set(version, candidate);
-      }
-    } catch {
-      mod = null;
-    }
-    tsByResolvedPath.set(resolved, mod);
-    if (mod) return mod;
+export function loadAppTypeScript(): TypeScriptModule | null {
+  if (appTypeScript !== undefined) return appTypeScript;
+  let mod: TypeScriptModule | null = null;
+  try {
+    const candidate = createRequire(path.join(appModuleDir(), 'noop.js'))('typescript');
+    if (usableTypeScript(candidate)) mod = candidate;
+  } catch {
+    mod = null;
   }
-  return null;
+  appTypeScript = mod;
+  return mod;
 }
 
 /** A syntax error TypeScript's parser reported: 1-based line and column. */
@@ -203,7 +181,9 @@ export function typeScriptSyntaxErrors(ts: TypeScriptModule, fileName: string, c
     : ext === 'jsx' ? ts.ScriptKind.JSX
     : ext === 'js' || ext === 'mjs' || ext === 'cjs' ? ts.ScriptKind.JS
     : ts.ScriptKind.TS;
-  const sf = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, false, kind);
+  // tsc reads files through sys.readFile, which drops a leading BOM; do the same so '\uFEFF#!' parses.
+  const text = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, false, kind);
   const diags: import('typescript').Diagnostic[] = (sf as any).parseDiagnostics ?? [];
   return diags.map((d) => {
     const pos = sf.getLineAndCharacterOfPosition(d.start ?? 0);
@@ -229,12 +209,11 @@ export interface GateParseFailure {
 export async function checkTypeScriptLikeFile(opts: {
   rel: string;
   content: string;
-  searchRoots: string[];
   readHead: () => Promise<string | null>;
-  loadTypeScript?: (searchRoots: string[]) => TypeScriptModule | null;
+  loadTypeScript?: () => TypeScriptModule | null;
 }): Promise<GateParseFailure | null> {
   const { rel, content } = opts;
-  const ts = (opts.loadTypeScript ?? loadTypeScriptFor)(opts.searchRoots);
+  const ts = (opts.loadTypeScript ?? loadAppTypeScript)();
   if (ts) {
     const errors = typeScriptSyntaxErrors(ts, rel, content);
     if (errors.length === 0) return null;

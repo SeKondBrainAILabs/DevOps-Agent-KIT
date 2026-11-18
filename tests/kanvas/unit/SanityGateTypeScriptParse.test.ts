@@ -10,11 +10,15 @@
  * The gate now parses those files with TypeScript (syntax only) and refuses only on real syntax
  * errors. The scanner is the fallback when no TypeScript loads, and then refuses a file only when
  * the HEAD version passes the scanner.
+ *
+ * The compiler is the app's own (a runtime dependency), never one resolved from the worktree:
+ * the sandboxed coding engine can write the worktree's node_modules, and a planted typescript
+ * package would run in the DevOps Agent's process on the host and decide the gate's verdict.
  */
 
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { execFileSync, execFile } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -42,7 +46,7 @@ jest.mock('../../../electron/services/McpServerService', () => ({}));
 
 import {
   checkTypeScriptLikeFile,
-  loadTypeScriptFor,
+  loadAppTypeScript,
   structuralSanityCheck,
   typeScriptSyntaxErrors,
 } from '../../../electron/services/file-parse-check';
@@ -50,8 +54,6 @@ import { GitService } from '../../../electron/services/GitService';
 import { McpSessionBinder } from '../../../electron/services/mcp/session-binder';
 
 const { registerTools } = require('../../../electron/services/mcp/tools');
-
-const REPO_ROOT = process.cwd();
 
 // Valid TSX the scanner refuses: an apostrophe in JSX text opens a "string" that never closes.
 const JSX_APOSTROPHE = `export function Empty() {
@@ -115,19 +117,14 @@ function git(cwd: string, ...args: string[]) {
 const noHead = async () => null;
 
 describe('TypeScript loading', () => {
-  it('loads a usable TypeScript from a repository that has one', () => {
-    const ts = loadTypeScriptFor([REPO_ROOT]);
+  it('loads the app\'s own TypeScript', () => {
+    const ts = loadAppTypeScript();
     expect(ts).not.toBeNull();
     expect(typeof ts!.createSourceFile).toBe('function');
   });
 
-  it('falls back to the app\'s own TypeScript when the worktree has none', () => {
-    const bare = mkdtempSync(join(tmpdir(), 'kit-no-ts-'));
-    try {
-      expect(loadTypeScriptFor([bare])).not.toBeNull();
-    } finally {
-      rmSync(bare, { recursive: true, force: true });
-    }
+  it('loads it once', () => {
+    expect(loadAppTypeScript()).toBe(loadAppTypeScript());
   });
 });
 
@@ -148,11 +145,11 @@ describe('checkTypeScriptLikeFile with TypeScript', () => {
     ['valid TS with a regex literal holding a quote', 'src/strip.ts', REGEX_QUOTE],
     ['valid JSX with an apostrophe in JSX text', 'src/Empty.jsx', JSX_APOSTROPHE],
   ])('passes %s', async (_label, rel, src) => {
-    await expect(checkTypeScriptLikeFile({ rel, content: src, searchRoots: [REPO_ROOT], readHead: noHead })).resolves.toBeNull();
+    await expect(checkTypeScriptLikeFile({ rel, content: src, readHead: noHead })).resolves.toBeNull();
   });
 
   it('refuses an unterminated string with the file, line and TypeScript message', async () => {
-    const failure = await checkTypeScriptLikeFile({ rel: 'src/f.ts', content: UNTERMINATED_STRING, searchRoots: [REPO_ROOT], readHead: noHead });
+    const failure = await checkTypeScriptLikeFile({ rel: 'src/f.ts', content: UNTERMINATED_STRING, readHead: noHead });
     expect(failure).not.toBeNull();
     expect(failure!.file).toBe('src/f.ts');
     expect(failure!.line).toBe(2);
@@ -160,25 +157,35 @@ describe('checkTypeScriptLikeFile with TypeScript', () => {
   });
 
   it('refuses an unclosed JSX tag', async () => {
-    const failure = await checkTypeScriptLikeFile({ rel: 'src/Broken.tsx', content: UNCLOSED_JSX, searchRoots: [REPO_ROOT], readHead: noHead });
+    const failure = await checkTypeScriptLikeFile({ rel: 'src/Broken.tsx', content: UNCLOSED_JSX, readHead: noHead });
     expect(failure).not.toBeNull();
     expect(failure!.error).toMatch(/JSX element 'span' has no corresponding closing tag/);
   });
 
   it('refuses conflict markers', async () => {
-    const failure = await checkTypeScriptLikeFile({ rel: 'src/a.ts', content: CONFLICT_MARKERS, searchRoots: [REPO_ROOT], readHead: noHead });
+    const failure = await checkTypeScriptLikeFile({ rel: 'src/a.ts', content: CONFLICT_MARKERS, readHead: noHead });
     expect(failure).not.toBeNull();
     expect(failure!.line).toBe(2);
     expect(failure!.error).toMatch(/Merge conflict marker encountered/);
   });
 
+  it('parses a .ts file as TS, not TSX: a <T>x type assertion is valid there', async () => {
+    const src = 'const u: unknown = 1;\nexport const n = <number>u;\n';
+    await expect(checkTypeScriptLikeFile({ rel: 'src/cast.ts', content: src, readHead: noHead })).resolves.toBeNull();
+  });
+
+  it('passes a file that starts with a BOM and a shebang, as tsc does', async () => {
+    const src = '\uFEFF#!/usr/bin/env node\nexport const a = 1;\n';
+    await expect(checkTypeScriptLikeFile({ rel: 'bin/cli.ts', content: src, readHead: noHead })).resolves.toBeNull();
+  });
+
   it('does not type-check: a type error is not a syntax error', async () => {
     const src = 'const n: number = "not a number";\nundefinedFn(n);\n';
-    await expect(checkTypeScriptLikeFile({ rel: 'src/t.ts', content: src, searchRoots: [REPO_ROOT], readHead: noHead })).resolves.toBeNull();
+    await expect(checkTypeScriptLikeFile({ rel: 'src/t.ts', content: src, readHead: noHead })).resolves.toBeNull();
   });
 
   it('reports line and column from the parser', () => {
-    const ts = loadTypeScriptFor([REPO_ROOT])!;
+    const ts = loadAppTypeScript()!;
     const errors = typeScriptSyntaxErrors(ts, 'x.ts', 'let ok = 1;\nlet x = ;\n');
     expect(errors[0]).toMatchObject({ line: 2, column: 9 });
   });
@@ -190,7 +197,7 @@ describe('checkTypeScriptLikeFile when no TypeScript can be loaded (scanner fall
   it('passes a file whose scanner false positive is already on HEAD', async () => {
     const changed = JSX_APOSTROPHE.replace('nothing here yet', 'nothing here yet, still');
     const failure = await checkTypeScriptLikeFile({
-      rel: 'src/Empty.tsx', content: changed, searchRoots: [], loadTypeScript: noTs, readHead: async () => JSX_APOSTROPHE,
+      rel: 'src/Empty.tsx', content: changed, loadTypeScript: noTs, readHead: async () => JSX_APOSTROPHE,
     });
     expect(failure).toBeNull();
   });
@@ -198,14 +205,14 @@ describe('checkTypeScriptLikeFile when no TypeScript can be loaded (scanner fall
   it('refuses a file the scanner fails on when HEAD passes', async () => {
     const head = 'export function f(): string {\n  return "ok";\n}\n';
     const failure = await checkTypeScriptLikeFile({
-      rel: 'src/f.ts', content: UNTERMINATED_STRING, searchRoots: [], loadTypeScript: noTs, readHead: async () => head,
+      rel: 'src/f.ts', content: UNTERMINATED_STRING, loadTypeScript: noTs, readHead: async () => head,
     });
     expect(failure).toEqual({ file: 'src/f.ts', error: expect.stringMatching(/^structural: unterminated double-quoted string/) });
   });
 
   it('refuses a new file (no HEAD version) the scanner fails on', async () => {
     const failure = await checkTypeScriptLikeFile({
-      rel: 'src/new.ts', content: UNTERMINATED_STRING, searchRoots: [], loadTypeScript: noTs, readHead: noHead,
+      rel: 'src/new.ts', content: UNTERMINATED_STRING, loadTypeScript: noTs, readHead: noHead,
     });
     expect(failure?.error).toMatch(/^structural: /);
   });
@@ -213,7 +220,7 @@ describe('checkTypeScriptLikeFile when no TypeScript can be loaded (scanner fall
   it('passes a file the scanner accepts without reading HEAD', async () => {
     const readHead = jest.fn(async () => null as string | null);
     const failure = await checkTypeScriptLikeFile({
-      rel: 'src/ok.ts', content: 'export const a = [1, 2];\n', searchRoots: [], loadTypeScript: noTs, readHead,
+      rel: 'src/ok.ts', content: 'export const a = [1, 2];\n', loadTypeScript: noTs, readHead,
     });
     expect(failure).toBeNull();
     expect(readHead).not.toHaveBeenCalled();
@@ -268,6 +275,26 @@ describe('kit_commit sanity gate on TS/TSX (real git, real GitService)', () => {
     expect(out.details.parseFailures).toEqual([
       { file: 'src/Broken.tsx', line: expect.any(Number), error: expect.stringMatching(/^TypeScript syntax error: line \d+/) },
     ]);
+    expect(git(repo, 'log', '--format=%s')).toBe('base');
+  });
+
+  it('never loads a typescript package planted in the worktree\'s node_modules', async () => {
+    const marker = join(repo, 'loaded.txt');
+    const planted = join(repo, 'node_modules', 'typescript');
+    mkdirSync(join(planted, 'lib'), { recursive: true });
+    writeFileSync(join(planted, 'package.json'), JSON.stringify({ name: 'typescript', version: '0.0.0-planted', main: './lib/typescript.js' }));
+    // Accepts everything: if the gate loaded it, the broken file below would be committed.
+    writeFileSync(join(planted, 'lib', 'typescript.js'), `
+      require('fs').writeFileSync(${JSON.stringify(marker)}, 'loaded');
+      const real = require(${JSON.stringify(require.resolve('typescript'))});
+      module.exports = { ...real, createSourceFile: (...a) => Object.assign(real.createSourceFile(...a), { parseDiagnostics: [] }) };
+    `);
+    writeFileSync(join(repo, '.gitignore'), '.S9N_KIT_DevOpsAgent/\nnode_modules/\nloaded.txt\n');
+    writeFileSync(join(repo, 'src', 'f.ts'), UNTERMINATED_STRING);
+    const out = await commit('feat: broken with a planted compiler');
+    expect(out.error).toBe('Commit refused by sanity gate');
+    expect(out.details.parseFailures[0]).toMatchObject({ file: 'src/f.ts', error: expect.stringMatching(/^TypeScript syntax error: /) });
+    expect(existsSync(marker)).toBe(false);
     expect(git(repo, 'log', '--format=%s')).toBe('base');
   });
 });
