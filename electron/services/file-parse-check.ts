@@ -8,13 +8,20 @@
  *   .js / .mjs / .cjs node --check
  *   .json             JSON.parse (checkContentParses only)
  *
- * structuralSanityCheck is NOT a parser: the commit gate runs it on TS/TSX/JSX
- * because no TypeScript parser ships with the app. It mis-reads regex
- * literals, so checkContentParses does not use it.
+ * TS/TSX/JSX in the commit gate (checkTypeScriptLikeFile): parsed, syntax
+ * only, with the TypeScript compiler of the repository being committed (or the
+ * app's own when the repository has none). No type check.
+ *
+ * structuralSanityCheck is NOT a parser: it mis-reads regex literals, JSX text
+ * apostrophes and multi-line JSX attributes. The commit gate uses it only when
+ * no TypeScript can be loaded, and then refuses a file only when the scanner
+ * passes on the HEAD version, so a pre-existing false positive never blocks a
+ * commit. checkContentParses does not use it.
  */
 
 import { execFile } from 'child_process';
-import { promises as fs } from 'fs';
+import { promises as fs, readFileSync } from 'fs';
+import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import path from 'path';
 import { promisify } from 'util';
@@ -26,7 +33,9 @@ const execFileAsync = promisify(execFile);
  * it does not know Python's triple-quoted strings, `#` comments or JS regex literals, so on a
  * file a real parser has already accepted it only adds false refusals (2026-10-13: every
  * Python file opening with a multi-line docstring was refused as "unterminated double-quoted
- * string near line 1"). It runs where there is no real parser — TS, TSX, JSX.
+ * string near line 1"). It applies where there is no parser command — TS, TSX, JSX — and there
+ * the gate parses with TypeScript first (checkTypeScriptLikeFile), keeping the scanner as the
+ * fallback when no TypeScript can be loaded.
  */
 export function structuralCheckApplies(ext: string, parsedByRealParser: boolean): boolean {
   if (parsedByRealParser) return false;
@@ -111,6 +120,142 @@ export function structuralSanityCheck(content: string): string | null {
   if (depthParen !== 0) return `unbalanced parens (${depthParen > 0 ? '+' : ''}${depthParen}) at EOF — file may be truncated`;
   if (depthBracket !== 0) return `unbalanced brackets (${depthBracket > 0 ? '+' : ''}${depthBracket}) at EOF — file may be truncated`;
   return null;
+}
+
+type TypeScriptModule = typeof import('typescript');
+
+/** Loaded TypeScript compilers keyed by version, and resolution results keyed by resolved path. */
+const tsByVersion = new Map<string, TypeScriptModule>();
+const tsByResolvedPath = new Map<string, TypeScriptModule | null>();
+
+/** Where the app's own modules resolve from (the dev checkout; a packaged app ships no typescript). */
+function appModuleDir(): string {
+  return typeof __dirname === 'string' ? __dirname : process.cwd();
+}
+
+/** A compiler whose syntax-only parse reports diagnostics the way this gate reads them. */
+function usableTypeScript(ts: any): ts is TypeScriptModule {
+  if (!ts || typeof ts.createSourceFile !== 'function' || !ts.ScriptKind || !ts.ScriptTarget) return false;
+  try {
+    const probe: any = ts.createSourceFile('probe.ts', 'let x = ;', ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+    return Array.isArray(probe.parseDiagnostics) && probe.parseDiagnostics.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The TypeScript compiler for a commit: resolved from each of `searchRoots` in
+ * turn (the worktree being committed, then its repository), then from the app
+ * itself. Null when none can be loaded or the one found cannot be used.
+ */
+export function loadTypeScriptFor(searchRoots: string[]): TypeScriptModule | null {
+  for (const root of [...searchRoots.filter(Boolean), appModuleDir()]) {
+    let req: NodeRequire;
+    let resolved: string;
+    try {
+      req = createRequire(path.join(root, 'noop.js'));
+      resolved = req.resolve('typescript');
+    } catch {
+      continue;
+    }
+    if (tsByResolvedPath.has(resolved)) {
+      const cached = tsByResolvedPath.get(resolved);
+      if (cached) return cached;
+      continue;
+    }
+    let mod: TypeScriptModule | null = null;
+    try {
+      let version = '';
+      try {
+        const pkg = JSON.parse(readFileSync(path.join(path.dirname(resolved), '..', 'package.json'), 'utf8'));
+        if (pkg?.name === 'typescript' && typeof pkg.version === 'string') version = pkg.version;
+      } catch { /* unknown version: load it */ }
+      const loaded = version ? tsByVersion.get(version) : undefined;
+      const candidate = loaded ?? req(resolved);
+      if (usableTypeScript(candidate)) {
+        mod = candidate;
+        if (version) tsByVersion.set(version, candidate);
+      }
+    } catch {
+      mod = null;
+    }
+    tsByResolvedPath.set(resolved, mod);
+    if (mod) return mod;
+  }
+  return null;
+}
+
+/** A syntax error TypeScript's parser reported: 1-based line and column. */
+export interface TypeScriptSyntaxError {
+  line: number;
+  column: number;
+  message: string;
+}
+
+/**
+ * Syntax errors in `content` as the file `fileName`, from TypeScript's parser
+ * alone (parseDiagnostics; no binding, no type check).
+ */
+export function typeScriptSyntaxErrors(ts: TypeScriptModule, fileName: string, content: string): TypeScriptSyntaxError[] {
+  const ext = path.extname(fileName).slice(1).toLowerCase();
+  const kind = ext === 'tsx' ? ts.ScriptKind.TSX
+    : ext === 'jsx' ? ts.ScriptKind.JSX
+    : ext === 'js' || ext === 'mjs' || ext === 'cjs' ? ts.ScriptKind.JS
+    : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, false, kind);
+  const diags: import('typescript').Diagnostic[] = (sf as any).parseDiagnostics ?? [];
+  return diags.map((d) => {
+    const pos = sf.getLineAndCharacterOfPosition(d.start ?? 0);
+    return { line: pos.line + 1, column: pos.character + 1, message: ts.flattenDiagnosticMessageText(d.messageText, ' ') };
+  });
+}
+
+/** A file the commit gate refuses to commit. */
+export interface GateParseFailure {
+  file: string;
+  error: string;
+  /** First line at fault, when the parser reported one. */
+  line?: number;
+}
+
+/**
+ * The commit gate's check for a TS/TSX/JSX file. Parses with TypeScript
+ * (syntax only) and refuses only on a real syntax error. When no TypeScript
+ * can be loaded it falls back to structuralSanityCheck, and refuses only when
+ * the scanner fails on `content` but passes on the HEAD version (`readHead`
+ * returns null for a file new at HEAD, which is then refused as before).
+ */
+export async function checkTypeScriptLikeFile(opts: {
+  rel: string;
+  content: string;
+  searchRoots: string[];
+  readHead: () => Promise<string | null>;
+  loadTypeScript?: (searchRoots: string[]) => TypeScriptModule | null;
+}): Promise<GateParseFailure | null> {
+  const { rel, content } = opts;
+  const ts = (opts.loadTypeScript ?? loadTypeScriptFor)(opts.searchRoots);
+  if (ts) {
+    const errors = typeScriptSyntaxErrors(ts, rel, content);
+    if (errors.length === 0) return null;
+    const shown = errors.slice(0, 3).map((e) => `line ${e.line}, column ${e.column}: ${e.message}`);
+    const more = errors.length > 3 ? ` (+${errors.length - 3} more)` : '';
+    return { file: rel, line: errors[0].line, error: `TypeScript syntax error: ${shown.join('; ')}${more}` };
+  }
+
+  const problem = structuralSanityCheck(content);
+  if (!problem) return null;
+  let head: string | null = null;
+  try {
+    head = await opts.readHead();
+  } catch {
+    head = null;
+  }
+  if (head !== null && structuralSanityCheck(head) !== null) {
+    console.warn(`[file-parse-check] ${rel}: structural check fails on HEAD too (${problem}); not refusing — no TypeScript to parse it`);
+    return null;
+  }
+  return { file: rel, error: `structural: ${problem}` };
 }
 
 /** A parser invocation: the binary, its arguments, and extra environment. */
