@@ -4,7 +4,8 @@
  * (MergeConflictService).
  *
  * Real parsers (parserCommandFor / checkContentParses):
- *   .py               python3 -c "import ast; ast.parse(...)"
+ *   .py               python3 -I -c "import ast; ast.parse(...)", run from the
+ *                     system temp directory, never the worktree (see parserCommandFor)
  *   .js / .mjs / .cjs node --check
  *   .json             JSON.parse (checkContentParses only)
  *
@@ -129,9 +130,30 @@ type TypeScriptModule = typeof import('typescript');
 /** The app's TypeScript compiler once resolved (null: none usable). */
 let appTypeScript: TypeScriptModule | null | undefined;
 
-/** Where the app's own modules resolve from (dist/electron in the packaged app, electron/services in a checkout). */
-function appModuleDir(): string {
-  return typeof __dirname === 'string' ? __dirname : process.cwd();
+/** This module's directory as the bundler or runtime gave it (electron-vite sets it from import.meta.dirname). */
+const MODULE_DIRNAME: unknown = typeof __dirname === 'string' ? __dirname : undefined;
+
+/** The directory appModuleDir reports; resetAppTypeScriptForTests can replace it. */
+let moduleDirname: unknown = MODULE_DIRNAME;
+
+/**
+ * Where the app's own modules resolve from (dist/electron in the packaged app,
+ * electron/services in a checkout). Null when it cannot be determined: never
+ * the process's working directory, which can be a worktree whose node_modules
+ * the coding engine writes. Null makes TypeScript unavailable (scanner fallback).
+ */
+export function appModuleDir(): string | null {
+  return typeof moduleDirname === 'string' && path.isAbsolute(moduleDirname) ? moduleDirname : null;
+}
+
+/**
+ * Test only: forget the loaded TypeScript, and optionally set the directory
+ * appModuleDir reports (`moduleDirname`, which may be undefined to simulate a
+ * runtime that gives none). Without options it restores the real directory.
+ */
+export function resetAppTypeScriptForTests(opts?: { moduleDirname?: unknown }): void {
+  appTypeScript = undefined;
+  moduleDirname = opts && 'moduleDirname' in opts ? opts.moduleDirname : MODULE_DIRNAME;
 }
 
 /** A compiler whose syntax-only parse reports diagnostics the way this gate reads them. */
@@ -153,9 +175,14 @@ function usableTypeScript(ts: any): ts is TypeScriptModule {
  */
 export function loadAppTypeScript(): TypeScriptModule | null {
   if (appTypeScript !== undefined) return appTypeScript;
+  const dir = appModuleDir();
+  if (dir === null) {
+    appTypeScript = null;
+    return null;
+  }
   let mod: TypeScriptModule | null = null;
   try {
-    const candidate = createRequire(path.join(appModuleDir(), 'noop.js'))('typescript');
+    const candidate = createRequire(path.join(dir, 'noop.js'))('typescript');
     if (usableTypeScript(candidate)) mod = candidate;
   } catch {
     mod = null;
@@ -173,7 +200,9 @@ export interface TypeScriptSyntaxError {
 
 /**
  * Syntax errors in `content` as the file `fileName`, from TypeScript's parser
- * alone (parseDiagnostics; no binding, no type check).
+ * alone (parseDiagnostics; no binding, no type check). Throws what the parser
+ * throws: its recursive descent overflows the stack on ~1000 nested parens or
+ * array literals (RangeError: Maximum call stack size exceeded).
  */
 export function typeScriptSyntaxErrors(ts: TypeScriptModule, fileName: string, content: string): TypeScriptSyntaxError[] {
   const ext = path.extname(fileName).slice(1).toLowerCase();
@@ -201,7 +230,8 @@ export interface GateParseFailure {
 
 /**
  * The commit gate's check for a TS/TSX/JSX file. Parses with TypeScript
- * (syntax only) and refuses only on a real syntax error. When no TypeScript
+ * (syntax only) and refuses on a real syntax error, and on a parse that throws
+ * (an unparsed file is never let through). When no TypeScript
  * can be loaded it falls back to structuralSanityCheck, and refuses only when
  * the scanner fails on `content` but passes on the HEAD version (`readHead`
  * returns null for a file new at HEAD, which is then refused as before).
@@ -215,7 +245,12 @@ export async function checkTypeScriptLikeFile(opts: {
   const { rel, content } = opts;
   const ts = (opts.loadTypeScript ?? loadAppTypeScript)();
   if (ts) {
-    const errors = typeScriptSyntaxErrors(ts, rel, content);
+    let errors: TypeScriptSyntaxError[];
+    try {
+      errors = typeScriptSyntaxErrors(ts, rel, content);
+    } catch (err) {
+      return { file: rel, error: `TypeScript parser failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
     if (errors.length === 0) return null;
     const shown = errors.slice(0, 3).map((e) => `line ${e.line}, column ${e.column}: ${e.message}`);
     const more = errors.length > 3 ? ` (+${errors.length - 3} more)` : '';
@@ -237,11 +272,13 @@ export async function checkTypeScriptLikeFile(opts: {
   return { file: rel, error: `structural: ${problem}` };
 }
 
-/** A parser invocation: the binary, its arguments, and extra environment. */
+/** A parser invocation: the binary, its arguments, extra environment, and the directory to run it in. */
 export interface ParserCommand {
   bin: string;
   args: string[];
   env?: Record<string, string>;
+  /** Working directory; when absent the caller chooses. */
+  cwd?: string;
 }
 
 /**
@@ -250,11 +287,22 @@ export interface ParserCommand {
  * (process.execPath): a packaged Electron app has no `node` on PATH, and
  * ELECTRON_RUN_AS_NODE=1 makes the Electron binary behave as node (plain
  * node ignores it).
+ *
+ * Python runs isolated (-I: no current directory or script directory on
+ * sys.path, no PYTHON* variables, no user site-packages) from the system temp
+ * directory, with the file as an argument: run from the worktree, `import ast`
+ * would load an ast.py the coding engine planted there, which runs on the host
+ * and decides the verdict. The file is read as bytes so ast.parse honours its
+ * encoding declaration (-I ignores PYTHONUTF8).
  */
 export function parserCommandFor(ext: string, absPath: string): ParserCommand | null {
   const e = ext.toLowerCase();
   if (e === 'py') {
-    return { bin: 'python3', args: ['-c', `import ast,sys\nast.parse(open(sys.argv[1]).read())`, absPath] };
+    return {
+      bin: 'python3',
+      args: ['-I', '-c', `import ast,sys\nast.parse(open(sys.argv[1], 'rb').read())`, path.resolve(absPath)],
+      cwd: tmpdir(),
+    };
   }
   if (e === 'js' || e === 'mjs' || e === 'cjs') {
     return { bin: process.execPath, args: ['--check', absPath], env: { ELECTRON_RUN_AS_NODE: '1' } };
@@ -304,7 +352,7 @@ export async function checkContentParses(relPath: string, content: string): Prom
     await fs.writeFile(abs, content, 'utf-8');
     const cmd = parserCommandFor(ext, abs)!;
     try {
-      await execFileAsync(cmd.bin, cmd.args, { timeout: 10_000, env: { ...process.env, ...cmd.env } });
+      await execFileAsync(cmd.bin, cmd.args, { cwd: cmd.cwd, timeout: 10_000, env: { ...process.env, ...cmd.env } });
       return { problem: null };
     } catch (err) {
       const e = err as { code?: unknown; stderr?: unknown; message?: string };

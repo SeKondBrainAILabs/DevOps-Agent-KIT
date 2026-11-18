@@ -235,7 +235,8 @@ export function registerTools(
               : typeof mod.default === 'function' ? mod.default
               : mod.default?.execa;
           }
-          await _execa!(cmd.bin, cmd.args, { cwd: worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
+          // cmd.cwd: Python runs from the temp directory, never the worktree (parserCommandFor).
+          await _execa!(cmd.bin, cmd.args, { cwd: cmd.cwd ?? worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
         } catch (err: any) {
           const stderr = (err?.stderr || err?.message || '').toString();
           parseFailures.push({ file: rel, error: stderr.split('\n').slice(0, 4).join('\n') });
@@ -249,9 +250,13 @@ export function registerTools(
       // breakage HEAD does not already have. On Py/JS the parser above has
       // decided; truncation is the shrink check's job.
       if (!structuralCheckApplies(ext, cmd !== null)) continue;
+      let content: string;
       try {
         const fs = await import('fs/promises');
-        const content = await fs.readFile(abs, 'utf8');
+        content = await fs.readFile(abs, 'utf8');
+      } catch { continue; /* best-effort: unreadable now, git reports it */ }
+      // Not best-effort: a check that throws refuses the file rather than letting it through unparsed.
+      try {
         const failure = await checkTypeScriptLikeFile({
           rel,
           content,
@@ -264,7 +269,9 @@ export function registerTools(
           },
         });
         if (failure) parseFailures.push(failure);
-      } catch { /* best-effort */ }
+      } catch (err) {
+        parseFailures.push({ file: rel, error: `TypeScript parser failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
     }
 
     if (parseFailures.length > 0) {

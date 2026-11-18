@@ -3,11 +3,12 @@
  * run from a packaged app that ships none): the structural scanner decides, but a scanner false
  * positive the file already has on HEAD must not block the commit. `module.createRequire` is
  * mocked to fail so no TypeScript resolves; see SanityGateTypeScriptParse.test.ts for the parse.
+ * With no app TypeScript the fallback must not go looking for one in the worktree either.
  */
 
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { execFileSync, execFile } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -112,6 +113,39 @@ describe('kit_commit sanity gate without TypeScript (scanner fallback)', () => {
     const out = await commit('feat: truncate');
     expect(out.error).toBe('Commit refused by sanity gate');
     expect(out.details.parseFailures).toEqual([{ file: 'src/ok.ts', error: expect.stringMatching(/^structural: /) }]);
+    expect(git(repo, 'log', '--format=%s')).toBe('base');
+  });
+
+  it('never loads a typescript package planted in the worktree, from it or as the working directory', async () => {
+    const marker = join(repo, 'loaded.txt');
+    const planted = join(repo, 'node_modules', 'typescript');
+    mkdirSync(join(planted, 'lib'), { recursive: true });
+    writeFileSync(join(planted, 'package.json'), JSON.stringify({ name: 'typescript', version: '0.0.0-planted', main: './lib/typescript.js' }));
+    // Accepts everything (passes the gate's probe, no error on any other file).
+    writeFileSync(join(planted, 'lib', 'typescript.js'), `
+      require('fs').writeFileSync(${JSON.stringify(marker)}, 'loaded');
+      const real = require(${JSON.stringify(require.resolve('typescript'))});
+      module.exports = {
+        ...real,
+        createSourceFile: (name, ...a) => {
+          const sf = real.createSourceFile(name, ...a);
+          return name === 'probe.ts' ? sf : Object.assign(sf, { parseDiagnostics: [] });
+        },
+      };
+    `);
+    writeFileSync(join(repo, '.gitignore'), '.S9N_KIT_DevOpsAgent/\nnode_modules/\nloaded.txt\n');
+    writeFileSync(join(repo, 'src', 'ok.ts'), 'export const a = [1, 2;\n');
+    const realCwd = process.cwd();
+    process.chdir(repo);
+    let out: any;
+    try {
+      out = await commit('feat: truncate with a planted compiler');
+    } finally {
+      process.chdir(realCwd);
+    }
+    expect(out.error).toBe('Commit refused by sanity gate');
+    expect(out.details.parseFailures).toEqual([{ file: 'src/ok.ts', error: expect.stringMatching(/^structural: /) }]);
+    expect(existsSync(marker)).toBe(false);
     expect(git(repo, 'log', '--format=%s')).toBe('base');
   });
 

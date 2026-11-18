@@ -14,6 +14,12 @@
  * The compiler is the app's own (a runtime dependency), never one resolved from the worktree:
  * the sandboxed coding engine can write the worktree's node_modules, and a planted typescript
  * package would run in the DevOps Agent's process on the host and decide the gate's verdict.
+ * Nor from the process's working directory when the app's module directory is unknown: then no
+ * TypeScript loads and the scanner decides.
+ *
+ * A parse that throws (TypeScript's recursive descent overflows the stack on ~1000 nested parens
+ * or array literals) refuses the file; it used to escape to the gate's best-effort catch, which
+ * let the file through unparsed.
  */
 
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
@@ -44,9 +50,12 @@ jest.mock('zod', () => ({ z: zodChain() }));
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({}));
 jest.mock('../../../electron/services/McpServerService', () => ({}));
 
+import * as parseCheck from '../../../electron/services/file-parse-check';
 import {
+  appModuleDir,
   checkTypeScriptLikeFile,
   loadAppTypeScript,
+  resetAppTypeScriptForTests,
   structuralSanityCheck,
   typeScriptSyntaxErrors,
 } from '../../../electron/services/file-parse-check';
@@ -110,6 +119,31 @@ export const b = 3;
 >>>>>>> feature
 `;
 
+// Valid TS nested deeper than TypeScript's parser can recurse; the scanner accepts it (balanced).
+const DEEP_NESTING = `export const deep = ${'['.repeat(20_000)}${']'.repeat(20_000)};\n`;
+
+/**
+ * A typescript package an attacker plants: records that it was loaded in `marker`, then passes the
+ * gate's probe but reports no syntax error on any other file.
+ */
+function plantTypeScript(root: string, marker: string): void {
+  const planted = join(root, 'node_modules', 'typescript');
+  mkdirSync(join(planted, 'lib'), { recursive: true });
+  writeFileSync(join(planted, 'package.json'), JSON.stringify({ name: 'typescript', version: '0.0.0-planted', main: './lib/typescript.js' }));
+  writeFileSync(join(planted, 'lib', 'typescript.js'), `
+    require('fs').writeFileSync(${JSON.stringify(marker)}, 'loaded');
+    const real = require(${JSON.stringify(require.resolve('typescript'))});
+    module.exports = {
+      ...real,
+      version: '0.0.0-planted',
+      createSourceFile: (name, ...a) => {
+        const sf = real.createSourceFile(name, ...a);
+        return name === 'probe.ts' ? sf : Object.assign(sf, { parseDiagnostics: [] });
+      },
+    };
+  `);
+}
+
 function git(cwd: string, ...args: string[]) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
@@ -125,6 +159,76 @@ describe('TypeScript loading', () => {
 
   it('loads it once', () => {
     expect(loadAppTypeScript()).toBe(loadAppTypeScript());
+  });
+});
+
+describe('TypeScript loading never falls back to the working directory', () => {
+  const realCwd = process.cwd();
+  let dir: string;
+  let marker: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'kit-tsparse-cwd-'));
+    marker = join(dir, 'loaded.txt');
+    plantTypeScript(dir, marker);
+    process.chdir(dir);
+  });
+
+  afterEach(() => {
+    process.chdir(realCwd);
+    resetAppTypeScriptForTests();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('loads the app\'s TypeScript, not one planted in the working directory', () => {
+    resetAppTypeScriptForTests();
+    const ts = loadAppTypeScript();
+    expect(ts).not.toBeNull();
+    expect(ts!.version).toBe(require('typescript').version);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('loads no TypeScript when the app\'s module directory is unknown (scanner fallback)', async () => {
+    resetAppTypeScriptForTests({ moduleDirname: undefined });
+    expect(loadAppTypeScript()).toBeNull();
+    expect(existsSync(marker)).toBe(false);
+    const failure = await checkTypeScriptLikeFile({ rel: 'src/f.ts', content: UNTERMINATED_STRING, readHead: noHead });
+    expect(failure?.error).toMatch(/^structural: /);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('reports no module directory for a missing or relative one', () => {
+    resetAppTypeScriptForTests({ moduleDirname: undefined });
+    expect(appModuleDir()).toBeNull();
+    resetAppTypeScriptForTests({ moduleDirname: 'electron/services' });
+    expect(appModuleDir()).toBeNull();
+    resetAppTypeScriptForTests({ moduleDirname: dir });
+    expect(appModuleDir()).toBe(dir);
+  });
+});
+
+describe('a TypeScript parse that throws refuses the file', () => {
+  it('refuses a file nested deeper than the parser can recurse', async () => {
+    const failure = await checkTypeScriptLikeFile({ rel: 'src/deep.ts', content: DEEP_NESTING, readHead: noHead });
+    expect(failure).toEqual({ file: 'src/deep.ts', error: 'TypeScript parser failed: Maximum call stack size exceeded' });
+  });
+
+  it('refuses with the parser\'s message, never falling back to accepting', async () => {
+    const real = loadAppTypeScript()!;
+    const throwing = { ...real, createSourceFile: () => { throw new RangeError('Maximum call stack size exceeded'); } } as any;
+    const readHead = jest.fn(async () => null as string | null);
+    const failure = await checkTypeScriptLikeFile({
+      rel: 'src/ok.ts', content: 'export const a = 1;\n', loadTypeScript: () => throwing, readHead,
+    });
+    expect(failure).toEqual({ file: 'src/ok.ts', error: 'TypeScript parser failed: Maximum call stack size exceeded' });
+    expect(readHead).not.toHaveBeenCalled();
+  });
+
+  it('still parses the next file after a parse that threw', async () => {
+    await checkTypeScriptLikeFile({ rel: 'src/deep.ts', content: DEEP_NESTING, readHead: noHead });
+    await expect(checkTypeScriptLikeFile({ rel: 'src/Empty.tsx', content: JSX_APOSTROPHE, readHead: noHead })).resolves.toBeNull();
+    const failure = await checkTypeScriptLikeFile({ rel: 'src/f.ts', content: UNTERMINATED_STRING, readHead: noHead });
+    expect(failure?.error).toMatch(/^TypeScript syntax error: line 2/);
   });
 });
 
@@ -278,17 +382,32 @@ describe('kit_commit sanity gate on TS/TSX (real git, real GitService)', () => {
     expect(git(repo, 'log', '--format=%s')).toBe('base');
   });
 
+  it('refuses a file the parser throws on (deep nesting) instead of committing it unparsed', async () => {
+    writeFileSync(join(repo, 'src', 'deep.ts'), DEEP_NESTING);
+    expect(structuralSanityCheck(DEEP_NESTING)).toBeNull();
+    const out = await commit('feat: deep nesting');
+    expect(out.error).toBe('Commit refused by sanity gate');
+    expect(out.details.parseFailures).toEqual([
+      { file: 'src/deep.ts', error: 'TypeScript parser failed: Maximum call stack size exceeded' },
+    ]);
+    expect(git(repo, 'log', '--format=%s')).toBe('base');
+  });
+
+  it('refuses the file when the TypeScript check itself throws (no best-effort pass)', async () => {
+    jest.spyOn(parseCheck, 'checkTypeScriptLikeFile').mockRejectedValue(new RangeError('Maximum call stack size exceeded'));
+    writeFileSync(join(repo, 'src', 'ok.ts'), 'export const a = 1;\n');
+    const out = await commit('feat: check throws');
+    expect(out.error).toBe('Commit refused by sanity gate');
+    expect(out.details.parseFailures).toEqual([
+      { file: 'src/ok.ts', error: 'TypeScript parser failed: Maximum call stack size exceeded' },
+    ]);
+    expect(git(repo, 'log', '--format=%s')).toBe('base');
+  });
+
   it('never loads a typescript package planted in the worktree\'s node_modules', async () => {
     const marker = join(repo, 'loaded.txt');
-    const planted = join(repo, 'node_modules', 'typescript');
-    mkdirSync(join(planted, 'lib'), { recursive: true });
-    writeFileSync(join(planted, 'package.json'), JSON.stringify({ name: 'typescript', version: '0.0.0-planted', main: './lib/typescript.js' }));
     // Accepts everything: if the gate loaded it, the broken file below would be committed.
-    writeFileSync(join(planted, 'lib', 'typescript.js'), `
-      require('fs').writeFileSync(${JSON.stringify(marker)}, 'loaded');
-      const real = require(${JSON.stringify(require.resolve('typescript'))});
-      module.exports = { ...real, createSourceFile: (...a) => Object.assign(real.createSourceFile(...a), { parseDiagnostics: [] }) };
-    `);
+    plantTypeScript(repo, marker);
     writeFileSync(join(repo, '.gitignore'), '.S9N_KIT_DevOpsAgent/\nnode_modules/\nloaded.txt\n');
     writeFileSync(join(repo, 'src', 'f.ts'), UNTERMINATED_STRING);
     const out = await commit('feat: broken with a planted compiler');
