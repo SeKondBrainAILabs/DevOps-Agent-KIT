@@ -11,6 +11,7 @@ import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentInstance, ContractType, Contract, ActivityLogEntry, DiscoveredFeature } from '../../../shared/types';
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
 import { formatDateTime } from '../../../shared/format-datetime';
+import { getSyncDriftLevel, getColorClass } from '../../../shared/git-sync-drift';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
@@ -154,6 +155,10 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
   const [rebaseRepairBusy, setRebaseRepairBusy] = useState(false);
   const [rebaseRepairResult, setRebaseRepairResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Drift indicator — how far this session's branch is behind its base branch.
+  // `null` = not checked yet; `behind` is the commit count from the last check.
+  const [drift, setDrift] = useState<{ behind: number; ahead: number } | null>(null);
+  const [checkingDrift, setCheckingDrift] = useState(false);
   const showConflictDialog = useConflictStore((state) => state.showDialog);
 
   useEffect(() => {
@@ -257,6 +262,28 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     return () => { cancelled = true; clearInterval(interval); };
   }, [session.sessionId]);
 
+  // Check how far this session's branch is behind its base branch. Fetches
+  // origin first (inside the IPC handler) so the count is fresh. Failures are
+  // silent — the indicator simply stays on its last known value.
+  const checkDrift = async () => {
+    const repoPath = session.worktreePath || session.repoPath;
+    const baseBranch = session.baseBranch || 'main';
+    if (!repoPath || !window.api?.git?.checkRemote) return;
+    setCheckingDrift(true);
+    try {
+      const r = await window.api.git.checkRemote(repoPath, baseBranch);
+      if (r?.success && r.data) setDrift({ behind: r.data.behind, ahead: r.data.ahead });
+    } catch { /* silent — keep last known drift */ }
+    finally { setCheckingDrift(false); }
+  };
+
+  // Check drift when the session (or its base branch) changes.
+  useEffect(() => {
+    setDrift(null);
+    void checkDrift();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.sessionId, session.baseBranch]);
+
   const handlePush = async () => {
     if (pushing || unpushedCount === 0) return;
     setPushing(true);
@@ -323,6 +350,8 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
         if (rebaseResult.data.success) {
           setSyncResult({ success: true, message: resultMessage });
           setTimeout(() => setSyncResult(null), 5000);
+          // Re-check drift — a successful rebase should bring us up to date.
+          void checkDrift();
         } else {
           // Route unresolved-conflict failures to the rich RebaseMergeErrorDialog so
           // the user has auto-fix-with-backup / manual-fix paths instead of a
@@ -711,6 +740,33 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                   </div>
                 </div>
               )}
+              {/* Drift indicator — how far this branch is behind its base. */}
+              {drift && (
+                <span
+                  data-testid="drift-indicator"
+                  className="drift-indicator flex items-center gap-1.5 px-2 py-1.5 text-xs text-text-secondary"
+                  title={
+                    drift.behind > 0
+                      ? `${drift.behind} commit${drift.behind === 1 ? '' : 's'} behind ${session.baseBranch || 'main'}`
+                      : `Up to date with ${session.baseBranch || 'main'}`
+                  }
+                >
+                  <span className={`w-2 h-2 rounded-full ${getColorClass(getSyncDriftLevel(drift.behind)).replace('text-', 'bg-')}`} />
+                  <span className={getColorClass(getSyncDriftLevel(drift.behind))}>
+                    {drift.behind > 0
+                      ? `${drift.behind} commit${drift.behind === 1 ? '' : 's'} behind ${session.baseBranch || 'main'}`
+                      : 'Up to date'}
+                  </span>
+                </span>
+              )}
+              <button
+                onClick={checkDrift}
+                disabled={checkingDrift}
+                className="px-2 py-1.5 rounded-full text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-colors disabled:opacity-50"
+                title="Fetch and re-check how far behind the base branch this session is"
+              >
+                {checkingDrift ? 'Checking…' : 'Check for Updates'}
+              </button>
               <button
                 onClick={handleSync}
                 disabled={syncing}
