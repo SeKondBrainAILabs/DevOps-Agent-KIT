@@ -14,6 +14,7 @@ import { formatDateTime } from '../../../shared/format-datetime';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
+import { getDriftColorFromCount } from '../../../shared/git-sync-drift';
 import { CommitsTab } from './CommitsTab';
 import { McpTab } from './McpTab';
 import { SessionCodeTab } from './coding/SessionCodeTab';
@@ -154,7 +155,36 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
   const [rebaseRepairBusy, setRebaseRepairBusy] = useState(false);
   const [rebaseRepairResult, setRebaseRepairResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Drift status data
+  const [driftData, setDriftData] = useState<{ behind: number; ahead: number } | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
   const showConflictDialog = useConflictStore((state) => state.showDialog);
+
+  // Handle checking for remote updates
+  const handleCheckUpdates = async () => {
+    if (!session?.repoPath || !session?.branchName) return;
+    
+    setIsChecking(true);
+    try {
+      const result = await window.api.git.checkRemote(session.repoPath, session.branchName);
+      if (result.success) {
+        setDriftData(result.data);
+      } else {
+        console.error('Failed to check remote changes:', result.error);
+      }
+    } catch (error) {
+      console.error('Error checking remote changes:', error);
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    // Initialize drift data when session changes
+    if (session?.repoPath && session?.branchName) {
+      handleCheckUpdates();
+    }
+  }, [session?.repoPath, session?.branchName]);
 
   useEffect(() => {
     const check = () => {
@@ -726,6 +756,48 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                     d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
                 </svg>
                 {syncing ? 'Syncing...' : 'Sync (rebase)'}
+                {driftData !== null && (
+                  <>
+                    <span className={`mx-1 w-1.5 h-1.5 rounded-full ${getDriftColorFromCount(driftData.behind)}`} />
+                    {driftData.behind === 0 ? (
+                      <span className="ml-1 text-green-500 text-xs">Up to date</span>
+                    ) : (
+                      <span className="ml-1 text-xs">
+                        {driftData.behind} {driftData.behind === 1 ? 'commit' : 'commits'} behind {session.baseBranch}
+                      </span>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCheckUpdates();
+                      }}
+                      disabled={isChecking}
+                      className={`ml-2 px-2 py-0.5 rounded text-xs font-medium transition-colors
+                        ${isChecking
+                          ? 'bg-gray-500 text-white cursor-wait'
+                          : 'bg-surface-secondary text-text-primary hover:bg-gray-200'
+                        }`}
+                    >
+                      {isChecking ? 'Checking...' : 'Check for Updates'}
+                    </button>
+                  </>
+                )}
+                {!driftData && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCheckUpdates();
+                    }}
+                    disabled={isChecking}
+                    className={`ml-2 px-2 py-0.5 rounded text-xs font-medium transition-colors
+                      ${isChecking
+                        ? 'bg-gray-500 text-white cursor-wait'
+                        : 'bg-surface-secondary text-text-primary hover:bg-gray-200'
+                      }`}
+                  >
+                    {isChecking ? 'Checking...' : 'Check for Updates'}
+                  </button>
+                )}
               </button>
               {/* v2.7.2 / 2.7.3 — Push button always visible so the feature
                   is discoverable. Disabled when count is 0 (nothing to push).
