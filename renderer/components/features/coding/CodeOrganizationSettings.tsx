@@ -3,12 +3,14 @@
  * Displays and allows editing of a repository's code organization preference
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 
 interface OrganizationConfig {
   enabled: boolean;
-  structure: 'feature-folders' | 'flat';
+  structure: 'feature-folders' | 'flat' | 'custom';
   setupCompleted: boolean;
+  setupCompletedAt?: string;
+  customPatterns?: string[];
 }
 
 interface CodeOrganizationSettingsProps {
@@ -17,7 +19,7 @@ interface CodeOrganizationSettingsProps {
 
 export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsProps) {
   const [currentConfig, setCurrentConfig] = useState<OrganizationConfig | null>(null);
-  const [selectedStructure, setSelectedStructure] = useState<'feature-folders' | 'flat'>('feature-folders');
+  const [selectedStructure, setSelectedStructure] = useState<'feature-folders' | 'flat' | 'custom'>('feature-folders');
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
@@ -56,14 +58,21 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
     
     try {
       const result = await window.api.contractRegistry.setOrganizationConfig(repoPath, {
-        structure: selectedStructure
+        ...currentConfig,
+        structure: selectedStructure,
+        enabled: selectedStructure === 'feature-folders',
+        setupCompleted: true,
+        setupCompletedAt: currentConfig.setupCompletedAt ?? new Date().toISOString()
       });
       
       if (result.success) {
         // Update current config after successful save
         setCurrentConfig({
           ...currentConfig,
-          structure: selectedStructure
+          structure: selectedStructure,
+          enabled: selectedStructure === 'feature-folders',
+          setupCompleted: true,
+          setupCompletedAt: currentConfig.setupCompletedAt ?? new Date().toISOString()
         });
       }
     } catch (error) {
@@ -74,7 +83,7 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
   };
 
   // Handle changing structure with potential warning
-  const handleChangeStructure = (value: 'feature-folders' | 'flat') => {
+  const handleChangeStructure = (value: 'feature-folders' | 'flat' | 'custom') => {
     // If switching from feature-folders to flat, show warning
     if (currentConfig?.structure === 'feature-folders' && value === 'flat') {
       setWarningAction(() => () => {
@@ -101,16 +110,14 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
     if (currentConfig?.structure === 'feature-folders') {
       return 'Feature-based';
     }
-    return 'Flat';
+    if (currentConfig?.structure === 'flat') {
+      return 'Flat';
+    }
+    return 'Custom';
   };
 
   // Determine if the save button should be enabled
   const isSaveEnabled = currentConfig && (selectedStructure !== currentConfig.structure);
-
-  // Ensure button state is properly managed
-  useEffect(() => {
-    // This ensures proper state propagation when configs change
-  }, [currentConfig, selectedStructure]);
 
   if (loading) {
     return <div className="text-gray-400">Loading...</div>;
@@ -132,7 +139,7 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
       
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-text-primary">Current Preference</span>
+          <span className="text-sm text-gray-100">Current Preference</span>
           <span 
             data-testid="current-preference"
             className="text-sm font-medium"
@@ -142,15 +149,16 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
         </div>
         
         <div className="flex items-center justify-between">
-          <span className="text-sm text-text-primary">Change Preference</span>
+          <span className="text-sm text-gray-100">Change Preference</span>
           <select
             data-testid="org-structure-select"
             value={selectedStructure}
-            onChange={(e) => handleChangeStructure(e.target.value as 'feature-folders' | 'flat')}
+            onChange={(e) => handleChangeStructure(e.target.value as 'feature-folders' | 'flat' | 'custom')}
             className="select text-sm"
           >
             <option value="feature-folders">Feature-based</option>
             <option value="flat">Flat</option>
+            <option value="custom">Custom</option>
           </select>
         </div>
       </div>
