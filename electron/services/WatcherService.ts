@@ -26,6 +26,7 @@ import { databaseService } from './DatabaseService';
 import { resolveRepoRootFromWorktree } from '../../shared/worktree-path';
 import { evaluateAutoCommitGuardForWorktree } from './GitRewriteGuardIO';
 import { postCommitPushOptions, type PostCommitRebaseResult } from '../../shared/post-commit-rebase';
+import { mayAutoCommit, type AutoCommitConfig } from '../../shared/auto-commit-policy';
 import type { AgentType } from '../../shared/types';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { promises as fs } from 'fs';
@@ -43,6 +44,9 @@ interface WatcherInstance {
   branchName?: string;        // Branch name (for locking)
   repoName?: string;          // Which repo this watcher monitors (multi-repo mode)
   primaryRepoName?: string;   // Set on secondary repos — traces commits back to root repo
+  // The session's auto-commit settings when the watcher started, used only
+  // while the key resolves to no live instance (mid-restart, see mayAutoCommitFor).
+  startAutoCommit?: AutoCommitConfig;
 }
 
 export class WatcherService extends BaseService {
@@ -278,6 +282,10 @@ export class WatcherService extends BaseService {
       console.log(`[WatcherService] Registered worktree for ${sessionId}: ${worktreePath} (repo: ${repoPath})`);
 
       const shortSessionId = sessionId.replace('sess_', '').slice(0, 8);
+      const startConfig = this.agentInstanceService?.getInstance(sessionId.split(':')[0])?.data?.config;
+      const startAutoCommit: AutoCommitConfig | undefined = startConfig
+        ? { createdBy: startConfig.createdBy, autoCommit: startConfig.autoCommit }
+        : undefined;
       const commitMsgFile = path.join(worktreePath, `.devops-commit-${shortSessionId}.msg`);
       // Also watch for common Claude commit msg file
       const claudeCommitMsgFile = path.join(worktreePath, '.claude-commit-msg');
@@ -293,6 +301,7 @@ export class WatcherService extends BaseService {
           repoPath,
           agentType,
           branchName,
+          startAutoCommit,
         };
 
         this.watchers.set(sessionId, instance);
@@ -359,6 +368,7 @@ export class WatcherService extends BaseService {
         repoPath,
         agentType,
         branchName,
+        startAutoCommit,
       };
 
       // Handle file events
@@ -700,6 +710,12 @@ export class WatcherService extends BaseService {
       return { committed: false, skipReason: 'in-place session — never auto-commit against source-repo HEAD' };
     }
 
+    // 0.25. An adopted branch is not KIT's to commit to unless auto-commit was
+    //       asked for (kit_adopt_session auto_commit: true).
+    if (!this.mayAutoCommitFor(sessionId, instance)) {
+      return { committed: false, skipReason: 'auto-commit is off for this adopted session' };
+    }
+
     // 0.5. History-rewrite guard (from origin/main track, merged at v2.7.0).
     //      Refuse if a rebase/merge/cherry-pick/bisect is in progress or the
     //      worktree is on a detached HEAD — a commit landing in any of those
@@ -866,6 +882,14 @@ export class WatcherService extends BaseService {
         if (!existsSync(commitMsgFile)) return;
         let message = (await fs.readFile(commitMsgFile, 'utf8')).trim();
         if (!message) return;
+        if (!this.mayAutoCommitFor(sessionId, instance)) {
+          // Clear it as a commit would, so the stale message is not committed
+          // later (auto-commit turned on) or swept into a kit_commit. Checked
+          // after the empty-file return, so the truncation cannot re-trigger.
+          await fs.writeFile(commitMsgFile, '');
+          this.activityService.log(sessionId, 'info', 'Commit message file ignored and cleared: auto-commit is off for this adopted session. Use kit_commit.');
+          return;
+        }
 
         // Optionally enhance commit message using AI analysis of actual diffs
         if (this.enhancedCommitsEnabled && this.commitAnalysisService) {
@@ -1172,6 +1196,27 @@ export class WatcherService extends BaseService {
     console.log(`[WatcherService] ${message} (${sessionId})`);
     this.activityService.log(sessionId, 'info', message);
     return { ok: true, rewrote: false, skipped: true, commitsIntegrated: 0, message };
+  }
+
+  /**
+   * Read the live config each time, so kit_update_session auto_commit takes
+   * effect at once. The watcher key may be a restart predecessor — the
+   * app-launch restart leaves the old-id watcher running after restartInstance
+   * replaced the instance — or a multi-repo `id:repo` key, so both resolve to
+   * the live instance. While the key resolves to nothing (between the old
+   * instance's removal and the new one's predecessor record), the settings
+   * captured when the watcher started decide; a watcher with neither keeps the
+   * old behaviour.
+   */
+  private mayAutoCommitFor(watchKey: string, instance?: WatcherInstance): boolean {
+    const svc = this.agentInstanceService;
+    const id = watchKey.split(':')[0];
+    const live =
+      svc?.getInstance(id)?.data ??
+      svc?.listInstances?.()?.data?.find(
+        (i) => Array.isArray(i.predecessorSessionIds) && i.predecessorSessionIds.includes(id)
+      );
+    return mayAutoCommit(live ? live.config : instance?.startAutoCommit);
   }
 
   private async getWorktreePath(sessionId: string): Promise<string | null> {

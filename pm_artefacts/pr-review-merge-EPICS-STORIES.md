@@ -158,6 +158,23 @@ The review card needs CI state, and `gh pr checks` is a network call. Fetch on c
 
 **Slice 2 order:** `P7 → P8 → P9`
 
+### P12 — `kit_get_pr_state`, read-only
+
+A caller revising its own PR (adopt the kept branch, push more commits, `kit_request_review`) must know first whether that PR is still open: on a MERGED or CLOSED PR's branch, `kit_request_review` opens a second PR (see P3). `kit_get_pr_state` answers it with one `gh pr view <branch> --json number,url,state,baseRefName,headRefName,isDraft` and creates or edits nothing.
+
+Request: `session_id` (its branch and worktree, or its repo when the worktree is gone; `repo_path` and `branch` are then ignored) **or** `repo_path` + `branch` (`origin/` and `refs/heads/` stripped). As for every tool whose argument is `session_id` (`MCP_ACTOR_PARAM`), `withCallLog` also treats that session as the caller: a session still `waiting` is marked `idle`, and a branch-drift warning may follow as a second text item. Parse `content[0]` only.
+
+```
+{ ok: true,  branch, pr: { number, url, state: 'OPEN'|'MERGED'|'CLOSED', base, head, is_draft } }
+{ ok: true,  branch, pr: null }                                       // the branch has no PR
+{ ok: true,  branch, pr: null, reason: 'not_github', message }        // no GitHub remote
+{ ok: false, branch?, error, message, reason?, session_id? }
+```
+
+`error` is one of `UNKNOWN_SESSION`, `INVALID_ARGS` (neither form given, or the session has no branch or checkout), `INVALID_REPO` (`repo_path` does not exist), `UNAVAILABLE` (the GitHub service is not wired), `GH_UNAVAILABLE` (gh missing or logged out; `reason` is `not_installed` or `not_authenticated`, via `classifyGhFailure`) or `GH_ERROR` (any other gh failure, including a numeric branch name that gh reads as a PR number). A failure is never reported as `pr: null`. Allowed for observers.
+
+*Tests:* `PrState.test.ts` with an injected `GhRunner` fake — no network.
+
 ---
 
 ## Failure modes

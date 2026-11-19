@@ -12,6 +12,7 @@
  * - kit_unlock_file
  * - kit_get_commit_history
  * - kit_request_review
+ * - kit_get_pr_state (read-only: the branch's PR is OPEN / MERGED / CLOSED, or none)
  *
  * Workspace + repo state (v2.5 additions):
  * - kit_workspace_list / kit_workspace_add / kit_workspace_scan
@@ -1521,6 +1522,59 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
+  // kit_get_pr_state — Is the branch's pull request open, merged or closed?
+  // --------------------------------------------------------------------------
+  srv.tool(
+    'kit_get_pr_state',
+    'Read-only. The pull request for a branch: {ok: true, branch, pr: null | {number, url, state: "OPEN"|"MERGED"|"CLOSED", base, head, is_draft}}. ' +
+    'Pass session_id (its repo and branch are used) or repo_path + branch. pr is null when the branch has no PR, or (with reason "not_github") the repo has no GitHub remote. ' +
+    'Errors are {ok: false, error, message}: error is UNKNOWN_SESSION, INVALID_ARGS, INVALID_REPO, UNAVAILABLE, GH_UNAVAILABLE (gh missing or logged out; reason not_installed | not_authenticated) or GH_ERROR (any other gh failure, never reported as pr: null). ' +
+    'Call this before pushing more commits to a PR branch: kit_request_review on a branch whose PR is MERGED or CLOSED opens a NEW pull request. ' +
+    'Creates and edits nothing. Allowed for observers.',
+    {
+      session_id: z.string().optional().describe('The session whose PR to look up; its repo and branch are used, and repo_path/branch are then ignored. Like every session_id tool, it is also logged as the caller. Omit to pass repo_path + branch.'),
+      repo_path: z.string().optional().describe('Absolute path to the repository (with branch, when no session_id).'),
+      branch: z.string().optional().describe('The branch whose PR to look up (with repo_path, when no session_id). origin/ and refs/heads/ are stripped.'),
+    },
+    withCallLog('kit_get_pr_state', async ({ session_id, repo_path, branch }) => {
+      const reply = (payload: Record<string, unknown>) => ({
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+      });
+      const bareBranch = (b: string | undefined) => b?.replace(/^refs\/heads\//, '').replace(/^origin\//, '');
+
+      let cwd: string | undefined;
+      let branchName: string | undefined;
+      if (session_id) {
+        const inst = resolveInstance(session_id);
+        if (!inst) {
+          return reply({ ok: false, error: 'UNKNOWN_SESSION', message: `No KIT session ${session_id}.`, session_id });
+        }
+        branchName = bareBranch(inst.config?.branchName);
+        // A closed session's worktree may be gone; gh only needs a checkout of the repo.
+        cwd = [inst.worktreePath, inst.config?.repoPath].find((p: any) => p && existsSync(p));
+      } else {
+        if (!repo_path || !branch) {
+          return reply({ ok: false, error: 'INVALID_ARGS', message: 'Pass session_id, or repo_path and branch.' });
+        }
+        branchName = bareBranch(branch);
+        cwd = existsSync(repo_path) ? repo_path : undefined;
+        if (!cwd) {
+          return reply({ ok: false, error: 'INVALID_REPO', message: `No such directory: ${repo_path}`, branch: branchName });
+        }
+      }
+      if (!branchName || !cwd) {
+        return reply({ ok: false, error: 'INVALID_ARGS', message: 'Could not resolve a branch and a checkout for this session.', branch: branchName ?? null });
+      }
+      if (!deps.githubService?.getPullRequestState) {
+        return reply({ ok: false, error: 'UNAVAILABLE', message: 'githubService.getPullRequestState not available', branch: branchName });
+      }
+
+      const result = await deps.githubService.getPullRequestState(cwd, branchName);
+      return reply({ ...result, branch: branchName });
+    })
+  );
+
+  // --------------------------------------------------------------------------
   // kit_merge — Execute a merge via the same code path as the UI merge modal.
   // Enforces the S9N-6394 CI gate for protected targets (main/master/
   // production/release). Agents must not pass force=true unless the user has
@@ -2007,15 +2061,17 @@ export function registerTools(
     {
       target_session_id: z.string().describe('The session to restart. This is the TARGET — pass your own id as caller_session_id.'),
       caller_session_id: z.string().optional().describe('YOUR session id.'),
-      commit_changes: z.boolean().optional().describe('Commit any uncommitted work before restarting. Default true — setting this false risks losing it.'),
+      commit_changes: z.boolean().optional().describe('Commit any uncommitted work before restarting. Default true — setting this false risks losing it. Exception: in a session adopted without auto_commit the default is not to commit (its checkout is reused, so the work stays in the worktree); pass true to commit anyway.'),
     },
     withCallLog('kit_restart_session', async (args: any) => {
       if (!deps.sessionOrchestrator?.restartSession) return notAvailable('sessionOrchestrator');
 
+      // Passed as given: unset lets an adopted session with auto-commit off
+      // skip the commit, while an explicit true still commits.
       const result = await deps.sessionOrchestrator.restartSession(
         args.target_session_id,
         undefined,
-        args.commit_changes !== false
+        typeof args.commit_changes === 'boolean' ? args.commit_changes : undefined
       );
 
       if (!result?.success) {
@@ -2049,6 +2105,7 @@ export function registerTools(
       task: z.string().optional().describe('What this session is for.'),
       caller_session_id: z.string().optional().describe('YOUR session id, recorded as the parent.'),
       if_exists: z.enum(['refuse', 'take_over']).optional().describe('What to do when a live session already owns the branch. Default refuse. take_over works only on agent-created sessions — never on a human\'s.'),
+      auto_commit: z.boolean().optional().describe('Let KIT commit on its own in the adopted session (commit-message file, idle checkpoint, the default commit before a restart). Default false: KIT never commits to an adopted branch on its own unless this is true. Does not affect kit_commit.'),
     },
     withCallLog('kit_adopt_session', async (args: any) => {
       if (!deps.sessionOrchestrator?.adoptSession) return notAvailable('sessionOrchestrator');
@@ -2062,6 +2119,7 @@ export function registerTools(
         task: args.task,
         callerSessionId: args.caller_session_id,
         ifExists: args.if_exists,
+        autoCommit: args.auto_commit === true,
       });
 
       if (!result?.success) {
@@ -2079,6 +2137,7 @@ export function registerTools(
         worktree_path: result.data?.worktreePath ?? null,
         branch: result.data?.config?.branchName,
         created_by: 'adopted',
+        auto_commit: result.data?.config?.autoCommit === true,
         note: 'Recorded as adopted, not agent-created. You may close it safely, but never destructively — the branch belongs to a human.',
       }) }] };
     })
