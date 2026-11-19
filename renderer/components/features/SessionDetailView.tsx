@@ -1439,13 +1439,6 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     void loadPrs();
   }, [loadPrs]);
 
-  // Load checks when the component mounts (but only if there's an open PR)
-  useEffect(() => {
-    if (openPr) {
-      void loadChecks();
-    }
-  }, [openPr, loadChecks]);
-
   const runReview = async (action: 'approve' | 'request-changes', body?: string): Promise<void> => {
     if (!openPr || !worktree) return;
     setBusy(action);
