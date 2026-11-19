@@ -38,6 +38,7 @@ import { SessionOrchestrator } from './SessionOrchestrator';
 import { ensurePullRequest, getPullRequestState } from './GitHubService';
 import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from './DatabaseService';
+import { classifyLockHolder } from '../../shared/lock-liveness';
 import {
   initializeAnalysisServices,
   disposeAnalysisServices,
@@ -189,6 +190,31 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
 
   // Connect lockService to watcher for auto-locking files on change
   watcher.setLockService(lock);
+
+  // Teach the lock service which sessions still exist. Without this every
+  // lock in locks.json is treated as live forever: a session that crashed or
+  // was closed keeps its files locked, which blocks later sessions from
+  // locking them and makes kit_lock_file report a holder that is long gone.
+  // Instances are loaded synchronously in AgentInstanceService's constructor,
+  // so this answers correctly from the first call. The classifier separates a
+  // restart predecessor (reclaim at once) from an id nothing recognises
+  // (reclaim only after the grace period) — see shared/lock-liveness.ts, which
+  // the MCP tool layer reads too, so both cannot drift apart again.
+  lock.setSessionLivenessProvider((sessionId) => {
+    const listed = agentInstance.listInstances();
+    // Could not look. That is not "nothing is live" — report `live` so no lock
+    // is reclaimed on the strength of a failed lookup.
+    if (!listed.success || !listed.data) return 'live';
+    return classifyLockHolder(sessionId, listed.data);
+  });
+
+  // LockService.initialize() was never called, so neither of the two things it
+  // does ever happened: the crashed-session .lock files under
+  // ~/.devops-agent/session-locks/ were never swept, and (as of this change)
+  // the hourly stale-lock prune never started. Run it after the liveness
+  // provider is wired so the first prune can already tell live from dead.
+  await lock.initialize();
+  console.log('[Services] Lock service initialized');
 
   // Connect terminalLog to agentInstance for restart logging
   agentInstance.setTerminalLogService(terminalLog);

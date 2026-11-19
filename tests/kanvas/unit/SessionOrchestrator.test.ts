@@ -130,7 +130,31 @@ describe('SessionOrchestrator.startSession', () => {
     expect(startWithPath).toHaveBeenCalledTimes(1);
     expect(startWithPath).toHaveBeenCalledWith(
       'sess_1',
-      '/repo-parent/KIT-DevOps-repo/claude-session-20260829-a1b2'
+      '/repo-parent/KIT-DevOps-repo/claude-session-20260829-a1b2',
+      'claude',
+      'claude-session-20260829-a1b2'
+    );
+  });
+
+  it('passes the real agent type and branch so auto-locks are attributed', async () => {
+    // These two arguments end up on every AutoFileLock the watcher writes
+    // (WatcherService -> LockService.autoLockFile). Dropping them is silent:
+    // startWithPath defaults agentType to 'custom' and leaves branchName
+    // undefined, so every lock in locks.json claims a "custom" agent on no
+    // branch — which is exactly what KIT-MCP-S1 shipped, deliberately, to keep
+    // that story byte-identical.
+    const { deps, startWithPath } = makeDeps();
+
+    await new SessionOrchestrator(deps).startSession(
+      baseConfig({ agentType: 'cursor', branchName: 'feat/attribution' })
+    );
+    await flush();
+
+    expect(startWithPath).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      'cursor',
+      'feat/attribution'
     );
   });
 
@@ -145,7 +169,12 @@ describe('SessionOrchestrator.startSession', () => {
     await new SessionOrchestrator(deps).startSession(baseConfig({ repoPath: '/fallback-repo' }));
     await flush();
 
-    expect(startWithPath).toHaveBeenCalledWith('sess_1', '/fallback-repo');
+    expect(startWithPath).toHaveBeenCalledWith(
+      'sess_1',
+      '/fallback-repo',
+      'claude',
+      'claude-session-20260829-a1b2'
+    );
   });
 
   it('returns the createInstance result unchanged', async () => {

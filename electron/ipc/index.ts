@@ -1835,10 +1835,19 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
         continue;
       }
       if (watchPath) {
-        // Start file watcher
-        services.watcher.startWithPath(instance.sessionId, watchPath).catch((err) => {
-          console.warn(`[IPC] Failed to start file watcher for session ${instance.sessionId}:`, err);
-        });
+        // Start file watcher. agentType/branchName are passed so auto-locks
+        // written to <repo>/.S9N_KIT_DevOpsAgent/locks.json name the real agent
+        // and branch instead of the 'custom' default.
+        services.watcher
+          .startWithPath(
+            instance.sessionId,
+            watchPath,
+            instance.config?.agentType,
+            instance.config?.branchName
+          )
+          .catch((err) => {
+            console.warn(`[IPC] Failed to start file watcher for session ${instance.sessionId}:`, err);
+          });
 
         // Start the rebase watcher for every session, including 'never': it
         // keeps the "behind" count right and fast-forwards a session with no
@@ -1886,7 +1895,14 @@ async function startWatchersForExistingSessions(services: Services): Promise<voi
             if (restart.success && restart.data?.sessionId) {
               const watchPath = restart.data.worktreePath || restart.data.config?.repoPath;
               if (watchPath) {
-                services.watcher.startWithPath(restart.data.sessionId, watchPath).catch(() => {});
+                services.watcher
+                  .startWithPath(
+                    restart.data.sessionId,
+                    watchPath,
+                    restart.data.config?.agentType,
+                    restart.data.config?.branchName
+                  )
+                  .catch(() => {});
               }
               console.log(`[IPC] Auto-restarted session ${sessionId} -> ${restart.data.sessionId}`);
               services.terminalLog.logSystem(`Auto-restarted session on app launch`, restart.data.sessionId);
