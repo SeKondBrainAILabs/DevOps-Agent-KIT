@@ -6,6 +6,7 @@
 import { BaseService } from './BaseService';
 import { createGhRunner, classifyGhFailure, describeGhFailure } from '../../shared/github-cli';
 import { resolveMergeStrategy, type MergeVia } from '../../shared/merge-strategy';
+import { classifyChecks } from '../../shared/ci-checks';
 import type { IpcResult, MergePreview, MergeResult } from '../../shared/types';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -296,38 +297,42 @@ export class MergeService extends BaseService {
     if (prChecks.ok && prChecks.stdout.trim()) {
       try {
         const checks = JSON.parse(prChecks.stdout) as Array<{ name: string; state: string; bucket?: string }>;
-        const bad = checks.filter(c => {
+        const status = classifyChecks(checks);
+        
+        // Extract failing and pending checks for error messages
+        const failingChecks = checks.filter(c => {
           const state = (c.state || '').toUpperCase();
           const bucket = (c.bucket || '').toLowerCase();
           return state === 'FAILURE' || state === 'ERROR' || state === 'CANCELLED' || state === 'TIMED_OUT'
             || bucket === 'fail' || bucket === 'cancel';
         });
-        const pending = checks.filter(c => {
+        const pendingChecks = checks.filter(c => {
           const state = (c.state || '').toUpperCase();
           const bucket = (c.bucket || '').toLowerCase();
           return state === 'PENDING' || state === 'IN_PROGRESS' || state === 'QUEUED'
             || bucket === 'pending';
         });
-        if (bad.length > 0) {
-          const list = bad.slice(0, 5).map(c => `  ${c.name}: ${c.state}`).join('\n');
+        
+        if (status === 'failing' && failingChecks.length > 0) {
+          const list = failingChecks.slice(0, 5).map(c => `  ${c.name}: ${c.state}`).join('\n');
           return {
             ok: false,
             reason: 'CI_RED',
             message:
-              `Refused merge into '${targetBranch}': ${bad.length} required CI check${bad.length > 1 ? 's are' : ' is'} failing on '${sourceBranch}'.\n\n${list}\n\n` +
-              `Fix the failing check${bad.length > 1 ? 's' : ''} and rerun, or override with "Merge without CI check" if this is expected.`,
-            details: { failing: bad },
+              `Refused merge into '${targetBranch}': ${failingChecks.length} required CI check${failingChecks.length > 1 ? 's are' : ' is'} failing on '${sourceBranch}'.\n\n${list}\n\n` +
+              `Fix the failing check${failingChecks.length > 1 ? 's' : ''} and rerun, or override with "Merge without CI check" if this is expected.`,
+            details: { failing: failingChecks },
           };
         }
-        if (pending.length > 0) {
-          const list = pending.slice(0, 5).map(c => `  ${c.name}: ${c.state}`).join('\n');
+        if (status === 'pending' && pendingChecks.length > 0) {
+          const list = pendingChecks.slice(0, 5).map(c => `  ${c.name}: ${c.state}`).join('\n');
           return {
             ok: false,
             reason: 'CI_PENDING',
             message:
-              `Refused merge into '${targetBranch}': ${pending.length} required CI check${pending.length > 1 ? 's are' : ' is'} still running on '${sourceBranch}'.\n\n${list}\n\n` +
+              `Refused merge into '${targetBranch}': ${pendingChecks.length} required CI check${pendingChecks.length > 1 ? 's are' : ' is'} still running on '${sourceBranch}'.\n\n${list}\n\n` +
               `Wait for green — or override with "Merge without CI check" if you must.`,
-            details: { pending },
+            details: { pending: pendingChecks },
           };
         }
         return { ok: true };

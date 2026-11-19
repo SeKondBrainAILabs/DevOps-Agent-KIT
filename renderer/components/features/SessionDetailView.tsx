@@ -1380,6 +1380,10 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     number: number; url: string; state: string; title: string; createdAt: string; isDraft: boolean;
   }>>([]);
   const [approval, setApproval] = useState<{ allowed: boolean; reason?: string } | null>(null);
+  const [checksSummary, setChecksSummary] = useState<{
+    overall: 'passing' | 'pending' | 'failing';
+    counts: { passing: number; pending: number; failing: number; total: number; };
+  } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1410,11 +1414,25 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     }
   }, [worktree, session.branchName]);
 
+  const fetchChecks = React.useCallback(async () => {
+    if (!worktree || !session.branchName || !openPr) {
+      setChecksSummary(null);
+      return;
+    }
+    const r = await window.api?.pr?.checks?.(worktree, session.branchName);
+    if (r?.success && r.data) {
+      setChecksSummary(r.data);
+    } else {
+      setChecksSummary(null);
+    }
+  }, [worktree, session.branchName, openPr]);
+
   useEffect(() => {
     // Fetched on open and on explicit refresh only. Never on a timer: at agent
     // fan-out, twenty sessions polling `gh` is a rate-limit incident.
     void loadPrs();
-  }, [loadPrs]);
+    void fetchChecks();
+  }, [loadPrs, fetchChecks]);
 
   const runReview = async (action: 'approve' | 'request-changes', body?: string): Promise<void> => {
     if (!openPr || !worktree) return;
@@ -1652,12 +1670,32 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
           <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)]">
             Pull requests for this branch
           </p>
-          <button
-            onClick={() => void loadPrs()}
-            className="text-[11px] text-text-secondary hover:text-black"
-          >
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            {/* CI badge - only shown when there is an open PR */}
+            {openPr && checksSummary && (
+              <span
+                className={`text-[11px] px-2 py-0.5 rounded-full ${
+                  checksSummary.overall === 'passing'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : checksSummary.overall === 'failing'
+                    ? 'bg-red-100 text-red-600'
+                    : 'bg-amber-100 text-amber-600'
+                }`}
+              >
+                {checksSummary.overall === 'passing'
+                  ? 'CI passing'
+                  : checksSummary.overall === 'failing'
+                  ? 'CI failing'
+                  : 'CI pending'}
+              </span>
+            )}
+            <button
+              onClick={() => { void loadPrs(); void fetchChecks(); }}
+              className="text-[11px] text-text-secondary hover:text-black"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
         {prs.length === 0 ? (
           <p className="text-xs text-text-secondary">

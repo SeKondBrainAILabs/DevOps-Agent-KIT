@@ -7,7 +7,8 @@ import { ipcMain, BrowserWindow, dialog, app } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import type { Services } from '../services';
 import { listPullRequests, canApprove, reviewPullRequest, type PrReviewAction } from '../services/GitHubService';
-import { createGhRunner } from '../../shared/github-cli';
+import { createGhRunner, classifyGhFailure, describeGhFailure } from '../../shared/github-cli';
+import { classifyChecks, summarizeChecks } from '../../shared/ci-checks';
 import { databaseService } from '../services/DatabaseService';
 import { isActiveInstance } from '../../shared/instance-status';
 import { existsSync } from 'fs';
@@ -546,6 +547,24 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
       return r.ok
         ? { success: true, data: undefined }
         : { success: false, error: { code: 'PR_REVIEW_FAILED', message: r.message } };
+    }
+  );
+
+  // Fetch CI checks for the session's open PR
+  ipcMain.handle(
+    IPC.PR_CHECKS,
+    async (_e: unknown, worktreePath: string, branchName: string) => {
+      try {
+        const result = await createGhRunner()(['pr', 'checks', branchName, '--required', '--json', 'name,state,bucket'], worktreePath);
+        if (!result.ok) {
+          return { success: false, error: { code: 'PR_CHECKS_FAILED', message: describeGhFailure(classifyGhFailure(result)) } };
+        }
+        const checks = JSON.parse(result.stdout) as Array<{ name: string; state: string; bucket?: string }>;
+        const summary = summarizeChecks(checks);
+        return { success: true, data: summary };
+      } catch (err) {
+        return { success: false, error: { code: 'PR_CHECKS_FAILED', message: String(err) } };
+      }
     }
   );
 

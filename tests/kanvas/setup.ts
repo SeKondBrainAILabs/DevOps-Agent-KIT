@@ -105,6 +105,12 @@ const mockApi = {
     removeRecentRepo: createMockFn({ success: true }),
     onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
+  pr: {
+    list: createMockFn({ success: true, data: [] }),
+    canApprove: createMockFn({ success: true, data: { allowed: true } }),
+    review: createMockFn({ success: true, data: undefined }),
+    checks: createMockFn({ success: true, data: { overall: 'passing', counts: { passing: 0, pending: 0, failing: 0, total: 0 } } }),
+  },
   app: {
     reload: createMockFn({ success: true }),
     getVersion: createMockFn('1.2.0'),

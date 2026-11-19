@@ -1989,6 +1989,12 @@ const api = {
       body?: string
     ): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.PR_REVIEW, worktreePath, prNumber, action, body),
+
+    /** CI checks summary for the session's open PR. */
+    checks: (worktreePath: string, branchName: string): Promise<IpcResult<{
+      overall: 'passing' | 'pending' | 'failing';
+      counts: { passing: number; pending: number; failing: number; total: number; };
+    }>> => ipcRenderer.invoke(IPC.PR_CHECKS, worktreePath, branchName),
   },
 
   merge: {
