@@ -11,6 +11,7 @@ import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentInstance, ContractType, Contract, ActivityLogEntry, DiscoveredFeature } from '../../../shared/types';
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
 import { formatDateTime } from '../../../shared/format-datetime';
+import { getDriftColorFromCount } from '../../../shared/git-sync-drift';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
@@ -154,6 +155,9 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
   const [rebaseRepairBusy, setRebaseRepairBusy] = useState(false);
   const [rebaseRepairResult, setRebaseRepairResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Drift indicator state (AC3)
+  const [driftBehind, setDriftBehind] = useState<number | null>(null);
+  const [checkingDrift, setCheckingDrift] = useState(false);
   const showConflictDialog = useConflictStore((state) => state.showDialog);
 
   useEffect(() => {
@@ -296,6 +300,30 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
       }
     } catch { /* if the check fails, fall through and let the rebase proceed */ }
     await doSync(repoPath, baseBranch);
+  };
+
+  // Check for remote drift (AC3)
+  const handleCheckUpdates = async () => {
+    if (checkingDrift) return;
+    const repoPath = session.worktreePath || session.repoPath;
+    const branch = session.branchName;
+    if (!repoPath || !branch) {
+      return;
+    }
+    setCheckingDrift(true);
+    try {
+      const result = await window.api?.git?.checkRemote?.(repoPath, branch);
+      if (result?.success && result.data) {
+        setDriftBehind(result.data.behind);
+      } else {
+        // On error, default to showing 0 behind
+        setDriftBehind(0);
+      }
+    } catch {
+      setDriftBehind(0);
+    } finally {
+      setCheckingDrift(false);
+    }
   };
 
   const doSync = async (repoPath: string, baseBranch: string) => {
@@ -711,6 +739,33 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                   </div>
                 </div>
               )}
+              {/* Drift indicator - placed to the left of Sync button (AC3) */}
+              <div className="flex items-center gap-1.5 mr-1">
+                {driftBehind !== null ? (
+                  <>
+                    <span className={`inline-block w-2.5 h-2.5 rounded-full ${
+                      driftBehind === 0 ? 'bg-green-500' : getDriftColorFromCount(driftBehind).replace('text-', 'bg-')
+                    }`} />
+                    <span className="text-xs text-text-secondary">
+                      {driftBehind === 0
+                        ? 'Up to date'
+                        : `${driftBehind} commit${driftBehind === 1 ? '' : 's'} behind ${session.baseBranch || 'main'}`}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-text-secondary">
+                    Not checked
+                  </span>
+                )}
+                <button
+                  onClick={handleCheckUpdates}
+                  disabled={checkingDrift}
+                  className="px-2 py-1 rounded-full text-xs font-medium bg-surface-tertiary text-text-secondary hover:bg-surface-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                  title="Check remote for updates"
+                >
+                  {checkingDrift ? 'Checking...' : 'Check for Updates'}
+                </button>
+              </div>
               <button
                 onClick={handleSync}
                 disabled={syncing}
