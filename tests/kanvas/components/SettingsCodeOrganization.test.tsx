@@ -76,12 +76,29 @@ describe('Settings Code Organization', () => {
       expect(screen.getByTestId('org-structure-select')).toBeInTheDocument();
     });
 
-    // Change the preference to flat
+    // Change the preference to flat - this triggers the warning dialog
     const select = screen.getByTestId('org-structure-select');
     fireEvent.change(select, { target: { value: 'flat' } });
 
+    // Wait for warning dialog to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('warning-dialog')).toBeInTheDocument();
+    });
+
+    // Click "Confirm Change" to proceed with the change
+    const confirmButton = screen.getByTestId('confirm-change');
+    fireEvent.click(confirmButton);
+
+    // Wait for the select value to update
+    await waitFor(() => {
+      expect(select).toHaveValue('flat');
+    });
+
+    // Wait for the save button to be enabled
+    const saveButton = await screen.findByTestId('save-button');
+    expect(saveButton).not.toBeDisabled();
+
     // Click save button
-    const saveButton = screen.getByTestId('save-button');
     fireEvent.click(saveButton);
 
     // Wait for the API call to be made
