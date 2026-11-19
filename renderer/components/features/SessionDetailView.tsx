@@ -1693,22 +1693,17 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
 
       {/* ── History ──────────────────────────────────────────────────────── */}
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)]">
-            Pull requests for this branch
-          </p>
-          <button
-            onClick={() => {
-              void loadPrs();
-              if (openPr) {
-                void loadChecks();
-              }
-            }}
-            className="text-[11px] text-text-secondary hover:text-black"
-          >
-            Refresh
-          </button>
-        </div>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-[rgba(0,0,0,0.45)]">
+              Pull requests for this branch
+            </p>
+            <button
+              onClick={() => void loadPrs()}
+              className="text-[11px] text-text-secondary hover:text-black"
+            >
+              Refresh
+            </button>
+          </div>
         {prs.length === 0 ? (
           <p className="text-xs text-text-secondary">
             None found. This branch has had no pull requests, or GitHub is unreachable.

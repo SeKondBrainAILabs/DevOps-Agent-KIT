@@ -5,7 +5,7 @@
  * It reuses the shared classification logic to ensure consistency with the merge gate behavior.
  */
 
-import { classifyCheck, summarizeChecks as sharedSummarizeChecks } from '../../shared/ci-checks';
+import { classifyCheck as classifySingleCheck, summarizeChecks as sharedSummarizeChecks } from '@shared/ci-checks';
 
 export type CiCheck = {
   name: string;
@@ -23,7 +23,37 @@ export type CiChecksSummary = {
   };
 };
 
-export { classifyCheck, sharedSummarizeChecks };
+/**
+ * Classify an array of checks into overall state.
+ * Returns 'failing' if any check fails, 'pending' if any is pending (and none fail),
+ * otherwise 'passing'. Empty array returns 'passing'.
+ * 
+ * @param checks - Array of check objects with name, state, and bucket
+ * @returns Overall classification: 'passing' | 'pending' | 'failing'
+ */
+export function classifyChecks(checks: CiCheck[]): 'passing' | 'pending' | 'failing' {
+  if (checks.length === 0) {
+    return 'passing';
+  }
+  
+  let hasFailing = false;
+  let hasPending = false;
+  
+  for (const check of checks) {
+    const result = classifySingleCheck(check);
+    if (result === 'failing') {
+      hasFailing = true;
+      break; // failing takes precedence
+    }
+    if (result === 'pending') {
+      hasPending = true;
+    }
+  }
+  
+  if (hasFailing) return 'failing';
+  if (hasPending) return 'pending';
+  return 'passing';
+}
 
 /**
  * Summarize an array of checks into overall state and counts.
@@ -32,13 +62,11 @@ export { classifyCheck, sharedSummarizeChecks };
  * @param checks - Array of check objects with name, state, and bucket
  * @returns A summary object with overall state and counts
  */
-export function summarizeChecksForUi(checks: CiCheck[]): CiChecksSummary {
-  // First get the counts using the shared implementation
+export function summarizeChecks(checks: CiCheck[]): CiChecksSummary {
   const sharedResult = sharedSummarizeChecks(checks);
   
-  // Transform to UI-compatible structure (overall instead of state)
   return {
-    overall: sharedResult.state,
+    overall: sharedResult.state === 'none' ? 'passing' : sharedResult.state,
     counts: {
       passing: sharedResult.passing,
       pending: sharedResult.pending,
