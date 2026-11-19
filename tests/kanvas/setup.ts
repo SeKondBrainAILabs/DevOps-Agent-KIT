@@ -260,6 +260,15 @@ const mockApi = {
     onEnd: (jest.fn() as MockFn).mockReturnValue(() => {}),
     onStream: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
+  contractRegistry: {
+    getOrganizationConfig: createMockFn({
+      success: true,
+      data: { enabled: false, structure: 'flat', setupCompleted: false },
+    }),
+    setOrganizationConfig: jest.fn() as MockFn,
+    needsFirstRunSetup: createMockFn({ success: true, data: false }),
+    onRegistryUpdated: (jest.fn() as MockFn).mockReturnValue(() => {}),
+  },
 };
 
 // Set up window.api mock
