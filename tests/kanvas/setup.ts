@@ -161,6 +161,12 @@ const mockApi = {
     // rows silently break.
     getRunningSessionCount: createMockFn({ success: true, data: 0 }),
   },
+  pr: {
+    list: createMockFn({ success: true, data: [] }),
+    canApprove: createMockFn({ success: true, data: { allowed: true } }),
+    review: createMockFn({ success: true, data: undefined }),
+    checks: createMockFn({ success: true, data: { overall: 'passing', counts: { passing: 0, pending: 0, failing: 0, total: 0 } } }),
+  },
   cleanup: {
     analyze: createMockFn({
       success: true,
