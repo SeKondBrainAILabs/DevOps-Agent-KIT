@@ -282,6 +282,29 @@ export class MergeService extends BaseService {
       }
     }
 
+    // S9N-6394: Check PR approval status if required by config
+    if (this.configService) {
+      const configResult = this.configService.get('mergeRequirePrApproval');
+      if (configResult && configResult.data === true) {
+        // Check for PR approval status
+        const prReview = await runGh(['pr', 'view', sourceBranch, '--json', 'reviewDecision']);
+        if (prReview.ok && prReview.stdout.trim()) {
+          try {
+            const reviewDecision = JSON.parse(prReview.stdout)?.reviewDecision;
+            if (reviewDecision !== 'APPROVED') {
+              return {
+                ok: false,
+                reason: 'PR_NOT_APPROVED',
+                message: `Refused merge into '${targetBranch}': Pull request review status is '${reviewDecision}', but 'APPROVED' is required.`,
+              };
+            }
+          } catch {
+            // If parsing fails, allow the merge to proceed (safe fallback)
+          }
+        }
+      }
+    }
+
     const prChecks = await runGh(['pr', 'checks', sourceBranch, '--required', '--json', 'name,state,bucket']);
     // Classified in one place (KIT-PR-P1) rather than by regex here. The old
     // check only recognised a missing binary; a logged-out gh and a non-GitHub

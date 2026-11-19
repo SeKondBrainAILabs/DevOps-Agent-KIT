@@ -1232,7 +1232,7 @@ export interface MergeResult {
   /** Files that could not be recovered from stash due to unresolvable conflicts */
   stashConflictFiles?: string[];
   /** S9N-6394: reason the merge gate blocked the operation, when it did. */
-  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PUSH_REJECTED' | 'PR_UNAVAILABLE';
+  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PUSH_REJECTED' | 'PR_UNAVAILABLE' | 'PR_NOT_APPROVED';
   /** Set when the merge was delivered as a pull request rather than a push. */
   pullRequestUrl?: string;
   /** How the merge was delivered. */
