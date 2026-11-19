@@ -28,7 +28,20 @@ jobs:
         # CI tests run in Node.js, not Electron — no native rebuild needed
         run: npm ci --ignore-scripts
 
+      # The TypeScript suite (jest.kanvas.config.cjs): ~150 suites over
+      # electron/, shared/ and renderer/. This one gates the build.
+      #
+      # `npm test` uses the default jest config, whose testMatch only matches
+      # *.test.js, so it never saw a single one of these files. Combined with
+      # continue-on-error below, CI could not fail on a broken test at all.
       - name: Run Tests
+        run: npm run test:kanvas
+
+      # Legacy JavaScript suites under test_cases/ and tests/. 15 of their 19
+      # files currently fail at module load on main, so this cannot gate yet.
+      # It stays visible, and non-blocking, until they are fixed or retired —
+      # making it blocking today would just wall off main.
+      - name: Run Legacy JS Tests (non-blocking)
         run: npm test
         continue-on-error: true
 
