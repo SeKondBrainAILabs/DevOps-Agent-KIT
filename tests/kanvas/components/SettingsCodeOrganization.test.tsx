@@ -131,6 +131,9 @@ describe('Settings Code Organization', () => {
         success: true,
         data: { enabled: true, structure: 'feature-folders', setupCompleted: true },
       });
+    const mockSetOrgConfig = jest.fn().mockResolvedValue({ success: true });
+    (mockApi.contractRegistry?.setOrganizationConfig as jest.Mock)
+      .mockImplementation(mockSetOrgConfig);
 
     render(<CodeOrganizationSettings repoPath="/test/repo" />);
 
@@ -151,5 +154,23 @@ describe('Settings Code Organization', () => {
     // Confirm and cancel buttons should be present
     expect(screen.getByTestId('confirm-change')).toBeInTheDocument();
     expect(screen.getByTestId('cancel-change')).toBeInTheDocument();
+
+    // Assert that setOrganizationConfig was NOT called when the dialog appears
+    expect(mockSetOrgConfig).not.toHaveBeenCalled();
+
+    // Click Cancel to dismiss the dialog
+    const cancelButton = screen.getByTestId('cancel-change');
+    fireEvent.click(cancelButton);
+
+    // Wait for dialog to be dismissed
+    await waitFor(() => {
+      expect(screen.queryByTestId('warning-dialog')).not.toBeInTheDocument();
+    });
+
+    // After Cancel, assert the select shows 'feature-folders' again
+    expect(select).toHaveValue('feature-folders');
+
+    // Still no save after canceling
+    expect(mockSetOrgConfig).not.toHaveBeenCalled();
   });
 });
