@@ -8,6 +8,7 @@ import type { AppConfig, AgentType, RepoVersionInfo, RepoVersionSettings, AppUpd
 import { useAgentStore } from '../../store/agentStore';
 import { formatDateTimeShort } from '../../../shared/format-datetime';
 import { HarnessSettings } from './coding/HarnessSettings';
+import { CodeOrganizationSettings } from './coding/CodeOrganizationSettings';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -570,6 +571,11 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
 
                     {/* Separator */}
                     <div className="border-t border-[rgba(0,0,0,0.10)]" />
+
+                    {/* Code Organization Settings */}
+                    <div className="mt-4">
+                      <CodeOrganizationSettings repoPath={selectedRepoPath} />
+                    </div>
 
                     {/* Auto version bump toggle */}
                     <div className="flex items-center justify-between">
