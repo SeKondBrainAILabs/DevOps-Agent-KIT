@@ -111,8 +111,14 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
     return <div className="text-gray-400">Loading...</div>;
   }
 
+  // Handle case when no repo is selected
   if (!repoPath) {
-    return <div className="text-gray-400">Select a repository to configure code organization</div>;
+    return (
+      <div className="bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] p-3 space-y-3">
+        <div className="text-xs text-gray-500 uppercase tracking-wide">Code Organization</div>
+        <div className="text-gray-400">Select a repository to configure code organization</div>
+      </div>
+    );
   }
 
   return (
