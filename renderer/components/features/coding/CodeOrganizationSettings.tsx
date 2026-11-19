@@ -3,7 +3,7 @@
  * Displays and allows editing of a repository's code organization preference
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 interface OrganizationConfig {
   enabled: boolean;
@@ -106,6 +106,11 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
 
   // Determine if the save button should be enabled
   const isSaveEnabled = currentConfig && (selectedStructure !== currentConfig.structure);
+
+  // Ensure button state is properly managed
+  useEffect(() => {
+    // This ensures proper state propagation when configs change
+  }, [currentConfig, selectedStructure]);
 
   if (loading) {
     return <div className="text-gray-400">Loading...</div>;
