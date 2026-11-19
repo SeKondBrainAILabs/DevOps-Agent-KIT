@@ -28,6 +28,16 @@ jobs:
         # CI tests run in Node.js, not Electron — no native rebuild needed
         run: npm ci --ignore-scripts
 
+      # ...but several suites still import electron transitively: DatabaseService
+      # does `import { app } from 'electron'`, and with --ignore-scripts that
+      # module throws "Electron failed to install correctly" the moment it is
+      # required, taking four suites down at load time. Fetching just the binary
+      # makes the import resolve, as it does locally; the module then exports a
+      # path string outside an Electron runtime, which is exactly what those
+      # tests already tolerate. Far cheaper than the full postinstall rebuild.
+      - name: Install Electron binary
+        run: node node_modules/electron/install.js
+
       # The TypeScript suite (jest.kanvas.config.cjs): ~150 suites over
       # electron/, shared/ and renderer/. This one gates the build.
       #
