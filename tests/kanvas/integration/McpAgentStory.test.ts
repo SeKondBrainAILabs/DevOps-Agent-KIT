@@ -16,11 +16,21 @@ import { McpSessionBinder } from '../../../electron/services/mcp/session-binder'
 // Mock ALL dependencies of tools.ts to avoid heavy module resolution
 // ============================================================================
 function zodChain(): any {
-  const c: any = {};
-  ['string', 'number', 'boolean', 'array', 'object', 'enum', 'record',
-    'optional', 'default', 'describe', 'unknown'].forEach(m => { c[m] = (..._a: any[]) => zodChain(); });
-  c.then = undefined;
-  return c;
+  // Every property is a chainable no-op, rather than a hand-maintained
+  // whitelist of zod methods. The whitelist silently broke this whole suite
+  // when tools.ts started using z.number().int().min(1): `.int` was simply
+  // not on it, so registerTools threw a TypeError and all 11 tests failed.
+  // A Proxy keeps that from happening again the next time a schema uses a
+  // zod method this stub has never heard of.
+  const target: any = (..._a: any[]) => zodChain();
+  return new Proxy(target, {
+    get(_t, prop) {
+      // Must not look like a promise: the suite awaits values built from this.
+      if (prop === 'then') return undefined;
+      return (..._a: any[]) => zodChain();
+    },
+    apply: () => zodChain(),
+  });
 }
 jest.mock('zod', () => ({ z: zodChain() }));
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({}));
@@ -140,10 +150,15 @@ describe('MCP Agent Story - Integration', () => {
       },
       lockService: {
         checkConflicts: (jest.fn() as any).mockResolvedValue({ success: true, data: [] }),
-        declareFiles: (jest.fn() as any).mockImplementation(async (_sid: string, files: string[]) => {
-          lockDeclarations.push({ sessionId: _sid, files });
-          return { success: true };
-        }),
+        // Mirrors the real signature, which takes the lock root first:
+        // declareFiles(repoPath, sessionId, files, operation, ...). The double
+        // used to omit repoPath, so `files` captured the session id instead.
+        declareFiles: (jest.fn() as any).mockImplementation(
+          async (_repoPath: string, _sid: string, files: string[]) => {
+            lockDeclarations.push({ sessionId: _sid, files });
+            return { success: true };
+          }
+        ),
         releaseFiles: (jest.fn() as any).mockResolvedValue({ success: true }),
         forceReleaseLock: (jest.fn() as any).mockResolvedValue({ success: true }),
       },
@@ -267,7 +282,8 @@ describe('MCP Agent Story - Integration', () => {
         summary: 'Implemented login form and API endpoint with JWT auth',
       });
       const review = parseResult(reviewResult);
-      expect(review.logged).toBe(true);
+      // The tool's field is review_logged; `logged` never existed on it.
+      expect(review.review_logged).toBe(true);
       expect(review.summary).toContain('JWT auth');
 
       // Verify activity timeline
