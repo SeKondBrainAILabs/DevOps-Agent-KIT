@@ -192,7 +192,7 @@ export class MergeService extends BaseService {
     worktreePath: string,
     sourceBranch: string,
     targetBranch: string
-  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING'; details?: unknown }> {
+  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PR_NOT_APPROVED'; details?: unknown }> {
     // (b) — cheap, no subprocess: scan commit messages between source and
     // target. Do this first so a WIP tip fails fast before we spend the
     // gh-CLI round-trip.
@@ -1013,7 +1013,7 @@ export class MergeService extends BaseService {
       via?: MergeVia;
     } = {}
   ): Promise<IpcResult<MergeResult>> {
-    return this.wrap(async () => {
+    try {
       // Strip 'origin/' prefix — branch names may be stored as 'origin/main'
       // from the branch picker dropdown which lists remote tracking branches.
       targetBranch = targetBranch.replace(/^origin\//, '');
@@ -1678,7 +1678,13 @@ export class MergeService extends BaseService {
         stashRecovered,
         stashConflictFiles,
       };
-    }, 'MERGE_EXECUTE_FAILED');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      return {
+        success: false,
+        error: { code: 'MERGE_EXECUTE_FAILED', message, details: err },
+      };
+    }
   }
 
   /**
