@@ -1385,6 +1385,8 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
   const [error, setError] = useState<string | null>(null);
   const [changesBody, setChangesBody] = useState('');
   const [showChanges, setShowChanges] = useState(false);
+  const [checks, setChecks] = useState<import('../../../shared/ci-checks').CiChecksSummary | null>(null);
+  const [checksLoading, setChecksLoading] = useState(false);
 
   const openPr = prs.find((p) => String(p.state).toUpperCase() === 'OPEN');
   // A review request is a claim made once, when the agent finished. It does not
@@ -1408,6 +1410,27 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     } else {
       setApproval(null);
     }
+    
+    // Load CI checks when an open PR exists
+    if (open) {
+      await loadChecks();
+    }
+  }, [worktree, session.branchName]);
+
+  const loadChecks = React.useCallback(async () => {
+    if (!worktree || !session.branchName) return;
+    
+    setChecksLoading(true);
+    try {
+      const r = await window.api?.pr?.checks?.(worktree, session.branchName);
+      if (r?.success && r.data) {
+        setChecks(r.data);
+      } else {
+        setChecks(null);
+      }
+    } finally {
+      setChecksLoading(false);
+    }
   }, [worktree, session.branchName]);
 
   useEffect(() => {
@@ -1415,6 +1438,13 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     // fan-out, twenty sessions polling `gh` is a rate-limit incident.
     void loadPrs();
   }, [loadPrs]);
+
+  // Load checks when the component mounts (but only if there's an open PR)
+  useEffect(() => {
+    if (openPr) {
+      void loadChecks();
+    }
+  }, [openPr, loadChecks]);
 
   const runReview = async (action: 'approve' | 'request-changes', body?: string): Promise<void> => {
     if (!openPr || !worktree) return;
@@ -1609,6 +1639,28 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
             </button>
           </div>
 
+          {/* CI Status Badge */}
+          {openPr && (
+            <div className="mt-2 flex items-center gap-2">
+              {checksLoading ? (
+                <span className="inline-block px-2 py-1 text-xs font-medium rounded-full bg-gray-200 text-gray-800">
+                  Loading CI...
+                </span>
+              ) : checks ? (
+                <span className={`inline-block px-2 py-1 text-xs font-medium rounded-full ${
+                  checks.state === 'passing' ? 'bg-green-500 text-white' :
+                  checks.state === 'failing' ? 'bg-red-500 text-white' :
+                  checks.state === 'pending' ? 'bg-amber-500 text-white' :
+                  'bg-gray-200 text-gray-800'
+                }`}>
+                  {checks.state === 'passing' ? 'CI passing' :
+                   checks.state === 'failing' ? 'CI failing' :
+                   checks.state === 'pending' ? 'CI pending' : 'CI state unknown'}
+                </span>
+              ) : null}
+            </div>
+          )}
+
           {/* Approve is shown DISABLED with the reason rather than hidden.
               Silently omitting it leaves the user wondering where it went; the
               real answer — GitHub will not let you approve your own PR — is
@@ -1653,7 +1705,12 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
             Pull requests for this branch
           </p>
           <button
-            onClick={() => void loadPrs()}
+            onClick={() => {
+              void loadPrs();
+              if (openPr) {
+                void loadChecks();
+              }
+            }}
             className="text-[11px] text-text-secondary hover:text-black"
           >
             Refresh

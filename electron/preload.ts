@@ -1989,6 +1989,13 @@ const api = {
       body?: string
     ): Promise<IpcResult<void>> =>
       ipcRenderer.invoke(IPC.PR_REVIEW, worktreePath, prNumber, action, body),
+    
+    /** CI checks for this PR (KIT-PR-P11). */
+    checks: (
+      worktreePath: string,
+      branchName: string
+    ): Promise<IpcResult<import('../../shared/ci-checks').CiChecksSummary>> =>
+      ipcRenderer.invoke(IPC.PR_CHECKS, worktreePath, branchName),
   },
 
   merge: {

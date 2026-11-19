@@ -7,11 +7,12 @@ import { ipcMain, BrowserWindow, dialog, app } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import type { Services } from '../services';
 import { listPullRequests, canApprove, reviewPullRequest, type PrReviewAction } from '../services/GitHubService';
-import { createGhRunner } from '../../shared/github-cli';
+import { createGhRunner, classifyGhFailure, describeGhFailure } from '../../shared/github-cli';
 import { databaseService } from '../services/DatabaseService';
 import { isActiveInstance } from '../../shared/instance-status';
 import { existsSync } from 'fs';
 import { checkResolveCommand } from '../../shared/resolve-commands';
+import { summarizeChecks } from '../../shared/ci-checks';
 
 // Coalesce AI stream deltas before crossing the IPC boundary. The Groq stream
 // yields one delta per token; sending each over webContents.send() individually
@@ -548,6 +549,36 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
         : { success: false, error: { code: 'PR_REVIEW_FAILED', message: r.message } };
     }
   );
+
+  // KIT-PR-P11 — fetch CI status for a PR via `gh pr checks`
+  ipcMain.handle(IPC.PR_CHECKS, async (_e: unknown, worktreePath: string, branchName: string) => {
+    try {
+      const gh = createGhRunner();
+      const checksResult = await gh(['pr', 'checks', branchName, '--required', '--json', 'name,state,bucket'], worktreePath);
+      if (!checksResult.ok) {
+        const ghFailure = classifyGhFailure(checksResult);
+        return {
+          success: false,
+          error: {
+            code: 'PR_CHECKS_FAILED',
+            message: ghFailure ? describeGhFailure(ghFailure) : 'Failed to fetch CI checks from GitHub',
+          },
+        };
+      }
+      
+      const checks = JSON.parse(checksResult.stdout) as Array<{ name: string; state: string; bucket?: string }>;
+      const summary = summarizeChecks(checks);
+      return { success: true, data: summary };
+    } catch (err) {
+      return {
+        success: false,
+        error: {
+          code: 'PR_CHECKS_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  });
 
   ipcMain.handle(IPC.INSTANCE_SET_PINNED, async (_e: unknown, sessionId: string, pinned: boolean) => {
     return services.agentInstance.setSessionPinned(sessionId, pinned);
