@@ -16,6 +16,7 @@ import type {
   IpcResult,
 } from '../../shared/types';
 import type { PathProtection } from '../../shared/protected-paths';
+import { isHolderGone, type HolderLiveness } from '../../shared/lock-liveness';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -69,15 +70,19 @@ export class LockService extends BaseService {
   private sweepTimer: NodeJS.Timeout | null = null;
 
   /**
-   * Does this session still exist, and is it non-terminal?
+   * Where is this session in its life: `live`, `superseded` or `unknown`?
    *
    * Injected by the service wiring (`setSessionLivenessProvider`) so this
    * service does not have to depend on AgentInstanceService. The default
-   * treats every session as live, which is the behaviour before this was
-   * introduced — so an un-wired LockService (tests, any future embedder)
+   * reports every session `live`, which is the behaviour before any of this
+   * was introduced — so an un-wired LockService (tests, any future embedder)
    * never discards a lock on liveness grounds.
+   *
+   * The three states and the policy over them live in
+   * `shared/lock-liveness.ts`, which `electron/services/mcp/tools.ts` reads
+   * too. That shared module is the only place either layer decides this.
    */
-  private isSessionLive: (sessionId: string) => boolean = () => true;
+  private holderLiveness: (sessionId: string) => HolderLiveness = () => 'live';
 
   /**
    * Teach the service which sessions are still alive.
@@ -90,17 +95,33 @@ export class LockService extends BaseService {
    * `checkConflicts` reports a holder that no longer exists — which since H6
    * is exactly what `kit_lock_file` hands back to the calling agent.
    *
-   * Deliberate consequence: an id the provider has never heard of counts as
-   * dead. That is what makes a restart predecessor's leftovers stealable —
-   * `recordPredecessor` mints a NEW sessionId on restart, so locks left under
-   * the old id would otherwise block the very session that replaced it. The
-   * cost is that a lock can be stolen from a session whose instance record was
-   * purged while its watcher still runs; locks are advisory, so a stolen one
-   * is a far cheaper failure than a permanent phantom conflict.
+   * A restart predecessor's leftovers are stealable at once, because
+   * `recordPredecessor` mints a NEW sessionId and locks left under the old id
+   * would otherwise block the very session that replaced it. An id nothing
+   * recognises is different: that is missing information rather than evidence
+   * of death, so it is only reclaimed once the lock has outlived
+   * STALE_LOCK_GRACE_MS, which protects a session whose instance record has
+   * not finished loading.
    */
-  setSessionLivenessProvider(isLive: (sessionId: string) => boolean): void {
-    this.isSessionLive = isLive;
+  setSessionLivenessProvider(
+    liveness: (sessionId: string) => HolderLiveness
+  ): void {
+    this.holderLiveness = liveness;
     console.log('[LockService] Session liveness provider configured');
+  }
+
+  /**
+   * May this lock be taken from whoever holds it?
+   *
+   * The single question every path below asks, so the grace period and the
+   * three-state policy cannot be applied inconsistently between them.
+   */
+  private isLockHolderGone(lock: AutoFileLock, now: number = Date.now()): boolean {
+    return isHolderGone(
+      this.holderLiveness(lock.sessionId),
+      Date.parse(lock.lockedAt ?? ''),
+      now
+    );
   }
 
   async initialize(): Promise<void> {
@@ -268,7 +289,7 @@ export class LockService extends BaseService {
       if (
         existingLock &&
         existingLock.sessionId !== sessionId &&
-        !this.isSessionLive(existingLock.sessionId)
+        this.isLockHolderGone(existingLock)
       ) {
         // The holder is gone (closed, failed, or never came back from a crash
         // or a restart that re-ided the session). Reclaim rather than report a
@@ -469,7 +490,7 @@ export class LockService extends BaseService {
         if (
           lock &&
           lock.sessionId !== excludeSessionId &&
-          this.isSessionLive(lock.sessionId)
+          !this.isLockHolderGone(lock)
         ) {
           conflicts.push({
             file: relativePath,
@@ -556,7 +577,7 @@ export class LockService extends BaseService {
       // as NaN, and every comparison against it is false — which would pin
       // the lock forever. Treat it as expired instead.
       const expired = Number.isNaN(lastModified) || now - lastModified > timeoutMs;
-      if (expired || !this.isSessionLive(lock.sessionId)) {
+      if (expired || this.isLockHolderGone(lock, now)) {
         toRemove.push(filePath);
       }
     }

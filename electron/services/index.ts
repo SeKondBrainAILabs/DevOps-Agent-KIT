@@ -38,7 +38,7 @@ import { SessionOrchestrator } from './SessionOrchestrator';
 import { ensurePullRequest } from './GitHubService';
 import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from './DatabaseService';
-import { isActiveInstance } from '../../shared/instance-status';
+import { classifyLockHolder } from '../../shared/lock-liveness';
 import {
   initializeAnalysisServices,
   disposeAnalysisServices,
@@ -196,13 +196,16 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // was closed keeps its files locked, which blocks later sessions from
   // locking them and makes kit_lock_file report a holder that is long gone.
   // Instances are loaded synchronously in AgentInstanceService's constructor,
-  // so this answers correctly from the first call.
+  // so this answers correctly from the first call. The classifier separates a
+  // restart predecessor (reclaim at once) from an id nothing recognises
+  // (reclaim only after the grace period) — see shared/lock-liveness.ts, which
+  // the MCP tool layer reads too, so both cannot drift apart again.
   lock.setSessionLivenessProvider((sessionId) => {
     const listed = agentInstance.listInstances();
-    if (!listed.success || !listed.data) return true; // can't tell — assume live
-    return listed.data.some(
-      (inst) => inst.sessionId === sessionId && isActiveInstance(inst)
-    );
+    // Could not look. That is not "nothing is live" — report `live` so no lock
+    // is reclaimed on the strength of a failed lookup.
+    if (!listed.success || !listed.data) return 'live';
+    return classifyLockHolder(sessionId, listed.data);
   });
 
   // LockService.initialize() was never called, so neither of the two things it

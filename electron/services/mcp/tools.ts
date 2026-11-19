@@ -47,6 +47,12 @@ import { normalizeCloudEscalation } from '../../../shared/harness-types';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
+import {
+  classifyLockHolder,
+  isHolderGone,
+  type HolderLiveness,
+  type LivenessInstance,
+} from '../../../shared/lock-liveness';
 import { evaluateAutoCommitGuardForWorktree } from '../GitRewriteGuardIO';
 import { structuralCheckApplies, structuralSanityCheck, parserCommandFor } from '../file-parse-check';
 import { mayPushAfterPostCommitRebase, postCommitPushOptions, type PostCommitRebaseResult } from '../../../shared/post-commit-rebase';
@@ -106,9 +112,9 @@ interface McpCallLogger {
  * generic type inference when combining McpServer.tool() + Zod schemas.
  * TypeScript's type checker hangs (OOM) without this escape hatch.
  */
-// A lock younger than this is never treated as stale: a session being restored may not have
-// re-registered its id yet.
-export const STALE_LOCK_GRACE_MS = 10 * 60 * 1000;
+// Re-exported so existing importers keep working; the value and the policy over it now live in
+// shared/lock-liveness.ts, which LockService reads too.
+export { STALE_LOCK_GRACE_MS } from '../../../shared/lock-liveness';
 
 /** Who holds a conflicting lock. LockService reports `conflictsWith` and `session`; older
  *  callers passed `heldBy` and `sessionId`, which is all this tool used to read, so every
@@ -121,13 +127,41 @@ export function conflictHolderSession(c: any): string {
   return c.sessionId || c.session || 'unknown';
 }
 
-/** A conflict whose holder session KIT does not know (live or as a predecessor alias) and whose
- *  lock is older than the grace period. */
-export function isStaleLock(c: any, isKnown: (sessionId: string) => boolean, now: number = Date.now()): boolean {
+/**
+ * May this conflict's lock be taken from its holder?
+ *
+ * Delegates to shared/lock-liveness.ts, the one place this is decided. It used to ask
+ * `binder.getSession(id)` and apply the grace period to every unknown holder alike, which
+ * disagreed with LockService: `registerExistingSessionsWithBinder` registers each
+ * `predecessorSessionIds` entry against the current worktree, so after a KIT restart the binder
+ * answered to the old id and this read a dead holder as live — the case that pinned locks forever.
+ *
+ * `liveness` comes from `holderLivenessFromDeps` below, so both layers classify from the same
+ * instance list by the same rules. A `superseded` holder is reclaimed at once; an `unknown` one
+ * still waits out the grace period.
+ */
+export function isStaleLock(
+  c: any,
+  liveness: (sessionId: string) => HolderLiveness,
+  now: number = Date.now()
+): boolean {
   const holder = c.sessionId || c.session;
-  if (!holder || isKnown(holder)) return false;
-  const declared = Date.parse(c.declaredAt || c.lockedAt || '');
-  return Number.isFinite(declared) && now - declared > STALE_LOCK_GRACE_MS;
+  if (!holder) return false;
+  return isHolderGone(liveness(holder), Date.parse(c.declaredAt || c.lockedAt || ''), now);
+}
+
+/**
+ * The tool layer's liveness source: the same instance list LockService classifies from.
+ *
+ * Falls back to `live` when there is no instance service or the lookup fails — a failed lookup is
+ * missing information, never grounds to take someone's lock.
+ */
+export function holderLivenessFromDeps(deps: McpServiceDeps): (sessionId: string) => HolderLiveness {
+  return (sessionId: string) => {
+    const listed = deps.agentInstanceService?.listInstances?.();
+    if (!listed || !listed.success || !listed.data) return 'live';
+    return classifyLockHolder(sessionId, listed.data as LivenessInstance[]);
+  };
 }
 
 export function registerTools(
@@ -138,6 +172,9 @@ export function registerTools(
 ): void {
   // Cast to any to avoid TS compiler OOM from complex zod+MCP generic inference
   const srv: any = server;
+
+  // Same question, same answer as LockService — see shared/lock-liveness.ts.
+  const holderLiveness = holderLivenessFromDeps(deps);
 
   // ---------------------------------------------------------------------------
   // Session → AgentInstance resolution (predecessor-aware).
@@ -1157,7 +1194,7 @@ export function registerTools(
         // alias, was left by a session lost in a crash or restart. Nothing releases it, so it
         // blocked every later session on that file for good (2026-11-07: four harness test files
         // stayed locked by sessions lost in a reboot, and each story's retries failed on them).
-        const stale = found.filter((c: any) => isStaleLock(c, (id) => Boolean(binder.getSession(id))));
+        const stale = found.filter((c: any) => isStaleLock(c, holderLiveness));
         for (const c of stale) {
           await deps.lockService.forceReleaseLock(lockRoot, c.file || c.filePath);
         }

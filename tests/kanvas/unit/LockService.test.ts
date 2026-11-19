@@ -53,6 +53,7 @@ import type { AutoFileLock } from '../../../shared/types';
 import { promises as fsp, mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import type { HolderLiveness } from '../../../shared/lock-liveness';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -64,9 +65,21 @@ const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 const LIVE = 'sess_live';
 const DEAD = 'sess_dead';
+/** A session replaced by a restart: a successor instance lists it as a predecessor. */
+const SUPERSEDED = 'sess_superseded';
 
-/** Only LIVE is alive. Mirrors how services/index.ts wires the provider. */
-const onlyLiveIsAlive = (sessionId: string) => sessionId === LIVE;
+const GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * Mirrors how services/index.ts wires the provider: LIVE is a current session
+ * id, SUPERSEDED is some live instance's predecessor, anything else is an id
+ * nothing recognises.
+ */
+const liveness = (sessionId: string): HolderLiveness => {
+  if (sessionId === LIVE) return 'live';
+  if (sessionId === SUPERSEDED) return 'superseded';
+  return 'unknown';
+};
 
 const agoIso = (ms: number) => new Date(Date.now() - ms).toISOString();
 
@@ -375,30 +388,35 @@ describe('stale-lock pruning is wired up', () => {
   });
 });
 
-describe('locks held by a session that no longer exists', () => {
-  it('are pruned even when they are recent', async () => {
-    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+describe('locks whose session a restart superseded', () => {
+  // The case the two oracles used to disagree on. The binder answers to a
+  // predecessor id (registerExistingSessionsWithBinder registers every entry in
+  // predecessorSessionIds against the current worktree), so the tool layer read
+  // the holder as live and kept the lock — which is what pinned locks forever,
+  // because the successor session has a different id. A predecessor is positive
+  // evidence that the process holding the lock is gone, so no grace applies.
+
+  it('are pruned even when the lock was taken seconds ago', async () => {
+    lockService.setSessionLivenessProvider(liveness);
     await seedLocksFile({
-      'src/dead.ts': lockRecord({ filePath: 'src/dead.ts', sessionId: DEAD }),
+      'src/old.ts': lockRecord({ filePath: 'src/old.ts', sessionId: SUPERSEDED }),
       'src/live.ts': lockRecord({ filePath: 'src/live.ts', sessionId: LIVE }),
     });
 
     const summary = await lockService.getRepoLocks(repoPath);
 
     expect(summary.data?.totalLocks).toBe(1);
-    expect(summary.data?.locksBySession[DEAD]).toBeUndefined();
+    expect(summary.data?.locksBySession[SUPERSEDED]).toBeUndefined();
   });
 
-  it('are reclaimed by the next session to touch the file, not reported as a conflict', async () => {
-    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+  it('are reclaimed by the successor, not reported as a conflict', async () => {
+    lockService.setSessionLivenessProvider(liveness);
     await seedLocksFile({
-      'src/app.ts': lockRecord({ sessionId: DEAD, agentType: 'cursor' }),
+      'src/app.ts': lockRecord({ sessionId: SUPERSEDED, agentType: 'cursor' }),
     });
 
     const result = await lockService.autoLockFile(repoPath, 'src/app.ts', LIVE, 'claude', 'feat/y');
 
-    // The new session owns it. Before this change the dead session's lock was
-    // returned as a conflict and the new lock was never written — forever.
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({
       sessionId: LIVE,
@@ -409,27 +427,26 @@ describe('locks held by a session that no longer exists', () => {
   });
 
   it('are not reported by checkConflicts', async () => {
-    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+    lockService.setSessionLivenessProvider(liveness);
     await seedLocksFile({
-      'src/dead.ts': lockRecord({ filePath: 'src/dead.ts', sessionId: DEAD }),
+      'src/old.ts': lockRecord({ filePath: 'src/old.ts', sessionId: SUPERSEDED }),
       'src/live.ts': lockRecord({ filePath: 'src/live.ts', sessionId: LIVE }),
     });
 
     const conflicts = await lockService.checkConflicts(
       repoPath,
-      ['src/dead.ts', 'src/live.ts'],
+      ['src/old.ts', 'src/live.ts'],
       'sess_asking'
     );
 
-    expect(conflicts.success).toBe(true);
     expect(conflicts.data?.map((c) => c.file)).toEqual(['src/live.ts']);
   });
 
   it('includes declared locks, which share the store since H6', async () => {
-    // kit_lock_file writes into this same map, so a dead session's
+    // kit_lock_file writes into this same map, so a superseded session's
     // DECLARATION would otherwise keep refusing every later kit_lock_file.
-    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
-    await lockService.declareFiles(repoPath, DEAD, ['src/app.ts'], 'edit', 'cursor');
+    lockService.setSessionLivenessProvider(liveness);
+    await lockService.declareFiles(repoPath, SUPERSEDED, ['src/app.ts'], 'edit', 'cursor');
 
     const conflicts = await lockService.checkConflicts(repoPath, ['src/app.ts'], LIVE);
 
@@ -437,9 +454,52 @@ describe('locks held by a session that no longer exists', () => {
   });
 });
 
+describe('locks held by a session nothing recognises', () => {
+  // An id no instance knows is an ABSENCE of evidence, not evidence of death:
+  // a session can read as unknown while its record is still loading. This is
+  // where PR #42's grace period is right, and it is kept — the reciprocal
+  // concession to taking a superseded holder's lock immediately.
+
+  it('are kept while the lock is younger than the grace period', async () => {
+    lockService.setSessionLivenessProvider(liveness);
+    await seedLocksFile({
+      'src/app.ts': lockRecord({ sessionId: DEAD, lockedAt: agoIso(GRACE_MS / 2) }),
+    });
+
+    const conflicts = await lockService.checkConflicts(repoPath, ['src/app.ts'], 'sess_asking');
+
+    expect(conflicts.data?.map((c) => c.file)).toEqual(['src/app.ts']);
+    expect(await lockService.getFileLock(repoPath, 'src/app.ts')).not.toBeNull();
+  });
+
+  it('are reclaimed once the lock has outlived the grace period', async () => {
+    lockService.setSessionLivenessProvider(liveness);
+    await seedLocksFile({
+      'src/app.ts': lockRecord({ sessionId: DEAD, lockedAt: agoIso(GRACE_MS + 60_000) }),
+    });
+
+    const result = await lockService.autoLockFile(repoPath, 'src/app.ts', LIVE, 'claude', 'feat/y');
+
+    expect(result.data).toMatchObject({ sessionId: LIVE, agentType: 'claude' });
+  });
+
+  it('are left alone when lockedAt cannot be parsed, since the age is unreadable', async () => {
+    // Not immortal: the inactivity timeout still prunes a record whose
+    // lastModified is unreadable, independently of who holds it.
+    lockService.setSessionLivenessProvider(liveness);
+    await seedLocksFile({
+      'src/app.ts': lockRecord({ sessionId: DEAD, lockedAt: 'not-a-date' }),
+    });
+
+    const conflicts = await lockService.checkConflicts(repoPath, ['src/app.ts'], 'sess_asking');
+
+    expect(conflicts.data?.map((c) => c.file)).toEqual(['src/app.ts']);
+  });
+});
+
 describe('locks held by a live session', () => {
   it('still conflict in autoLockFile', async () => {
-    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+    lockService.setSessionLivenessProvider(liveness);
     await seedLocksFile({ 'src/app.ts': lockRecord({ sessionId: LIVE, agentType: 'cursor' }) });
 
     const result = await lockService.autoLockFile(
