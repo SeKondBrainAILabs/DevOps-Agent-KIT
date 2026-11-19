@@ -63,7 +63,12 @@ describe('Settings Code Organization', () => {
     (mockApi.contractRegistry?.getOrganizationConfig as jest.Mock)
       .mockResolvedValue({
         success: true,
-        data: { enabled: true, structure: 'feature-folders', setupCompleted: true },
+        data: {
+          enabled: true,
+          structure: 'feature-folders',
+          setupCompleted: true,
+          setupCompletedAt: '2024-01-01T00:00:00.000Z',
+        },
       });
     const mockSetOrgConfig = jest.fn().mockResolvedValue({ success: true });
     (mockApi.contractRegistry?.setOrganizationConfig as jest.Mock)
@@ -106,10 +111,16 @@ describe('Settings Code Organization', () => {
       expect(mockSetOrgConfig).toHaveBeenCalled();
     });
 
-    // Verify setOrganizationConfig was called with the new structure
+    // Verify setOrganizationConfig was called with the exact payload:
+    // structure 'flat', enabled false, setupCompleted true, and setupCompletedAt preserved
     expect(mockSetOrgConfig).toHaveBeenCalledWith(
       '/test/repo',
-      expect.objectContaining({ structure: 'flat' })
+      expect.objectContaining({
+        structure: 'flat',
+        enabled: false,
+        setupCompleted: true,
+        setupCompletedAt: '2024-01-01T00:00:00.000Z',
+      })
     );
   });
 
