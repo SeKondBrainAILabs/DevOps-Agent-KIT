@@ -122,7 +122,15 @@ describe('restartSession', () => {
       'restartInstance',
       'startWithPath',
     ]);
-    expect(h.deps.watcher.startWithPath).toHaveBeenCalledWith('sess_2', '/wt/sess_2');
+    // agentType/branchName come from the RESTARTED instance's config, so the
+    // auto-locks the new watcher writes name the real agent and branch rather
+    // than startWithPath's 'custom' default.
+    expect(h.deps.watcher.startWithPath).toHaveBeenCalledWith(
+      'sess_2',
+      '/wt/sess_2',
+      'claude',
+      'claude-session-1'
+    );
   });
 
   it('NEVER unbinds MCP during a restart', async () => {
@@ -166,7 +174,12 @@ describe('restartSession', () => {
 
     await h.orch.restartSession('sess_1');
 
-    expect(h.deps.watcher.startWithPath).toHaveBeenCalledWith('sess_2', '/repo');
+    expect(h.deps.watcher.startWithPath).toHaveBeenCalledWith(
+      'sess_2',
+      '/repo',
+      'claude',
+      'claude-session-1'
+    );
   });
 
   it('does not fail the restart when the watcher will not start', async () => {
@@ -288,7 +301,14 @@ describe('updateSession', () => {
 
     await h.orch.updateSession('sess_1', { autoCommit: true });
 
-    expect(h.deps.watcher.startWithPath).toHaveBeenCalled();
+    // Attributed like every other watcher start — re-enabling auto-commit is
+    // the third compose site, and it was passing neither value.
+    expect(h.deps.watcher.startWithPath).toHaveBeenCalledWith(
+      'sess_1',
+      '/wt/sess_1',
+      'claude',
+      'claude-session-1'
+    );
   });
 
   it('stops the watcher when auto_commit is turned off', async () => {

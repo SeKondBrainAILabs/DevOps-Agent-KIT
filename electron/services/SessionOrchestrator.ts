@@ -310,14 +310,17 @@ export class SessionOrchestrator {
    *      `createWorktreeIfNeeded` silently returns the repo path when worktree
    *      creation fails.
    *
-   * KNOWN, DELIBERATELY PRESERVED: `startWithPath` accepts
-   * `(sessionId, worktreePath, agentType = 'custom', branchName?)`, and only
-   * the first two are passed. Every session therefore auto-locks as agent type
-   * 'custom' regardless of the real agent, and `branchName` is always
-   * undefined. The config carries both values and passing them would be a
-   * genuine improvement — but it would change what `LockService.autoLockFile`
-   * records, and this story's acceptance criterion is byte-identical
-   * behaviour. Tracked separately.
+   * `agentType` and `branchName` are passed through so
+   * `LockService.autoLockFile` attributes each auto-lock to the agent and
+   * branch that actually touched the file. KIT-MCP-S1 deliberately left them
+   * off — its acceptance criterion was byte-identical behaviour, and these two
+   * arguments change what is persisted into
+   * `<repo>/.S9N_KIT_DevOpsAgent/locks.json` — so every session used to
+   * auto-lock as `'custom'` with no branch.
+   *
+   * The values come from the caller's `config` rather than
+   * `result.data.config`: `createInstance` stores that same object and only
+   * normalises `baseBranch`, which is not read here.
    */
   async startSession(config: AgentInstanceConfig): Promise<IpcResult<AgentInstance>> {
     const result = await this.deps.agentInstance.createInstance(config);
@@ -332,7 +335,12 @@ export class SessionOrchestrator {
     if (!isObserver && result.success && result.data?.sessionId) {
       const watchPath = result.data.worktreePath || config.repoPath;
       this.deps.watcher
-        .startWithPath(result.data.sessionId, watchPath)
+        .startWithPath(
+          result.data.sessionId,
+          watchPath,
+          config.agentType,
+          config.branchName
+        )
         .catch((err: unknown) => {
           console.warn(
             '[SessionOrchestrator] Failed to start watcher for new session:',
@@ -1120,7 +1128,12 @@ export class SessionOrchestrator {
       const watchPath = result.data.worktreePath || result.data.config?.repoPath;
       if (watchPath) {
         Promise.resolve(
-          this.deps.watcher.startWithPath(result.data.sessionId, watchPath)
+          this.deps.watcher.startWithPath(
+            result.data.sessionId,
+            watchPath,
+            result.data.config?.agentType,
+            result.data.config?.branchName
+          )
         ).catch((err) => {
           console.warn('[SessionOrchestrator] watcher failed to start after restart:', err);
         });
@@ -1288,7 +1301,14 @@ export class SessionOrchestrator {
       if (patch.autoCommit) {
         const watchPath = instance.worktreePath || instance.config?.repoPath;
         if (watchPath) {
-          Promise.resolve(this.deps.watcher.startWithPath(liveId, watchPath)).catch((err) => {
+          Promise.resolve(
+            this.deps.watcher.startWithPath(
+              liveId,
+              watchPath,
+              instance.config?.agentType,
+              instance.config?.branchName
+            )
+          ).catch((err) => {
             console.warn('[SessionOrchestrator] watcher failed to start on update:', err);
           });
         }

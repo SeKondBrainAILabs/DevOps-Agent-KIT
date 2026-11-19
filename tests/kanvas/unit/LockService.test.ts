@@ -16,6 +16,27 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 // LockService computes SESSION_LOCK_DIR from os.homedir() at module load, and
 // initialize() deletes stale .lock files under it. Point it at a temp dir so a
 // test run cannot touch the developer's own ~/.devops-agent/session-locks.
+// WatcherService (exercised by the attribution tests below) imports both of
+// these at module scope.
+jest.mock('chokidar', () => ({
+  __esModule: true,
+  default: {
+    watch: jest.fn(() => ({
+      on: jest.fn().mockReturnThis(),
+      close: jest.fn(async () => undefined),
+    })),
+  },
+}));
+
+jest.mock('../../../electron/services/DatabaseService', () => ({
+  databaseService: {
+    getSetting: jest.fn(),
+    setSetting: jest.fn(),
+    recordCommit: jest.fn(),
+    recordSessionEvent: jest.fn(),
+  },
+}));
+
 jest.mock('os', () => {
   const actual = jest.requireActual<typeof import('os')>('os');
   const nodePath = jest.requireActual<typeof import('path')>('path');
@@ -27,6 +48,7 @@ jest.mock('os', () => {
 // ─── Import after mocking ────────────────────────────────────────────────────
 
 import { LockService } from '../../../electron/services/LockService';
+import { WatcherService } from '../../../electron/services/WatcherService';
 import type { AutoFileLock } from '../../../shared/types';
 import { promises as fsp, mkdtempSync, rmSync } from 'fs';
 import os from 'os';
@@ -128,5 +150,92 @@ describe('LockService.declareFiles', () => {
     const declared = await lockService.listDeclarations(repoPath);
 
     expect(declared.data?.map((l) => l.filePath)).toEqual(['src/declared.ts']);
+  });
+});
+
+// ─── Attribution: WatcherService -> LockService ──────────────────────────────
+describe('auto-lock attribution', () => {
+  const WATCH_SESSION = 'sess_watch';
+  const REL_FILE = 'src/app.ts';
+
+  const makeGitService = () =>
+    ({
+      registerWorktree: jest.fn(),
+      getStatus: jest.fn(async () => ({ success: true, data: { changes: [] } })),
+      commit: jest.fn(async () => ({ success: true, data: { hash: 'abc', shortHash: 'abc' } })),
+      push: jest.fn(async () => ({ success: true })),
+    }) as never;
+
+  const makeActivityService = () =>
+    ({ log: jest.fn(), logFileActivity: jest.fn(), linkToCommit: jest.fn(() => 0) }) as never;
+
+  /** Lets the fire-and-forget autoLockFile promise settle. */
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  let watcher: WatcherService;
+  let worktreePath: string;
+  let sourceRepo: string;
+
+  beforeEach(async () => {
+    // startWithPath derives the repo root from the worktree path, so lay the
+    // dirs out the way it expects: <parent>/KIT-DevOps-<repo>/<branch>.
+    sourceRepo = path.join(repoPath, 'myapp');
+    worktreePath = path.join(repoPath, 'KIT-DevOps-myapp', 'feat-attribution');
+    await fsp.mkdir(sourceRepo, { recursive: true });
+    await fsp.mkdir(worktreePath, { recursive: true });
+
+    watcher = new WatcherService(makeGitService(), makeActivityService());
+    watcher.setLockService(lockService);
+  });
+
+  afterEach(async () => {
+    // releaseLocks:false — releasing would delete the record under assertion.
+    await watcher.stopAll(WATCH_SESSION, false);
+  });
+
+  it('records the agent type and branch the watcher was started with', async () => {
+    await watcher.startWithPath(WATCH_SESSION, worktreePath, 'cursor', 'feat/attribution');
+    watcher.handleExternalFileChange(WATCH_SESSION, path.join(worktreePath, REL_FILE), 'change');
+    await flush();
+
+    const lock = await lockService.getFileLock(sourceRepo, REL_FILE);
+
+    expect(lock).not.toBeNull();
+    expect(lock?.agentType).toBe('cursor');
+    expect(lock?.branchName).toBe('feat/attribution');
+  });
+
+  it('falls back to custom with no branch when started without them', async () => {
+    // Guards the default every production call site used to hit. Without this
+    // contrast case the test above would pass on the default too.
+    await watcher.startWithPath(WATCH_SESSION, worktreePath);
+    watcher.handleExternalFileChange(WATCH_SESSION, path.join(worktreePath, REL_FILE), 'change');
+    await flush();
+
+    const lock = await lockService.getFileLock(sourceRepo, REL_FILE);
+
+    expect(lock?.agentType).toBe('custom');
+    expect(lock?.branchName).toBeUndefined();
+  });
+
+  it('persists the attribution to locks.json', async () => {
+    await watcher.startWithPath(WATCH_SESSION, worktreePath, 'aider', 'feat/attribution');
+    watcher.handleExternalFileChange(WATCH_SESSION, path.join(worktreePath, REL_FILE), 'change');
+    await flush();
+    await new Promise((r) => setTimeout(r, SAVE_DEBOUNCE_WAIT_MS));
+
+    const persisted = JSON.parse(
+      await fsp.readFile(
+        path.join(sourceRepo, '.S9N_KIT_DevOpsAgent', 'locks.json'),
+        'utf8'
+      )
+    );
+
+    expect(persisted[REL_FILE]).toMatchObject({
+      agentType: 'aider',
+      branchName: 'feat/attribution',
+    });
   });
 });
