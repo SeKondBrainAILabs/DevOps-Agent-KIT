@@ -15,6 +15,10 @@
  * committed: a sandboxed coding engine can write that worktree's node_modules,
  * and loading it would run its code in this process on the host.
  *
+ * The parse runs in a child process with a timeout and a heap cap
+ * (typeScriptSyntaxErrorsBounded): the content is agent-written, and in this
+ * process a tiny file can block the main thread for days or exhaust the heap.
+ *
  * structuralSanityCheck is NOT a parser: it mis-reads regex literals, JSX text
  * apostrophes and multi-line JSX attributes. The commit gate uses it only when
  * no TypeScript can be loaded, and then refuses a file only when the scanner
@@ -22,7 +26,7 @@
  * commit. checkContentParses does not use it.
  */
 
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
@@ -130,6 +134,9 @@ type TypeScriptModule = typeof import('typescript');
 /** The app's TypeScript compiler once resolved (null: none usable). */
 let appTypeScript: TypeScriptModule | null | undefined;
 
+/** The file appTypeScript was loaded from (what the bounded parse child requires). */
+let appTypeScriptFile: string | null = null;
+
 /** This module's directory as the bundler or runtime gave it (electron-vite sets it from import.meta.dirname). */
 const MODULE_DIRNAME: unknown = typeof __dirname === 'string' ? __dirname : undefined;
 
@@ -153,6 +160,7 @@ export function appModuleDir(): string | null {
  */
 export function resetAppTypeScriptForTests(opts?: { moduleDirname?: unknown }): void {
   appTypeScript = undefined;
+  appTypeScriptFile = null;
   moduleDirname = opts && 'moduleDirname' in opts ? opts.moduleDirname : MODULE_DIRNAME;
 }
 
@@ -182,13 +190,23 @@ export function loadAppTypeScript(): TypeScriptModule | null {
   }
   let mod: TypeScriptModule | null = null;
   try {
-    const candidate = createRequire(path.join(dir, 'noop.js'))('typescript');
-    if (usableTypeScript(candidate)) mod = candidate;
+    const appRequire = createRequire(path.join(dir, 'noop.js'));
+    const file = appRequire.resolve('typescript');
+    const candidate = appRequire(file);
+    if (usableTypeScript(candidate) && path.isAbsolute(file)) {
+      mod = candidate;
+      appTypeScriptFile = file;
+    }
   } catch {
     mod = null;
   }
   appTypeScript = mod;
   return mod;
+}
+
+/** The absolute file the app's TypeScript loaded from; null until loadAppTypeScript succeeds. */
+export function loadedAppTypeScriptFile(): string | null {
+  return appTypeScript ? appTypeScriptFile : null;
 }
 
 /** A syntax error TypeScript's parser reported: 1-based line and column. */
@@ -205,18 +223,102 @@ export interface TypeScriptSyntaxError {
  * array literals (RangeError: Maximum call stack size exceeded).
  */
 export function typeScriptSyntaxErrors(ts: TypeScriptModule, fileName: string, content: string): TypeScriptSyntaxError[] {
-  const ext = path.extname(fileName).slice(1).toLowerCase();
-  const kind = ext === 'tsx' ? ts.ScriptKind.TSX
-    : ext === 'jsx' ? ts.ScriptKind.JSX
-    : ext === 'js' || ext === 'mjs' || ext === 'cjs' ? ts.ScriptKind.JS
-    : ts.ScriptKind.TS;
-  // tsc reads files through sys.readFile, which drops a leading BOM; do the same so '\uFEFF#!' parses.
-  const text = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
-  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, false, kind);
+  const sf = ts.createSourceFile(fileName, withoutBom(content), ts.ScriptTarget.Latest, false, ts.ScriptKind[scriptKindName(fileName)]);
   const diags: import('typescript').Diagnostic[] = (sf as any).parseDiagnostics ?? [];
   return diags.map((d) => {
     const pos = sf.getLineAndCharacterOfPosition(d.start ?? 0);
     return { line: pos.line + 1, column: pos.character + 1, message: ts.flattenDiagnosticMessageText(d.messageText, ' ') };
+  });
+}
+
+/** The ScriptKind a file parses as, by extension. */
+function scriptKindName(fileName: string): 'TS' | 'TSX' | 'JS' | 'JSX' {
+  const ext = path.extname(fileName).slice(1).toLowerCase();
+  return ext === 'tsx' ? 'TSX'
+    : ext === 'jsx' ? 'JSX'
+    : ext === 'js' || ext === 'mjs' || ext === 'cjs' ? 'JS'
+    : 'TS';
+}
+
+/** tsc reads files through sys.readFile, which drops a leading BOM; do the same so '\uFEFF#!' parses. */
+function withoutBom(content: string): string {
+  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+}
+
+/** Wall-clock bound on one commit-gate TypeScript parse (the same as the Python and JS parsers'). */
+export const TS_PARSE_TIMEOUT_MS = 5_000;
+/** Heap bound on one commit-gate TypeScript parse, in MB (a ~20 MB source file fits). */
+export const TS_PARSE_MAX_HEAP_MB = 2_048;
+/** Most child output the gate reads; the child prints at most three errors. */
+const TS_PARSE_MAX_OUTPUT = 64 * 1024;
+
+/**
+ * The bounded parse child: argv is [typescript file, file name, ScriptKind
+ * name], the source arrives on stdin, and it prints the first three syntax
+ * errors and their total as JSON, or the message of what the parser threw.
+ */
+const TS_PARSE_CHILD = `
+const ts = require(process.argv[1]);
+const fileName = process.argv[2];
+const kind = ts.ScriptKind[process.argv[3]];
+const chunks = [];
+process.stdin.on('data', (c) => chunks.push(c));
+process.stdin.on('end', () => {
+  let out;
+  try {
+    const sf = ts.createSourceFile(fileName, Buffer.concat(chunks).toString('utf8'), ts.ScriptTarget.Latest, false, kind);
+    const diags = sf.parseDiagnostics || [];
+    out = { total: diags.length, errors: diags.slice(0, 3).map((d) => {
+      const pos = sf.getLineAndCharacterOfPosition(d.start || 0);
+      return { line: pos.line + 1, column: pos.character + 1, message: ts.flattenDiagnosticMessageText(d.messageText, ' ') };
+    }) };
+  } catch (e) {
+    out = { threw: e && e.message ? String(e.message) : String(e) };
+  }
+  process.stdout.write(JSON.stringify(out));
+});
+`;
+
+/**
+ * typeScriptSyntaxErrors, bounded: runs the parse in a child process (the
+ * app's own runtime as node, the TypeScript at `tsFile`, the temp directory as
+ * its working directory) killed after TS_PARSE_TIMEOUT_MS or past
+ * TS_PARSE_MAX_HEAP_MB. The content is agent-written, and in this process a
+ * 200-byte `async (` chain blocks the main thread for days (the parser
+ * backtracks exponentially) and a ~40 MB file exhausts the heap. Resolves the
+ * first three errors and their total; rejects when the parse threw (with the
+ * parser's message), timed out, or the child failed.
+ */
+export function typeScriptSyntaxErrorsBounded(
+  tsFile: string,
+  fileName: string,
+  content: string,
+): Promise<{ errors: TypeScriptSyntaxError[]; total: number }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [`--max-old-space-size=${TS_PARSE_MAX_HEAP_MB}`, '-e', TS_PARSE_CHILD, tsFile, fileName, scriptKindName(fileName)],
+      { cwd: tmpdir(), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, TS_PARSE_TIMEOUT_MS);
+    child.stdout.on('data', (c: Buffer) => { if (stdout.length < TS_PARSE_MAX_OUTPUT) stdout += c.toString('utf8'); });
+    child.stderr.on('data', (c: Buffer) => { if (stderr.length < TS_PARSE_MAX_OUTPUT) stderr += c.toString('utf8'); });
+    child.stdin.on('error', () => { /* the child died first: 'close' reports why */ });
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new Error(`timed out after ${Math.round(TS_PARSE_TIMEOUT_MS / 1000)} s`));
+      let out: any = null;
+      try { out = JSON.parse(stdout); } catch { out = null; }
+      if (code === 0 && out && typeof out.threw === 'string') return reject(new Error(out.threw));
+      if (code === 0 && out && Array.isArray(out.errors) && typeof out.total === 'number') return resolve({ errors: out.errors, total: out.total });
+      const why = /heap out of memory/i.test(stderr) ? 'out of memory' : (stderr.trim().split('\n').pop() || '').slice(0, 200);
+      reject(new Error(`parser process exited with ${signal ?? code}${why ? `: ${why}` : ''}`));
+    });
+    child.stdin.end(withoutBom(content));
   });
 }
 
@@ -246,15 +348,24 @@ export async function checkTypeScriptLikeFile(opts: {
   const ts = (opts.loadTypeScript ?? loadAppTypeScript)();
   if (ts) {
     let errors: TypeScriptSyntaxError[];
+    let total: number;
     try {
-      errors = typeScriptSyntaxErrors(ts, rel, content);
+      // The app's TypeScript parses in a bounded child (typeScriptSyntaxErrorsBounded); an
+      // injected compiler (tests) has no file to load there and parses in this process.
+      const tsFile = opts.loadTypeScript ? null : loadedAppTypeScriptFile();
+      if (tsFile) {
+        ({ errors, total } = await typeScriptSyntaxErrorsBounded(tsFile, rel, content));
+      } else {
+        errors = typeScriptSyntaxErrors(ts, rel, content);
+        total = errors.length;
+      }
     } catch (err) {
       return { file: rel, error: `TypeScript parser failed: ${err instanceof Error ? err.message : String(err)}` };
     }
-    if (errors.length === 0) return null;
+    if (total === 0) return null;
     const shown = errors.slice(0, 3).map((e) => `line ${e.line}, column ${e.column}: ${e.message}`);
-    const more = errors.length > 3 ? ` (+${errors.length - 3} more)` : '';
-    return { file: rel, line: errors[0].line, error: `TypeScript syntax error: ${shown.join('; ')}${more}` };
+    const more = total > shown.length ? ` (+${total - shown.length} more)` : '';
+    return { file: rel, line: errors[0]?.line, error: `TypeScript syntax error: ${shown.join('; ')}${more}` };
   }
 
   const problem = structuralSanityCheck(content);
