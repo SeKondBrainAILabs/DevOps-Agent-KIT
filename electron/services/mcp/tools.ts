@@ -12,6 +12,7 @@
  * - kit_unlock_file
  * - kit_get_commit_history
  * - kit_request_review
+ * - kit_get_pr_state (read-only: the branch's PR is OPEN / MERGED / CLOSED, or none)
  *
  * Workspace + repo state (v2.5 additions):
  * - kit_workspace_list / kit_workspace_add / kit_workspace_scan
@@ -54,7 +55,7 @@ import {
   type LivenessInstance,
 } from '../../../shared/lock-liveness';
 import { evaluateAutoCommitGuardForWorktree } from '../GitRewriteGuardIO';
-import { structuralCheckApplies, structuralSanityCheck, parserCommandFor } from '../file-parse-check';
+import { structuralCheckApplies, structuralSanityCheck, parserCommandFor, checkTypeScriptLikeFile } from '../file-parse-check';
 import { mayPushAfterPostCommitRebase, postCommitPushOptions, type PostCommitRebaseResult } from '../../../shared/post-commit-rebase';
 
 // Re-exported: the sanity-gate tests and other callers import them from here.
@@ -254,16 +255,15 @@ export function registerTools(
 
     // 2. Parser gate — never bypassable. A failing parse means the file on
     //    disk is broken; force=true can't pretend otherwise.
-    const parseFailures: Array<{ file: string; error: string }> = [];
+    const parseFailures: Array<{ file: string; error: string; line?: number }> = [];
     for (const { path: rel, deleted } of changedPaths) {
       if (deleted) continue;
       if (!PARSE_CHECKABLE.test(rel)) continue;
       const abs = join(worktreePath, rel);
       if (!existsSync(abs)) continue;
       const ext = rel.toLowerCase().split('.').pop() || '';
-      // TS/TSX/JSX have no cheap parser here (tsc is too heavy, node --check
-      // rejects TS syntax): parserCommandFor returns null and the structural
-      // check below runs instead.
+      // TS/TSX/JSX have no parser command (node --check rejects TS syntax):
+      // parserCommandFor returns null and checkTypeScriptLikeFile below runs.
       const cmd = parserCommandFor(ext, abs);
       if (cmd) {
         try {
@@ -273,7 +273,8 @@ export function registerTools(
               : typeof mod.default === 'function' ? mod.default
               : mod.default?.execa;
           }
-          await _execa!(cmd.bin, cmd.args, { cwd: worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
+          // cmd.cwd: Python runs from the temp directory, never the worktree (parserCommandFor).
+          await _execa!(cmd.bin, cmd.args, { cwd: cmd.cwd ?? worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
         } catch (err: any) {
           const stderr = (err?.stderr || err?.message || '').toString();
           parseFailures.push({ file: rel, error: stderr.split('\n').slice(0, 4).join('\n') });
@@ -281,16 +282,34 @@ export function registerTools(
         }
       }
 
-      // Structural sanity check — only where there is no real parser (TS/TSX/JSX).
-      // On Py/JS the parser above has decided; truncation is the shrink check's job.
-      // ~1ms/file, no subprocess.
+      // TS/TSX/JSX: a syntax-only parse with the app's own TypeScript compiler
+      // (never one from the worktree: the coding engine can write it); the
+      // structural scanner only when no TypeScript loads, and then only for
+      // breakage HEAD does not already have. On Py/JS the parser above has
+      // decided; truncation is the shrink check's job.
       if (!structuralCheckApplies(ext, cmd !== null)) continue;
+      let content: string;
       try {
         const fs = await import('fs/promises');
-        const content = await fs.readFile(abs, 'utf8');
-        const problem = structuralSanityCheck(content);
-        if (problem) parseFailures.push({ file: rel, error: `structural: ${problem}` });
-      } catch { /* best-effort */ }
+        content = await fs.readFile(abs, 'utf8');
+      } catch { continue; /* best-effort: unreadable now, git reports it */ }
+      // Not best-effort: a check that throws refuses the file rather than letting it through unparsed.
+      try {
+        const failure = await checkTypeScriptLikeFile({
+          rel,
+          content,
+          readHead: async () => {
+            try {
+              return (await gitInWorktree(['show', `HEAD:${rel}`], worktreePath)).stdout;
+            } catch {
+              return null; // new at HEAD
+            }
+          },
+        });
+        if (failure) parseFailures.push(failure);
+      } catch (err) {
+        parseFailures.push({ file: rel, error: `TypeScript parser failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
     }
 
     if (parseFailures.length > 0) {
@@ -1540,6 +1559,59 @@ export function registerTools(
   );
 
   // --------------------------------------------------------------------------
+  // kit_get_pr_state — Is the branch's pull request open, merged or closed?
+  // --------------------------------------------------------------------------
+  srv.tool(
+    'kit_get_pr_state',
+    'Read-only. The pull request for a branch: {ok: true, branch, pr: null | {number, url, state: "OPEN"|"MERGED"|"CLOSED", base, head, is_draft}}. ' +
+    'Pass session_id (its repo and branch are used) or repo_path + branch. pr is null when the branch has no PR, or (with reason "not_github") the repo has no GitHub remote. ' +
+    'Errors are {ok: false, error, message}: error is UNKNOWN_SESSION, INVALID_ARGS, INVALID_REPO, UNAVAILABLE, GH_UNAVAILABLE (gh missing or logged out; reason not_installed | not_authenticated) or GH_ERROR (any other gh failure, never reported as pr: null). ' +
+    'Call this before pushing more commits to a PR branch: kit_request_review on a branch whose PR is MERGED or CLOSED opens a NEW pull request. ' +
+    'Creates and edits nothing. Allowed for observers.',
+    {
+      session_id: z.string().optional().describe('The session whose PR to look up; its repo and branch are used, and repo_path/branch are then ignored. Like every session_id tool, it is also logged as the caller. Omit to pass repo_path + branch.'),
+      repo_path: z.string().optional().describe('Absolute path to the repository (with branch, when no session_id).'),
+      branch: z.string().optional().describe('The branch whose PR to look up (with repo_path, when no session_id). origin/ and refs/heads/ are stripped.'),
+    },
+    withCallLog('kit_get_pr_state', async ({ session_id, repo_path, branch }) => {
+      const reply = (payload: Record<string, unknown>) => ({
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+      });
+      const bareBranch = (b: string | undefined) => b?.replace(/^refs\/heads\//, '').replace(/^origin\//, '');
+
+      let cwd: string | undefined;
+      let branchName: string | undefined;
+      if (session_id) {
+        const inst = resolveInstance(session_id);
+        if (!inst) {
+          return reply({ ok: false, error: 'UNKNOWN_SESSION', message: `No KIT session ${session_id}.`, session_id });
+        }
+        branchName = bareBranch(inst.config?.branchName);
+        // A closed session's worktree may be gone; gh only needs a checkout of the repo.
+        cwd = [inst.worktreePath, inst.config?.repoPath].find((p: any) => p && existsSync(p));
+      } else {
+        if (!repo_path || !branch) {
+          return reply({ ok: false, error: 'INVALID_ARGS', message: 'Pass session_id, or repo_path and branch.' });
+        }
+        branchName = bareBranch(branch);
+        cwd = existsSync(repo_path) ? repo_path : undefined;
+        if (!cwd) {
+          return reply({ ok: false, error: 'INVALID_REPO', message: `No such directory: ${repo_path}`, branch: branchName });
+        }
+      }
+      if (!branchName || !cwd) {
+        return reply({ ok: false, error: 'INVALID_ARGS', message: 'Could not resolve a branch and a checkout for this session.', branch: branchName ?? null });
+      }
+      if (!deps.githubService?.getPullRequestState) {
+        return reply({ ok: false, error: 'UNAVAILABLE', message: 'githubService.getPullRequestState not available', branch: branchName });
+      }
+
+      const result = await deps.githubService.getPullRequestState(cwd, branchName);
+      return reply({ ...result, branch: branchName });
+    })
+  );
+
+  // --------------------------------------------------------------------------
   // kit_merge — Execute a merge via the same code path as the UI merge modal.
   // Enforces the S9N-6394 CI gate for protected targets (main/master/
   // production/release). Agents must not pass force=true unless the user has
@@ -2026,15 +2098,17 @@ export function registerTools(
     {
       target_session_id: z.string().describe('The session to restart. This is the TARGET — pass your own id as caller_session_id.'),
       caller_session_id: z.string().optional().describe('YOUR session id.'),
-      commit_changes: z.boolean().optional().describe('Commit any uncommitted work before restarting. Default true — setting this false risks losing it.'),
+      commit_changes: z.boolean().optional().describe('Commit any uncommitted work before restarting. Default true — setting this false risks losing it. Exception: in a session adopted without auto_commit the default is not to commit (its checkout is reused, so the work stays in the worktree); pass true to commit anyway.'),
     },
     withCallLog('kit_restart_session', async (args: any) => {
       if (!deps.sessionOrchestrator?.restartSession) return notAvailable('sessionOrchestrator');
 
+      // Passed as given: unset lets an adopted session with auto-commit off
+      // skip the commit, while an explicit true still commits.
       const result = await deps.sessionOrchestrator.restartSession(
         args.target_session_id,
         undefined,
-        args.commit_changes !== false
+        typeof args.commit_changes === 'boolean' ? args.commit_changes : undefined
       );
 
       if (!result?.success) {
@@ -2068,6 +2142,7 @@ export function registerTools(
       task: z.string().optional().describe('What this session is for.'),
       caller_session_id: z.string().optional().describe('YOUR session id, recorded as the parent.'),
       if_exists: z.enum(['refuse', 'take_over']).optional().describe('What to do when a live session already owns the branch. Default refuse. take_over works only on agent-created sessions — never on a human\'s.'),
+      auto_commit: z.boolean().optional().describe('Let KIT commit on its own in the adopted session (commit-message file, idle checkpoint, the default commit before a restart). Default false: KIT never commits to an adopted branch on its own unless this is true. Does not affect kit_commit.'),
     },
     withCallLog('kit_adopt_session', async (args: any) => {
       if (!deps.sessionOrchestrator?.adoptSession) return notAvailable('sessionOrchestrator');
@@ -2081,6 +2156,7 @@ export function registerTools(
         task: args.task,
         callerSessionId: args.caller_session_id,
         ifExists: args.if_exists,
+        autoCommit: args.auto_commit === true,
       });
 
       if (!result?.success) {
@@ -2098,6 +2174,7 @@ export function registerTools(
         worktree_path: result.data?.worktreePath ?? null,
         branch: result.data?.config?.branchName,
         created_by: 'adopted',
+        auto_commit: result.data?.config?.autoCommit === true,
         note: 'Recorded as adopted, not agent-created. You may close it safely, but never destructively — the branch belongs to a human.',
       }) }] };
     })

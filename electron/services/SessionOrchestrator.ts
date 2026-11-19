@@ -58,6 +58,7 @@ import {
   type ReapAction,
   type MergeSafety,
 } from '../../shared/session-reap';
+import { adoptedAutoCommit } from '../../shared/auto-commit-policy';
 
 /** The slice of AgentInstanceService the orchestrator needs. */
 export interface OrchestratorAgentInstanceService {
@@ -1103,7 +1104,9 @@ export class SessionOrchestrator {
       agentType?: AgentType;
       task?: string;
     },
-    commitChanges = true
+    // Passed through unset when the caller did not say: restartInstance then
+    // commits, except in an adopted session with auto-commit off.
+    commitChanges?: boolean
   ): Promise<IpcResult<AgentInstance>> {
     const restart = this.deps.agentInstance.restartInstance;
     if (!restart) {
@@ -1162,6 +1165,7 @@ export class SessionOrchestrator {
     task?: string;
     callerSessionId?: string;
     ifExists?: 'refuse' | 'take_over';
+    autoCommit?: boolean;
   }): Promise<IpcResult<AgentInstance>> {
     const { ifExists = 'refuse' } = input;
 
@@ -1204,7 +1208,7 @@ export class SessionOrchestrator {
       }
     }
 
-    return this.deps.agentInstance.createInstance({
+    const result = await this.deps.agentInstance.createInstance({
       repoPath: input.repoPath,
       agentType: (input.agentType ?? 'claude') as AgentType,
       taskDescription: input.task ?? 'Adopted session',
@@ -1214,7 +1218,9 @@ export class SessionOrchestrator {
       // them again. `adoptedWorktreePath` below is what actually prevents that
       // — `createWorktreeIfNeeded` does not consult `useWorktree`.
       useWorktree: Boolean(input.worktreePath),
-      autoCommit: true,
+      // Off unless asked for: the branch is not KIT's, and may carry an open
+      // PR that a commit KIT makes on its own would land on.
+      autoCommit: adoptedAutoCommit(input.autoCommit),
       commitInterval: 30,
       rebaseFrequency: 'never',
       systemPrompt: '',
@@ -1223,6 +1229,19 @@ export class SessionOrchestrator {
       parentSessionId: input.callerSessionId,
       adoptedWorktreePath: input.worktreePath,
     } as unknown as AgentInstanceConfig);
+
+    // Start the file watcher, fire-and-forget as startSession does. It is what
+    // registers the worktree with GitService, so without it kit_commit fails
+    // with "No worktree registered" until a restart. It makes no commit of its
+    // own here unless auto_commit was asked for (mayAutoCommit).
+    if (result.success && result.data?.sessionId) {
+      const watchPath = result.data.worktreePath || input.worktreePath || input.repoPath;
+      Promise.resolve(this.deps.watcher.startWithPath(result.data.sessionId, watchPath)).catch((err: unknown) => {
+        console.warn('[SessionOrchestrator] Failed to start watcher for adopted session:', err);
+      });
+    }
+
+    return result;
   }
 
   /**

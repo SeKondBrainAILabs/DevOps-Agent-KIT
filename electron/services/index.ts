@@ -35,7 +35,7 @@ import { McpServerService } from './McpServerService';
 import { HarnessClientService } from './HarnessClientService';
 import { SeedDataExecutionService } from './SeedDataExecutionService';
 import { SessionOrchestrator } from './SessionOrchestrator';
-import { ensurePullRequest } from './GitHubService';
+import { ensurePullRequest, getPullRequestState } from './GitHubService';
 import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from './DatabaseService';
 import { classifyLockHolder } from '../../shared/lock-liveness';
@@ -523,6 +523,8 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
         },
         session
       ),
+    getPullRequestState: (worktreePath, branchName) =>
+      getPullRequestState({ gh: createGhRunner() }, worktreePath, branchName),
   });
 
   mcpServer.setSessionOrchestrator({
