@@ -744,7 +744,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                 {driftBehind !== null ? (
                   <>
                     <span className={`inline-block w-2.5 h-2.5 rounded-full ${
-                      driftBehind === 0 ? 'bg-green-500' : getDriftColorFromCount(driftBehind).replace('text-', 'bg-')
+                      driftBehind === 0 ? 'bg-green-500' : driftBehind <= 5 ? 'bg-yellow-500' : driftBehind <= 20 ? 'bg-orange-500' : 'bg-red-500'
                     }`} />
                     <span className="text-xs text-text-secondary">
                       {driftBehind === 0
