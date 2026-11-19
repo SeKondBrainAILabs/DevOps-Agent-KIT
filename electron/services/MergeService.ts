@@ -60,6 +60,11 @@ async function getExeca() {
 }
 
 export class MergeService extends BaseService {
+  private configService: any = null;
+
+  setConfigService(service: any): void {
+    this.configService = service;
+  }
   // Dependency references (set via setters after construction)
   private mergeConflictService: any = null;
   private rebaseWatcher: any = null;

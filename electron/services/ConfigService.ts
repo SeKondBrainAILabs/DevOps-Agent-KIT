@@ -27,6 +27,7 @@ interface StoreSchema {
 const DEFAULT_WORKTREE_MODE: WorktreeMode = 'worktree';
 
 const defaultConfig: AppConfig = {
+  mergeRequirePrApproval: false,
   theme: 'dark',
   defaultAgentType: 'claude',
   recentProjects: [],

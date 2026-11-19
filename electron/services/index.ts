@@ -206,6 +206,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   // Initialize Merge service
   // For merge preview and execution workflow
   const merge = new MergeService();
+  merge.setConfigService(configService);
 
   // Initialize Merge Conflict service
   // For AI-powered conflict resolution using LLM (llama, qwen, etc.)
