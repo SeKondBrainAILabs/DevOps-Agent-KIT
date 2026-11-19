@@ -26,6 +26,13 @@ import {
 } from '../../../shared/mac-self-update';
 import { MacSelfUpdater, relaunchArgs } from '../../../electron/services/MacSelfUpdater';
 
+// Two tests below drive real macOS binaries — /usr/bin/chflags to make a file
+// immutable, and /usr/bin/plutil to read an Info.plist. Neither exists on
+// Linux, so on a Linux CI runner they fail with ENOENT rather than telling us
+// anything about the updater. Everything else in this file is pure logic and
+// runs anywhere, so only those two are gated on the platform.
+const itMac = process.platform === 'darwin' ? it : it.skip;
+
 describe('relaunchArgs', () => {
   it('keeps switches and drops the binary path and Finder serial number', () => {
     expect(
@@ -282,7 +289,7 @@ fi
     expect(result().outcome).toBe('updated');
   });
 
-  it('C2: a rollback never nests the old app inside a half-deleted new one', () => {
+  itMac('C2: a rollback never nests the old app inside a half-deleted new one', () => {
     // An undeletable file in the new bundle made the old rm -rf stop half way.
     const locked = join(staged(), 'Contents', 'locked');
     writeFileSync(locked, 'x');
@@ -450,7 +457,7 @@ describe('MacSelfUpdater download and checks', () => {
     expect(r).toMatchObject({ ok: false });
   });
 
-  it('rejects a bundle that is not KIT, or is missing its native module', async () => {
+  itMac('rejects a bundle that is not KIT, or is missing its native module', async () => {
     const app = join(dir, 'Fake.app');
     mkdirSync(join(app, 'Contents', 'Resources'), { recursive: true });
     const plist = (id: string, v: string) =>
