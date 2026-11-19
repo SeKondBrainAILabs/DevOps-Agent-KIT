@@ -510,16 +510,18 @@ export class LockService extends BaseService {
           filePath: relativePath,
           sessionId,
           agentType,
+          repoPath: normalizedRepo,
           lockedAt: now,
           lastModified: now,
+          autoLocked: false,
           declared: true,
           operation,
           reason,
           estimatedDuration,
-        } as AutoFileLock);
+        });
       }
 
-      this.scheduleSave(normalizedRepo);
+      await this.saveLocks(normalizedRepo);
     }, 'LOCK_DECLARE_FAILED');
   }
 

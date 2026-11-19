@@ -158,6 +158,14 @@ export interface AutoFileLock {
   lastModified: string;       // Last time file was modified
   autoLocked: boolean;        // True if auto-locked by watcher
   branchName?: string;        // Branch where file is being modified
+  // ---- Declared locks (kit_lock_file via LockService.declareFiles) ----
+  // A declaration shares this store with the watcher's auto-locks — it is the
+  // only store checkConflicts reads. These fields are what distinguishes one,
+  // and they are absent on an auto-lock.
+  declared?: boolean;         // True for an explicit declaration, not a watcher lock
+  operation?: 'edit' | 'read' | 'delete';  // What the session intends to do
+  reason?: string;            // Reason the agent gave
+  estimatedDuration?: number; // The agent's own estimate, in minutes
 }
 
 /** Summary of locks for a repository */
