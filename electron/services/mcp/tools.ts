@@ -48,7 +48,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpSessionBinder } from './session-binder';
 import type { McpServiceDeps, McpCallLogEntry } from '../McpServerService';
 import { evaluateAutoCommitGuardForWorktree } from '../GitRewriteGuardIO';
-import { structuralCheckApplies, structuralSanityCheck, parserCommandFor } from '../file-parse-check';
+import { structuralCheckApplies, structuralSanityCheck, parserCommandFor, checkTypeScriptLikeFile } from '../file-parse-check';
 import { mayPushAfterPostCommitRebase, postCommitPushOptions, type PostCommitRebaseResult } from '../../../shared/post-commit-rebase';
 
 // Re-exported: the sanity-gate tests and other callers import them from here.
@@ -217,16 +217,15 @@ export function registerTools(
 
     // 2. Parser gate — never bypassable. A failing parse means the file on
     //    disk is broken; force=true can't pretend otherwise.
-    const parseFailures: Array<{ file: string; error: string }> = [];
+    const parseFailures: Array<{ file: string; error: string; line?: number }> = [];
     for (const { path: rel, deleted } of changedPaths) {
       if (deleted) continue;
       if (!PARSE_CHECKABLE.test(rel)) continue;
       const abs = join(worktreePath, rel);
       if (!existsSync(abs)) continue;
       const ext = rel.toLowerCase().split('.').pop() || '';
-      // TS/TSX/JSX have no cheap parser here (tsc is too heavy, node --check
-      // rejects TS syntax): parserCommandFor returns null and the structural
-      // check below runs instead.
+      // TS/TSX/JSX have no parser command (node --check rejects TS syntax):
+      // parserCommandFor returns null and checkTypeScriptLikeFile below runs.
       const cmd = parserCommandFor(ext, abs);
       if (cmd) {
         try {
@@ -236,7 +235,8 @@ export function registerTools(
               : typeof mod.default === 'function' ? mod.default
               : mod.default?.execa;
           }
-          await _execa!(cmd.bin, cmd.args, { cwd: worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
+          // cmd.cwd: Python runs from the temp directory, never the worktree (parserCommandFor).
+          await _execa!(cmd.bin, cmd.args, { cwd: cmd.cwd ?? worktreePath, timeout: 5_000, env: { ...process.env, ...cmd.env } });
         } catch (err: any) {
           const stderr = (err?.stderr || err?.message || '').toString();
           parseFailures.push({ file: rel, error: stderr.split('\n').slice(0, 4).join('\n') });
@@ -244,16 +244,34 @@ export function registerTools(
         }
       }
 
-      // Structural sanity check — only where there is no real parser (TS/TSX/JSX).
-      // On Py/JS the parser above has decided; truncation is the shrink check's job.
-      // ~1ms/file, no subprocess.
+      // TS/TSX/JSX: a syntax-only parse with the app's own TypeScript compiler
+      // (never one from the worktree: the coding engine can write it); the
+      // structural scanner only when no TypeScript loads, and then only for
+      // breakage HEAD does not already have. On Py/JS the parser above has
+      // decided; truncation is the shrink check's job.
       if (!structuralCheckApplies(ext, cmd !== null)) continue;
+      let content: string;
       try {
         const fs = await import('fs/promises');
-        const content = await fs.readFile(abs, 'utf8');
-        const problem = structuralSanityCheck(content);
-        if (problem) parseFailures.push({ file: rel, error: `structural: ${problem}` });
-      } catch { /* best-effort */ }
+        content = await fs.readFile(abs, 'utf8');
+      } catch { continue; /* best-effort: unreadable now, git reports it */ }
+      // Not best-effort: a check that throws refuses the file rather than letting it through unparsed.
+      try {
+        const failure = await checkTypeScriptLikeFile({
+          rel,
+          content,
+          readHead: async () => {
+            try {
+              return (await gitInWorktree(['show', `HEAD:${rel}`], worktreePath)).stdout;
+            } catch {
+              return null; // new at HEAD
+            }
+          },
+        });
+        if (failure) parseFailures.push(failure);
+      } catch (err) {
+        parseFailures.push({ file: rel, error: `TypeScript parser failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
     }
 
     if (parseFailures.length > 0) {
