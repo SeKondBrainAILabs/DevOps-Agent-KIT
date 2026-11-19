@@ -15,8 +15,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+
+// Mock github-cli BEFORE importing MergeService so the mock takes effect
+jest.mock('../../../shared/github-cli', () => ({
+  createGhRunner: jest.fn(),
+  classifyGhFailure: jest.requireActual('../../../shared/github-cli').classifyGhFailure,
+  describeGhFailure: jest.requireActual('../../../shared/github-cli').describeGhFailure,
+}));
+
 import { MergeService } from '../../../electron/services/MergeService';
 import type { MergeVia } from '../../../shared/merge-strategy';
+import { createGhRunner } from '../../../shared/github-cli';
 
 // Mock config service interface (avoid electron-store ESM dependency)
 interface MockConfigService {
@@ -127,35 +136,35 @@ describe('PR Approval Gate', () => {
 
     // Mock gh runner - track if reviewDecision is checked
     let reviewDecisionChecked = false;
-    const mockGhRunner = jest.spyOn(require('../../../shared/github-cli'), 'createGhRunner').mockReturnValue(
-      async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
-        if (args[0] === 'pr' && args[1] === 'view') {
-          // Check if we're asking for reviewDecision
-          if (args.includes('--json')) {
-            const jsonIdx = args.indexOf('--json');
-            if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
-              reviewDecisionChecked = true;
-            }
+    const mockRunner = jest.fn(async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        // Check if we're asking for reviewDecision
+        if (args.includes('--json')) {
+          const jsonIdx = args.indexOf('--json');
+          if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
+            reviewDecisionChecked = true;
           }
-          // PR exists and is open
-          return {
-            ok: true,
-            stdout: JSON.stringify({ state: 'OPEN', url: 'https://github.com/test/pr/1' }),
-            stderr: '',
-            code: 0,
-          };
         }
-        if (args[0] === 'pr' && args[1] === 'checks') {
-          return {
-            ok: true,
-            stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS', bucket: 'pass' }]),
-            stderr: '',
-            code: 0,
-          };
-        }
-        return { ok: true, stdout: '', stderr: '', code: 0 };
+        // PR exists and is open
+        return {
+          ok: true,
+          stdout: JSON.stringify({ state: 'OPEN', url: 'https://github.com/test/pr/1' }),
+          stderr: '',
+          code: 0,
+        };
       }
-    );
+      if (args[0] === 'pr' && args[1] === 'checks') {
+        return {
+          ok: true,
+          stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS', bucket: 'pass' }]),
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { ok: true, stdout: '', stderr: '', code: 0 };
+    });
+
+    (createGhRunner as jest.Mock).mockReturnValue(mockRunner);
 
     const result = await mergeService.executeMerge(
       '/fake/repo',
@@ -170,7 +179,7 @@ describe('PR Approval Gate', () => {
     expect(reviewDecisionChecked).toBe(false);
 
     mockGit.mockRestore();
-    mockGhRunner.mockRestore();
+    (createGhRunner as jest.Mock).mockRestore();
   });
 
   /** AC1: When flag is on and reviewDecision is not APPROVED, merge is refused */
@@ -207,36 +216,36 @@ describe('PR Approval Gate', () => {
       return { stdout: '', stderr: '', exitCode: 0 };
     });
 
-    const mockGhRunner = jest.spyOn(require('../../../shared/github-cli'), 'createGhRunner').mockReturnValue(
-      async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
-        if (args[0] === 'pr' && args[1] === 'view' && args.includes('--json')) {
-          const jsonIdx = args.indexOf('--json');
-          if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
-            return {
-              ok: true,
-              stdout: JSON.stringify({ reviewDecision: 'CHANGES_REQUESTED' }),
-              stderr: '',
-              code: 0,
-            };
-          }
+    const mockRunner = jest.fn(async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
+      if (args[0] === 'pr' && args[1] === 'view' && args.includes('--json')) {
+        const jsonIdx = args.indexOf('--json');
+        if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
           return {
             ok: true,
-            stdout: JSON.stringify({ state: 'OPEN', url: 'https://github.com/test/pr/1' }),
+            stdout: JSON.stringify({ reviewDecision: 'CHANGES_REQUESTED' }),
             stderr: '',
             code: 0,
           };
         }
-        if (args[0] === 'pr' && args[1] === 'checks') {
-          return {
-            ok: true,
-            stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS', bucket: 'pass' }]),
-            stderr: '',
-            code: 0,
-          };
-        }
-        return { ok: true, stdout: '', stderr: '', code: 0 };
+        return {
+          ok: true,
+          stdout: JSON.stringify({ state: 'OPEN', url: 'https://github.com/test/pr/1' }),
+          stderr: '',
+          code: 0,
+        };
       }
-    );
+      if (args[0] === 'pr' && args[1] === 'checks') {
+        return {
+          ok: true,
+          stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS', bucket: 'pass' }]),
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { ok: true, stdout: '', stderr: '', code: 0 };
+    });
+
+    (createGhRunner as jest.Mock).mockReturnValue(mockRunner);
 
     const result = await mergeService.executeMerge(
       '/fake/repo',
@@ -250,7 +259,7 @@ describe('PR Approval Gate', () => {
     expect(result.message).toMatch(/approved/i);
 
     mockGit.mockRestore();
-    mockGhRunner.mockRestore();
+    (createGhRunner as jest.Mock).mockRestore();
   });
 
   /** AC1: When flag is on and reviewDecision is REVIEW_REQUIRED, merge is refused */
@@ -287,36 +296,36 @@ describe('PR Approval Gate', () => {
       return { stdout: '', stderr: '', exitCode: 0 };
     });
 
-    const mockGhRunner = jest.spyOn(require('../../../shared/github-cli'), 'createGhRunner').mockReturnValue(
-      async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
-        if (args[0] === 'pr' && args[1] === 'view' && args.includes('--json')) {
-          const jsonIdx = args.indexOf('--json');
-          if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
-            return {
-              ok: true,
-              stdout: JSON.stringify({ reviewDecision: 'REVIEW_REQUIRED' }),
-              stderr: '',
-              code: 0,
-            };
-          }
+    const mockRunner = jest.fn(async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
+      if (args[0] === 'pr' && args[1] === 'view' && args.includes('--json')) {
+        const jsonIdx = args.indexOf('--json');
+        if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
           return {
             ok: true,
-            stdout: JSON.stringify({ state: 'OPEN' }),
+            stdout: JSON.stringify({ reviewDecision: 'REVIEW_REQUIRED' }),
             stderr: '',
             code: 0,
           };
         }
-        if (args[0] === 'pr' && args[1] === 'checks') {
-          return {
-            ok: true,
-            stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS' }]),
-            stderr: '',
-            code: 0,
-          };
-        }
-        return { ok: true, stdout: '', stderr: '', code: 0 };
+        return {
+          ok: true,
+          stdout: JSON.stringify({ state: 'OPEN' }),
+          stderr: '',
+          code: 0,
+        };
       }
-    );
+      if (args[0] === 'pr' && args[1] === 'checks') {
+        return {
+          ok: true,
+          stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS' }]),
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { ok: true, stdout: '', stderr: '', code: 0 };
+    });
+
+    (createGhRunner as jest.Mock).mockReturnValue(mockRunner);
 
     const result = await mergeService.executeMerge(
       '/fake/repo',
@@ -329,7 +338,7 @@ describe('PR Approval Gate', () => {
     expect(result.gateReason).toBe('PR_NOT_APPROVED');
 
     mockGit.mockRestore();
-    mockGhRunner.mockRestore();
+    (createGhRunner as jest.Mock).mockRestore();
   });
 
   /** AC1: When flag is on and reviewDecision is APPROVED, merge is allowed */
@@ -385,36 +394,36 @@ describe('PR Approval Gate', () => {
       return { stdout: '', stderr: '', exitCode: 0 };
     });
 
-    const mockGhRunner = jest.spyOn(require('../../../shared/github-cli'), 'createGhRunner').mockReturnValue(
-      async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
-        if (args[0] === 'pr' && args[1] === 'view' && args.includes('--json')) {
-          const jsonIdx = args.indexOf('--json');
-          if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
-            return {
-              ok: true,
-              stdout: JSON.stringify({ reviewDecision: 'APPROVED' }),
-              stderr: '',
-              code: 0,
-            };
-          }
+    const mockRunner = jest.fn(async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
+      if (args[0] === 'pr' && args[1] === 'view' && args.includes('--json')) {
+        const jsonIdx = args.indexOf('--json');
+        if (jsonIdx >= 0 && args[jsonIdx + 1]?.includes('reviewDecision')) {
           return {
             ok: true,
-            stdout: JSON.stringify({ state: 'OPEN' }),
+            stdout: JSON.stringify({ reviewDecision: 'APPROVED' }),
             stderr: '',
             code: 0,
           };
         }
-        if (args[0] === 'pr' && args[1] === 'checks') {
-          return {
-            ok: true,
-            stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS' }]),
-            stderr: '',
-            code: 0,
-          };
-        }
-        return { ok: true, stdout: '', stderr: '', code: 0 };
+        return {
+          ok: true,
+          stdout: JSON.stringify({ state: 'OPEN' }),
+          stderr: '',
+          code: 0,
+        };
       }
-    );
+      if (args[0] === 'pr' && args[1] === 'checks') {
+        return {
+          ok: true,
+          stdout: JSON.stringify([{ name: 'CI', state: 'SUCCESS' }]),
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { ok: true, stdout: '', stderr: '', code: 0 };
+    });
+
+    (createGhRunner as jest.Mock).mockReturnValue(mockRunner);
 
     const result = await mergeService.executeMerge(
       '/fake/repo',
@@ -427,7 +436,7 @@ describe('PR Approval Gate', () => {
     expect(result.gateReason).toBeUndefined();
 
     mockGit.mockRestore();
-    mockGhRunner.mockRestore();
+    (createGhRunner as jest.Mock).mockRestore();
   });
 
   /** AC3: Non-protected targets are unaffected */
@@ -473,6 +482,13 @@ describe('PR Approval Gate', () => {
       return { stdout: '', stderr: '', exitCode: 0 };
     });
 
+    // Mock gh runner (should not be called for non-protected targets)
+    const mockRunner = jest.fn(async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
+      return { ok: true, stdout: '', stderr: '', code: 0 };
+    });
+
+    (createGhRunner as jest.Mock).mockReturnValue(mockRunner);
+
     // Merge into non-protected branch (feature-2) should succeed
     const result = await mergeService.executeMerge(
       '/fake/repo',
@@ -485,6 +501,7 @@ describe('PR Approval Gate', () => {
     expect(result.gateReason).toBeUndefined();
 
     mockGit.mockRestore();
+    (createGhRunner as jest.Mock).mockRestore();
   });
 
   /** AC3: skipCiGate bypasses the approval gate entirely */
@@ -540,6 +557,13 @@ describe('PR Approval Gate', () => {
       return { stdout: '', stderr: '', exitCode: 0 };
     });
 
+    // Mock gh runner (should not be called when skipCiGate is true)
+    const mockRunner = jest.fn(async (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> => {
+      return { ok: true, stdout: '', stderr: '', code: 0 };
+    });
+
+    (createGhRunner as jest.Mock).mockReturnValue(mockRunner);
+
     // skipCiGate should bypass the approval check entirely
     const result = await mergeService.executeMerge(
       '/fake/repo',
@@ -552,5 +576,6 @@ describe('PR Approval Gate', () => {
     expect(result.gateReason).toBeUndefined();
 
     mockGit.mockRestore();
+    (createGhRunner as jest.Mock).mockRestore();
   });
 });
