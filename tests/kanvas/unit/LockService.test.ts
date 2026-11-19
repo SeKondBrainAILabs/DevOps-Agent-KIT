@@ -59,8 +59,40 @@ import path from 'path';
 /** Beats LockService's 500ms save debounce. */
 const SAVE_DEBOUNCE_WAIT_MS = 800;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
+const LIVE = 'sess_live';
+const DEAD = 'sess_dead';
+
+/** Only LIVE is alive. Mirrors how services/index.ts wires the provider. */
+const onlyLiveIsAlive = (sessionId: string) => sessionId === LIVE;
+
+const agoIso = (ms: number) => new Date(Date.now() - ms).toISOString();
+
 let repoPath: string;
 let lockService: LockService;
+
+const lockRecord = (over: Partial<AutoFileLock> = {}): AutoFileLock => {
+  const now = new Date().toISOString();
+  return {
+    filePath: 'src/app.ts',
+    sessionId: LIVE,
+    agentType: 'claude',
+    repoPath: '/placeholder',
+    lockedAt: now,
+    lastModified: now,
+    autoLocked: true,
+    branchName: 'feat/x',
+    ...over,
+  };
+};
+
+/** Writes locks.json directly, as a previous (crashed) run would have left it. */
+async function seedLocksFile(locks: Record<string, AutoFileLock>): Promise<void> {
+  await fsp.mkdir(path.dirname(locksFilePath()), { recursive: true });
+  await fsp.writeFile(locksFilePath(), JSON.stringify(locks, null, 2));
+}
 
 const locksFilePath = () =>
   path.join(repoPath, '.S9N_KIT_DevOpsAgent', 'locks.json');
@@ -237,5 +269,198 @@ describe('auto-lock attribution', () => {
       agentType: 'aider',
       branchName: 'feat/attribution',
     });
+  });
+});
+
+// ─── Stale-lock cleanup ──────────────────────────────────────────────────────
+//
+// cleanupExpiredLocks had no callers anywhere, and the only other path that
+// removes a lock is releaseSessionLocks via WatcherService.stop(). So locks
+// only ever went away on a clean watcher stop: after a crash the entries in
+// locks.json lived forever, and because autoLockFile treats another session's
+// lock as a conflict and refuses to write, they permanently blocked every
+// later session from locking those files.
+
+describe('LockService.cleanupExpiredLocks', () => {
+  it('drops locks past the inactivity timeout and keeps fresh ones', async () => {
+    await seedLocksFile({
+      'src/old.ts': lockRecord({ filePath: 'src/old.ts', lastModified: agoIso(2 * DAY_MS) }),
+      'src/fresh.ts': lockRecord({ filePath: 'src/fresh.ts' }),
+    });
+
+    const result = await lockService.cleanupExpiredLocks(repoPath);
+
+    expect(result.success).toBe(true);
+    expect(await lockService.getFileLock(repoPath, 'src/old.ts')).toBeNull();
+    expect(await lockService.getFileLock(repoPath, 'src/fresh.ts')).not.toBeNull();
+  });
+
+  it('persists the prune to locks.json', async () => {
+    await seedLocksFile({
+      'src/old.ts': lockRecord({ filePath: 'src/old.ts', lastModified: agoIso(2 * DAY_MS) }),
+      'src/fresh.ts': lockRecord({ filePath: 'src/fresh.ts' }),
+    });
+
+    await lockService.cleanupExpiredLocks(repoPath);
+    await new Promise((r) => setTimeout(r, SAVE_DEBOUNCE_WAIT_MS));
+
+    expect(Object.keys(await readLocksFile())).toEqual(['src/fresh.ts']);
+  });
+
+  it('honours a caller-supplied timeout', async () => {
+    await seedLocksFile({
+      'src/recent.ts': lockRecord({ filePath: 'src/recent.ts', lastModified: agoIso(5000) }),
+    });
+
+    // Default 24h would keep this; 1s does not.
+    await lockService.cleanupExpiredLocks(repoPath, 1000);
+
+    expect(await lockService.getFileLock(repoPath, 'src/recent.ts')).toBeNull();
+  });
+
+  it('treats an unparseable lastModified as expired rather than immortal', async () => {
+    // NaN loses every comparison, so an age check alone would pin the lock
+    // forever. A hand-edited or truncated locks.json is the realistic source.
+    await seedLocksFile({
+      'src/bad.ts': lockRecord({ filePath: 'src/bad.ts', lastModified: 'not-a-date' }),
+    });
+
+    await lockService.cleanupExpiredLocks(repoPath);
+
+    expect(await lockService.getFileLock(repoPath, 'src/bad.ts')).toBeNull();
+  });
+
+  it('reports zero for a repo that has no locks at all', async () => {
+    const result = await lockService.cleanupExpiredLocks(repoPath);
+
+    expect(result).toMatchObject({ success: true, data: 0 });
+  });
+});
+
+describe('stale-lock pruning is wired up', () => {
+  it('prunes on first load, before any caller sees the locks', async () => {
+    // Nothing calls cleanupExpiredLocks here — reading the repo summary is
+    // enough, because loadLocks prunes what it reads off disk.
+    await seedLocksFile({
+      'src/old.ts': lockRecord({ filePath: 'src/old.ts', lastModified: agoIso(2 * DAY_MS) }),
+      'src/fresh.ts': lockRecord({ filePath: 'src/fresh.ts' }),
+    });
+
+    const summary = await lockService.getRepoLocks(repoPath);
+
+    expect(summary.success).toBe(true);
+    expect(summary.data?.totalLocks).toBe(1);
+    expect(summary.data?.locksBySession[LIVE]).toEqual(['src/fresh.ts']);
+  });
+
+  it('prunes on the background sweep while the app stays open', async () => {
+    jest.useFakeTimers();
+    try {
+      await seedLocksFile({ 'src/app.ts': lockRecord() });
+      // Load while it is still fresh, so the load-time prune keeps it.
+      await lockService.getRepoLocks(repoPath);
+      expect(await lockService.getFileLock(repoPath, 'src/app.ts')).not.toBeNull();
+
+      // initialize() starts the hourly sweep. The lock goes stale in the
+      // meantime, which load-time pruning alone would never notice: it runs
+      // once per repo per process.
+      await lockService.initialize();
+      jest.setSystemTime(Date.now() + 2 * DAY_MS);
+      jest.advanceTimersByTime(SWEEP_INTERVAL_MS);
+
+      expect(await lockService.getFileLock(repoPath, 'src/app.ts')).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe('locks held by a session that no longer exists', () => {
+  it('are pruned even when they are recent', async () => {
+    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+    await seedLocksFile({
+      'src/dead.ts': lockRecord({ filePath: 'src/dead.ts', sessionId: DEAD }),
+      'src/live.ts': lockRecord({ filePath: 'src/live.ts', sessionId: LIVE }),
+    });
+
+    const summary = await lockService.getRepoLocks(repoPath);
+
+    expect(summary.data?.totalLocks).toBe(1);
+    expect(summary.data?.locksBySession[DEAD]).toBeUndefined();
+  });
+
+  it('are reclaimed by the next session to touch the file, not reported as a conflict', async () => {
+    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+    await seedLocksFile({
+      'src/app.ts': lockRecord({ sessionId: DEAD, agentType: 'cursor' }),
+    });
+
+    const result = await lockService.autoLockFile(repoPath, 'src/app.ts', LIVE, 'claude', 'feat/y');
+
+    // The new session owns it. Before this change the dead session's lock was
+    // returned as a conflict and the new lock was never written — forever.
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      sessionId: LIVE,
+      agentType: 'claude',
+      branchName: 'feat/y',
+      autoLocked: true,
+    });
+  });
+
+  it('are not reported by checkConflicts', async () => {
+    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+    await seedLocksFile({
+      'src/dead.ts': lockRecord({ filePath: 'src/dead.ts', sessionId: DEAD }),
+      'src/live.ts': lockRecord({ filePath: 'src/live.ts', sessionId: LIVE }),
+    });
+
+    const conflicts = await lockService.checkConflicts(
+      repoPath,
+      ['src/dead.ts', 'src/live.ts'],
+      'sess_asking'
+    );
+
+    expect(conflicts.success).toBe(true);
+    expect(conflicts.data?.map((c) => c.file)).toEqual(['src/live.ts']);
+  });
+
+  it('includes declared locks, which share the store since H6', async () => {
+    // kit_lock_file writes into this same map, so a dead session's
+    // DECLARATION would otherwise keep refusing every later kit_lock_file.
+    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+    await lockService.declareFiles(repoPath, DEAD, ['src/app.ts'], 'edit', 'cursor');
+
+    const conflicts = await lockService.checkConflicts(repoPath, ['src/app.ts'], LIVE);
+
+    expect(conflicts.data).toEqual([]);
+  });
+});
+
+describe('locks held by a live session', () => {
+  it('still conflict in autoLockFile', async () => {
+    lockService.setSessionLivenessProvider(onlyLiveIsAlive);
+    await seedLocksFile({ 'src/app.ts': lockRecord({ sessionId: LIVE, agentType: 'cursor' }) });
+
+    const result = await lockService.autoLockFile(
+      repoPath,
+      'src/app.ts',
+      'sess_other',
+      'claude',
+      'feat/y'
+    );
+
+    // Returns the HOLDER's lock, unchanged — autoLockFile's conflict shape.
+    expect(result.data).toMatchObject({ sessionId: LIVE, agentType: 'cursor' });
+  });
+
+  it('survive when no liveness provider is wired', async () => {
+    // Regression guard: the default must assume every session is live, so an
+    // un-wired LockService never starts discarding other sessions' locks.
+    await seedLocksFile({ 'src/app.ts': lockRecord({ sessionId: DEAD, agentType: 'cursor' }) });
+
+    const result = await lockService.autoLockFile(repoPath, 'src/app.ts', LIVE, 'claude', 'feat/y');
+
+    expect(result.data).toMatchObject({ sessionId: DEAD, agentType: 'cursor' });
   });
 });

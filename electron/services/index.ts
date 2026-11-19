@@ -38,6 +38,7 @@ import { SessionOrchestrator } from './SessionOrchestrator';
 import { ensurePullRequest } from './GitHubService';
 import { createGhRunner } from '../../shared/github-cli';
 import { databaseService } from './DatabaseService';
+import { isActiveInstance } from '../../shared/instance-status';
 import {
   initializeAnalysisServices,
   disposeAnalysisServices,
@@ -189,6 +190,28 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
 
   // Connect lockService to watcher for auto-locking files on change
   watcher.setLockService(lock);
+
+  // Teach the lock service which sessions still exist. Without this every
+  // lock in locks.json is treated as live forever: a session that crashed or
+  // was closed keeps its files locked, which blocks later sessions from
+  // locking them and makes kit_lock_file report a holder that is long gone.
+  // Instances are loaded synchronously in AgentInstanceService's constructor,
+  // so this answers correctly from the first call.
+  lock.setSessionLivenessProvider((sessionId) => {
+    const listed = agentInstance.listInstances();
+    if (!listed.success || !listed.data) return true; // can't tell — assume live
+    return listed.data.some(
+      (inst) => inst.sessionId === sessionId && isActiveInstance(inst)
+    );
+  });
+
+  // LockService.initialize() was never called, so neither of the two things it
+  // does ever happened: the crashed-session .lock files under
+  // ~/.devops-agent/session-locks/ were never swept, and (as of this change)
+  // the hourly stale-lock prune never started. Run it after the liveness
+  // provider is wired so the first prune can already tell live from dead.
+  await lock.initialize();
+  console.log('[Services] Lock service initialized');
 
   // Connect terminalLog to agentInstance for restart logging
   agentInstance.setTerminalLogService(terminalLog);
