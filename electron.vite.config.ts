@@ -12,6 +12,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
+import { getPortConfig } from './shared/portConfig';
 
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
@@ -29,15 +30,36 @@ function copyConfigPlugin() {
   };
 }
 
-// Preferred port - will try this first, then find next available
-const PREFERRED_PORT = 5173;
+// Get port configuration from environment variables (KANVAS_PORT, KANVAS_PORT_RANGE)
+const { preferredPort, portRange } = getPortConfig();
 
 export default defineConfig(async () => {
-  // Find an available port starting from PREFERRED_PORT
-  const availablePort = await detectPort(PREFERRED_PORT);
+  // Find an available port within the range
+  // Try preferredPort first, then each port from portRange.start to portRange.end
+  let availablePort = preferredPort;
+  
+  // First try the preferred port
+  availablePort = await detectPort(preferredPort);
+  
+  // If the detected port is outside the range, iterate through the range to find a free port
+  if (availablePort < portRange.start || availablePort > portRange.end) {
+    // Try each port in the range
+    for (let p = portRange.start; p <= portRange.end; p++) {
+      const candidatePort = await detectPort(p);
+      if (candidatePort === p) {
+        availablePort = p;
+        break;
+      }
+    }
+  }
+  
+  // Check if we found a free port in the range
+  if (availablePort < portRange.start || availablePort > portRange.end) {
+    throw new Error(`No free Kanvas port in ${portRange.start}-${portRange.end}`);
+  }
 
-  if (availablePort !== PREFERRED_PORT) {
-    console.log(`[Kanvas] Port ${PREFERRED_PORT} is busy, using port ${availablePort}`);
+  if (availablePort !== preferredPort) {
+    console.log(`[Kanvas] Port ${preferredPort} is busy, using port ${availablePort}`);
   } else {
     console.log(`[Kanvas] Using port ${availablePort}`);
   }
