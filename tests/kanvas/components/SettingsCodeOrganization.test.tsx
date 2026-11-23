@@ -10,6 +10,7 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsModal } from '../../../renderer/components/features/SettingsModal';
+import { useAgentStore } from '../../../renderer/store/agentStore';
 
 // Helper to mock the organization config API
 function installOrganizationApi(
@@ -32,17 +33,55 @@ function installOrganizationApi(
   return contractRegistry;
 }
 
+// The Code Organization section only loads once a repository is selected.
+// SettingsModal derives that repo from the agent store's reported sessions,
+// so seed one session pointing at /test/repo before rendering.
+function seedSelectedRepo(repoPath = '/test/repo') {
+  useAgentStore.setState({
+    reportedSessions: new Map([
+      [
+        'test-session',
+        {
+          sessionId: 'test-session',
+          agentId: 'agent-1',
+          agentType: 'claude',
+          task: 'test task',
+          branchName: 'test-branch',
+          baseBranch: 'main',
+          repoPath,
+          status: 'active',
+        } as any,
+      ],
+    ]),
+    selectedSessionId: 'test-session',
+  });
+}
+
+// The structure label appears both as the current-preference display and as an
+// <option> in the change control, so match the display element (a div) rather
+// than the option.
+function currentPreferenceText(pattern: RegExp): HTMLElement {
+  const matches = screen
+    .getAllByText(pattern)
+    .filter((el) => el.tagName.toLowerCase() !== 'option');
+  if (matches.length === 0) {
+    throw new Error(`No current-preference element matched ${pattern}`);
+  }
+  return matches[0];
+}
+
 describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // The setup.ts provides the base api mock; we just need to clear mocks
-    // and reinstall the contractRegistry for each test.
+    // Reset the agent store so each test starts with no reported sessions.
+    useAgentStore.setState({ reportedSessions: new Map(), selectedSessionId: null });
   });
 
   // AC1: Settings shows a Code Organization section with the repository's current preference and a control to change it
   describe('AC1 - section', () => {
     it('shows a Code tab in the Settings modal navigation', async () => {
       installOrganizationApi();
+      seedSelectedRepo();
       
       // Configure mocks for config, instance list, and app version
       (window as any).api.config.getAll.mockResolvedValue({
@@ -68,6 +107,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
         structure: 'feature-folders',
         setupCompleted: true,
       });
+      seedSelectedRepo();
       
       (window as any).api.config.getAll.mockResolvedValue({
         success: true,
@@ -94,7 +134,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
       expect(screen.getByText(/code organization/i)).toBeInTheDocument();
       
       // Check for current preference display
-      expect(screen.getByText(/feature-based/i)).toBeInTheDocument();
+      expect(currentPreferenceText(/feature-based/i)).toBeInTheDocument();
       
       // Check for a control to change it (dropdown/select)
       const structureSelect = screen.getByRole('combobox');
@@ -110,6 +150,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
         structure: 'feature-folders',
         setupCompleted: true,
       });
+      seedSelectedRepo();
       
       (window as any).api.config.getAll.mockResolvedValue({
         success: true,
@@ -127,7 +168,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
       await userEvent.click(codeTab);
       
       await waitFor(() => {
-        expect(screen.getByText(/feature-based/i)).toBeInTheDocument();
+        expect(currentPreferenceText(/feature-based/i)).toBeInTheDocument();
       });
     });
 
@@ -137,6 +178,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
         structure: 'flat',
         setupCompleted: true,
       });
+      seedSelectedRepo();
       
       (window as any).api.config.getAll.mockResolvedValue({
         success: true,
@@ -154,7 +196,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
       await userEvent.click(codeTab);
       
       await waitFor(() => {
-        expect(screen.getByText(/flat/i)).toBeInTheDocument();
+        expect(currentPreferenceText(/flat/i)).toBeInTheDocument();
       });
     });
   });
@@ -164,9 +206,10 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
     it('calls setOrganizationConfig with the new structure when saving', async () => {
       const api = installOrganizationApi({
         enabled: true,
-        structure: 'feature-folders',
+        structure: 'flat',
         setupCompleted: true,
       });
+      seedSelectedRepo();
       
       (window as any).api.config.getAll.mockResolvedValue({
         success: true,
@@ -184,21 +227,19 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
       await userEvent.click(codeTab);
       
       await waitFor(() => {
-        expect(screen.getByText(/feature-based/i)).toBeInTheDocument();
+        expect(currentPreferenceText(/flat/i)).toBeInTheDocument();
       });
       
-      // Change to flat structure
+      // Change to feature-folders - this is the save action; the preference is
+      // persisted when the new structure is chosen. This transition does not
+      // trigger the flat-warning, so the save goes straight through.
       const structureSelect = screen.getByRole('combobox');
-      await userEvent.selectOptions(structureSelect, 'flat');
-      
-      // Click save button
-      const saveButton = screen.getByRole('button', { name: /save/i });
-      await userEvent.click(saveButton);
+      await userEvent.selectOptions(structureSelect, 'feature-folders');
       
       // Verify setOrganizationConfig was called with the new structure
       await waitFor(() => {
         expect(api.setOrganizationConfig).toHaveBeenCalledWith('/test/repo', expect.objectContaining({
-          structure: 'flat',
+          structure: 'feature-folders',
         }));
       });
     });
@@ -216,6 +257,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
         structure: 'feature-folders',
         setupCompleted: true,
       });
+      seedSelectedRepo();
       
       (window as any).api.config.getAll.mockResolvedValue({
         success: true,
@@ -233,7 +275,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
       await userEvent.click(codeTab);
       
       await waitFor(() => {
-        expect(screen.getByText(/feature-based/i)).toBeInTheDocument();
+        expect(currentPreferenceText(/feature-based/i)).toBeInTheDocument();
       });
       
       // Change to flat structure - should trigger warning dialog
@@ -260,6 +302,7 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
         structure: 'feature-folders',
         setupCompleted: true,
       });
+      seedSelectedRepo();
       
       (window as any).api.config.getAll.mockResolvedValue({
         success: true,
@@ -277,16 +320,13 @@ describe('SettingsModal Code Organization tab (KC-S1.2.2.2)', () => {
       await userEvent.click(codeTab);
       
       await waitFor(() => {
-        expect(screen.getByText(/feature-based/i)).toBeInTheDocument();
+        expect(currentPreferenceText(/feature-based/i)).toBeInTheDocument();
       });
       
-      // Change to flat structure
+      // Change to flat structure - this is the save action; confirming the
+      // warning persists the new structure.
       const structureSelect = screen.getByRole('combobox');
       await userEvent.selectOptions(structureSelect, 'flat');
-      
-      // Click save button
-      const saveButton = screen.getByRole('button', { name: /save/i });
-      await userEvent.click(saveButton);
       
       // Verify warning was shown
       expect(window.confirm).toHaveBeenCalled();
