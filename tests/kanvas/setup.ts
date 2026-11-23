@@ -149,6 +149,51 @@ const mockApi = {
   config: {
     get: jest.fn() as MockFn,
     set: jest.fn() as MockFn,
+    getAll: jest.fn() as MockFn,
+  },
+  credential: {
+    has: createMockFn(false),
+    set: createMockFn({ success: true }),
+  },
+  version: {
+    getRepoVersion: createMockFn({ success: true, data: { version: '1.0.0', major: 1, minor: 0, patch: 0 } }),
+    getSettings: createMockFn({ success: true, data: { autoVersionBump: true } }),
+    bump: createMockFn({ success: true, data: { version: '1.0.1', major: 1, minor: 0, patch: 1 } }),
+    setSettings: createMockFn({ success: true }),
+  },
+  update: {
+    getStatus: createMockFn({ success: true, data: {} }),
+    onAvailable: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onNotAvailable: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onProgress: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onDownloaded: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onError: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    check: createMockFn({ success: true, data: { updateAvailable: false } }),
+    download: createMockFn({ success: true }),
+    install: createMockFn({ success: true }),
+  },
+  recovery: {
+    scanAll: createMockFn({ success: true, data: [] }),
+    recoverSession: createMockFn({ success: true }),
+    deleteOrphaned: createMockFn({ success: true }),
+  },
+  debugLog: {
+    getStats: createMockFn({ success: true, data: { memoryEntries: 0, fileSize: 0, rotatedFiles: 0 } }),
+    export: createMockFn({ success: true }),
+    clear: createMockFn({ success: true }),
+    openFolder: jest.fn() as MockFn,
+  },
+  dialog: {
+    showOpenDialog: createMockFn({ canceled: false, filePaths: ['/test/path'] }),
+    openDirectory: createMockFn({ canceled: false, filePaths: ['/test/path'] }),
+  },
+  contractRegistry: {
+    getOrganizationConfig: createMockFn({
+      success: true,
+      data: { enabled: true, structure: 'feature-folders', setupCompleted: true },
+    }),
+    setOrganizationConfig: createMockFn({ success: true }),
+    needsFirstRunSetup: createMockFn({ success: true, data: false }),
   },
   repoWorkspace: {
     getWorktreeMode: createMockFn({ success: true, data: 'worktree' }),
@@ -251,10 +296,6 @@ const mockApi = {
     openVSCode: jest.fn() as MockFn,
     openFinder: jest.fn() as MockFn,
     copyPath: jest.fn() as MockFn,
-  },
-  dialog: {
-    showOpenDialog: createMockFn({ canceled: false, filePaths: ['/test/path'] }),
-    openDirectory: createMockFn({ canceled: false, filePaths: ['/test/path'] }),
   },
   ai: {
     onEnd: (jest.fn() as MockFn).mockReturnValue(() => {}),
