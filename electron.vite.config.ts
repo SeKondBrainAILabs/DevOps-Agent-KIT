@@ -13,7 +13,19 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
-import { getPortConfig } from '@shared/portConfig';
+
+// Importing with explicit path to avoid build issues
+import { getPortConfig } from './shared/portConfig';
+
+/**
+ * Electron-Vite Configuration
+ * SeKondBrain Kanvas
+ *
+ * Features:
+ * - Dynamic port allocation: Automatically finds a free port on startup
+ * - Falls back to ports 5173-5183 range if preferred port is busy
+ * - Uses KANVAS_PORT and KANVAS_PORT_RANGE environment variables for configuration
+ */
 
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
@@ -39,16 +51,15 @@ export default defineConfig(async () => {
   let availablePort = preferredPort;
   let portFound = false;
   
-  // First try the preferred port, then try ports in range
-  for (let p = preferredPort; p <= portRange.end; p++) {
-    if (await detectPort(p) === p) {
-      availablePort = p;
+  // Try the preferred port first (within range)
+  if (preferredPort >= portRange.start && preferredPort <= portRange.end) {
+    if (await detectPort(preferredPort) === preferredPort) {
+      availablePort = preferredPort;
       portFound = true;
-      break;
     }
   }
   
-  // If preferred port and range don't contain a free port, try from range start
+  // If preferred port is not available or out of range, try from start of range
   if (!portFound) {
     for (let p = portRange.start; p <= portRange.end; p++) {
       if (await detectPort(p) === p) {
