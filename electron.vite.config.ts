@@ -5,6 +5,7 @@
  * Features:
  * - Dynamic port allocation: Automatically finds a free port on startup
  * - Falls back to ports 5173-5183 range if preferred port is busy
+ * - Uses KANVAS_PORT and KANVAS_PORT_RANGE environment variables for configuration
  */
 
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
@@ -12,6 +13,19 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
+
+// Importing with explicit path to avoid build issues
+import { getPortConfig } from './shared/portConfig';
+
+/**
+ * Electron-Vite Configuration
+ * SeKondBrain Kanvas
+ *
+ * Features:
+ * - Dynamic port allocation: Automatically finds a free port on startup
+ * - Falls back to ports 5173-5183 range if preferred port is busy
+ * - Uses KANVAS_PORT and KANVAS_PORT_RANGE environment variables for configuration
+ */
 
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
@@ -29,15 +43,40 @@ function copyConfigPlugin() {
   };
 }
 
-// Preferred port - will try this first, then find next available
-const PREFERRED_PORT = 5173;
-
 export default defineConfig(async () => {
-  // Find an available port starting from PREFERRED_PORT
-  const availablePort = await detectPort(PREFERRED_PORT);
-
-  if (availablePort !== PREFERRED_PORT) {
-    console.log(`[Kanvas] Port ${PREFERRED_PORT} is busy, using port ${availablePort}`);
+  // Get port configuration from environment variables
+  const { preferredPort, portRange } = getPortConfig();
+  
+  // Find an available port within the configured range
+  let availablePort = preferredPort;
+  let portFound = false;
+  
+  // Try the preferred port first (within range)
+  if (preferredPort >= portRange.start && preferredPort <= portRange.end) {
+    if (await detectPort(preferredPort) === preferredPort) {
+      availablePort = preferredPort;
+      portFound = true;
+    }
+  }
+  
+  // If preferred port is not available or out of range, try from start of range
+  if (!portFound) {
+    for (let p = portRange.start; p <= portRange.end; p++) {
+      if (await detectPort(p) === p) {
+        availablePort = p;
+        portFound = true;
+        break;
+      }
+    }
+  }
+  
+  // If no free port found in range, throw an error
+  if (!portFound) {
+    throw new Error(`No free Kanvas port in ${portRange.start}-${portRange.end}`);
+  }
+  
+  if (availablePort !== preferredPort) {
+    console.log(`[Kanvas] Port ${preferredPort} is busy, using port ${availablePort}`);
   } else {
     console.log(`[Kanvas] Using port ${availablePort}`);
   }
