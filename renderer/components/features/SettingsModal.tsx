@@ -44,7 +44,7 @@ interface McpStatus {
   startedAt: string | null;
 }
 
-type Tab = 'general' | 'credentials' | 'maintenance' | 'mcp' | 'debug';
+type Tab = 'general' | 'credentials' | 'maintenance' | 'mcp' | 'debug' | 'code';
 
 export function SettingsModal({ onClose }: SettingsModalProps): React.ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>('general');
@@ -54,6 +54,16 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [appVersion, setAppVersion] = useState<string>('');
+  
+  // Code Organization state
+  const [organizationConfig, setOrganizationConfig] = useState<{
+    enabled: boolean;
+    structure: 'feature-folders' | 'flat' | 'custom';
+    setupCompleted: boolean;
+    setupCompletedAt?: string;
+  } | null>(null);
+  const [isLoadingOrgConfig, setIsLoadingOrgConfig] = useState(false);
+  const [orgError, setOrgError] = useState<string | null>(null);
 
   // Maintenance state
   const [orphanedSessions, setOrphanedSessions] = useState<OrphanedSession[]>([]);
@@ -189,6 +199,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     }
   }, [selectedSessionId, reportedSessions, uniqueRepos, selectedRepoPath]);
 
+  // Load organization config when the code tab is activated and a repo path is available
+  useEffect(() => {
+    if (activeTab === 'code' && selectedRepoPath) {
+      loadOrganizationConfig(selectedRepoPath);
+    }
+  }, [activeTab, selectedRepoPath]);
+
   // Fetch version and settings when selectedRepoPath changes
   useEffect(() => {
     if (!selectedRepoPath) {
@@ -240,21 +257,52 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     }
   };
 
-  const handleSaveGeneral = async () => {
-    if (!config) return;
-    setIsSaving(true);
-    setMessage(null);
+  const loadOrganizationConfig = async (repoPath: string) => {
+    if (!repoPath) return;
+    
+    setIsLoadingOrgConfig(true);
+    setOrgError(null);
+    try {
+      const result = await window.api.contractRegistry.getOrganizationConfig(repoPath);
+      if (result.success && result.data) {
+        setOrganizationConfig(result.data);
+      } else {
+        setOrgError(result.error?.message || 'Failed to load organization config');
+      }
+    } catch (error) {
+      setOrgError('Failed to load organization config');
+    } finally {
+      setIsLoadingOrgConfig(false);
+    }
+  };
+
+  const handleSaveOrganization = async (newStructure: 'feature-folders' | 'flat' | 'custom') => {
+    if (!selectedRepoPath || !organizationConfig) return;
+
+    // Show warning if changing from feature-folders to flat
+    if (organizationConfig.structure === 'feature-folders' && newStructure === 'flat') {
+      const confirmed = window.confirm(
+        'Switching to Flat structure will reorganize your repository files. This action cannot be undone. Are you sure you want to proceed?'
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
 
     try {
-      await window.api.config.set('theme', config.theme);
-      await window.api.config.set('defaultAgentType', config.defaultAgentType);
-      await window.api.config.set('autoWatch', config.autoWatch);
-      await window.api.config.set('autoPush', config.autoPush);
-      setMessage({ type: 'success', text: 'Settings saved successfully' });
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to save settings' });
-    } finally {
-      setIsSaving(false);
+      const result = await window.api.contractRegistry.setOrganizationConfig(selectedRepoPath, {
+        ...organizationConfig,
+        structure: newStructure,
+      });
+      
+      if (result.success) {
+        setOrganizationConfig({ ...organizationConfig, structure: newStructure });
+        setMessage({ type: 'success', text: 'Organization structure updated successfully' });
+      } else {
+        setMessage({ type: 'error', text: result.error?.message || 'Failed to update organization structure' });
+      }
+    } catch (error) {
+      setMessage({ type: 'error', text: 'Failed to update organization structure' });
     }
   };
 
@@ -278,6 +326,24 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
       }
     } catch {
       setMessage({ type: 'error', text: 'Failed to save API key' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveGeneral = async () => {
+    if (!config) return;
+    setIsSaving(true);
+    setMessage(null);
+
+    try {
+      await window.api.config.set('theme', config.theme);
+      await window.api.config.set('defaultAgentType', config.defaultAgentType);
+      await window.api.config.set('autoWatch', config.autoWatch);
+      await window.api.config.set('autoPush', config.autoPush);
+      setMessage({ type: 'success', text: 'Settings saved successfully' });
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to save settings' });
     } finally {
       setIsSaving(false);
     }
@@ -472,6 +538,22 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
             }`}
           >
             MCP
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('code');
+              // Load organization config when switching to code tab
+              if (selectedRepoPath) {
+                loadOrganizationConfig(selectedRepoPath);
+              }
+            }}
+            className={`px-3 py-1.5 text-sm font-medium transition-colors rounded-full ${
+              activeTab === 'code'
+                ? 'bg-black text-white'
+                : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.04)]'
+            }`}
+          >
+            Code
           </button>
           <button
             onClick={() => {
@@ -1540,6 +1622,59 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 </button>
               </div>
             </>
+          )}
+
+          {activeTab === 'code' && (
+            <div className="space-y-4">
+              {/* Code Organization Section */}
+              <div className="bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] p-3 space-y-3">
+                <div className="text-xs text-gray-500 uppercase tracking-wide">Code Organization</div>
+                
+                {selectedRepoPath ? (
+                  isLoadingOrgConfig ? (
+                    <div className="text-sm text-gray-400">Loading organization config...</div>
+                  ) : orgError ? (
+                    <div className="text-sm text-red-400">{orgError}</div>
+                  ) : organizationConfig ? (
+                    <>
+                      <div className="space-y-2">
+                        <div>
+                          <label className="label">Current Structure</label>
+                          <div className="text-sm text-gray-100">
+                            {organizationConfig.structure === 'feature-folders' ? 'Feature-based' : 
+                             organizationConfig.structure === 'flat' ? 'Flat' : 'Custom'}
+                          </div>
+                        </div>
+                        
+                        <div>
+                          <label className="label">New Structure</label>
+                          <select
+                            value={organizationConfig.structure}
+                            onChange={(e) => {
+                              const newStructure = e.target.value as 'feature-folders' | 'flat' | 'custom';
+                              handleSaveOrganization(newStructure);
+                            }}
+                            className="select"
+                          >
+                            <option value="feature-folders">Feature-based</option>
+                            <option value="flat">Flat</option>
+                            <option value="custom">Custom</option>
+                          </select>
+                        </div>
+                      </div>
+                      
+                      <div className="pt-2 border-t border-[rgba(0,0,0,0.10)] text-xs text-gray-500">
+                        <p>Changing the structure may affect your repository's organization.</p>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-sm text-gray-400">No organization config loaded</div>
+                  )
+                ) : (
+                  <div className="text-sm text-gray-400">No repository selected</div>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Message */}
