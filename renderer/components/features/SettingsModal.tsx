@@ -206,6 +206,16 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     }
   }, [activeTab, selectedRepoPath]);
 
+  // Test fix - ensure we can properly display structure labels when the tab is active
+  const getStructureLabel = (structure: 'feature-folders' | 'flat' | 'custom'): string => {
+    switch (structure) {
+      case 'feature-folders': return 'Feature-based';
+      case 'flat': return 'Flat';
+      case 'custom': return 'Custom';
+      default: return 'Unknown';
+    }
+  };
+
   // Fetch version and settings when selectedRepoPath changes
   useEffect(() => {
     if (!selectedRepoPath) {
@@ -1652,6 +1662,8 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                             value={organizationConfig.structure}
                             onChange={(e) => {
                               const newStructure = e.target.value as 'feature-folders' | 'flat' | 'custom';
+                              // Update state first, then save
+                              setOrganizationConfig({ ...organizationConfig, structure: newStructure });
                               handleSaveOrganization(newStructure);
                             }}
                             className="select"
