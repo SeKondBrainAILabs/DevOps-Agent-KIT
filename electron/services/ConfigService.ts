@@ -37,6 +37,8 @@ const defaultConfig: AppConfig = {
   telemetryOptIn: false,
   // L4: default landing view — 'last-visited' so existing users see no surprise.
   defaultLandingView: 'last-visited',
+  // PR approval gate configuration (KC-S1.2.2.3)
+  mergeRequirePrApproval: false,
 };
 
 const defaultBranchSettings: BranchManagementSettings = {
@@ -93,6 +95,21 @@ export class ConfigService extends BaseService {
     } catch (error) {
       return this.error('CONFIG_SET_FAILED', 'Failed to set config');
     }
+  }
+
+  /**
+   * Get the merge require PR approval setting
+   */
+  getMergeRequirePrApproval(): boolean {
+    const config = this.store.get('config');
+    return config.mergeRequirePrApproval ?? false;
+  }
+
+  /**
+   * Set the merge require PR approval setting
+   */
+  setMergeRequirePrApproval(value: boolean): IpcResult<void> {
+    return this.set('mergeRequirePrApproval', value);
   }
 
   /** The cloud-escalation policy KIT Harness reads (KC-S1.11.6); off unless set. */

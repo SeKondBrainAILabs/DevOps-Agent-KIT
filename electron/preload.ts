@@ -38,6 +38,7 @@ import type {
   AppUpdateInfo,
   StorageMetricsOverview,
   WorktreeSafetyInfo,
+  MergeResult,
 } from '../shared/types';
 import type {
   AgentInfo,
