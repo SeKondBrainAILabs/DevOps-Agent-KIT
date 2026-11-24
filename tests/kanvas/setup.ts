@@ -79,6 +79,7 @@ const mockApi = {
     analyzeStaleBranches: createMockFn({ success: true, data: [] }),
     archiveBranch: createMockFn({ success: true, data: { archiveBranchName: 'archive/x' } }),
     branches: createMockFn({ success: true, data: [] }),
+    checkRemote: createMockFn({ success: true, data: { behind: 0, ahead: 0 } }),
   },
   instance: {
     create: createMockFn({ success: true, data: {} }),

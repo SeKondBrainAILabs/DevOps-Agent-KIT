@@ -286,6 +286,10 @@ const api = {
     }>> =>
       ipcRenderer.invoke(IPC.GIT_PERFORM_REBASE, repoPath, baseBranch),
 
+    /** Check how far a branch is behind its base (for drift indicator). */
+    checkRemote: (repoPath: string, branch: string): Promise<IpcResult<{ behind: number; ahead: number }>> =>
+      ipcRenderer.invoke(IPC.GIT_CHECK_REMOTE, repoPath, branch),
+
     onStatusChanged: (callback: (data: { sessionId: string; status: GitStatus }) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, data: { sessionId: string; status: GitStatus }) => callback(data);
       ipcRenderer.on(IPC.GIT_STATUS_CHANGED, handler);
