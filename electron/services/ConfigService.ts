@@ -37,6 +37,9 @@ const defaultConfig: AppConfig = {
   telemetryOptIn: false,
   // L4: default landing view — 'last-visited' so existing users see no surprise.
   defaultLandingView: 'last-visited',
+  // KC-S1.2.2.3: optional PR approval gate — off by default so enabling it
+  // cannot block an existing team's in-flight merges.
+  mergeRequirePrApproval: false,
 };
 
 const defaultBranchSettings: BranchManagementSettings = {
@@ -105,6 +108,19 @@ export class ConfigService extends BaseService {
     const normalized = normalizeCloudEscalation(policy);
     const saved = this.set('harnessCloudEscalation', normalized);
     return saved.success ? this.success(normalized) : (saved as unknown as IpcResult<CloudEscalationPolicy>);
+  }
+
+  /**
+   * The `merge.require_pr_approval` setting (KC-S1.2.2.3), off unless set.
+   * When on, a protected merge additionally requires reviewDecision APPROVED.
+   */
+  getMergeRequirePrApproval(): boolean {
+    const stored = this.get('mergeRequirePrApproval');
+    return stored.success ? stored.data === true : false;
+  }
+
+  setMergeRequirePrApproval(required: boolean): IpcResult<void> {
+    return this.set('mergeRequirePrApproval', required === true);
   }
 
   getAll(): IpcResult<AppConfig> {

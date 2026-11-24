@@ -289,6 +289,14 @@ export interface AppConfig {
    * MCP with kit_get_harness_policy.
    */
   harnessCloudEscalation?: CloudEscalationPolicy;
+  /**
+   * Optional PR approval gate (KC-S1.2.2.3). The setting key is
+   * `merge.require_pr_approval` (snake_case, under `merge`); this field is its
+   * typed representation. When `true`, a protected merge additionally requires
+   * `reviewDecision === 'APPROVED'` from `gh pr view`. Default `false` — off
+   * until a team opts in, so an existing in-flight merge is never blocked.
+   */
+  mergeRequirePrApproval: boolean;
 }
 
 // =============================================================================
@@ -1240,7 +1248,7 @@ export interface MergeResult {
   /** Files that could not be recovered from stash due to unresolvable conflicts */
   stashConflictFiles?: string[];
   /** S9N-6394: reason the merge gate blocked the operation, when it did. */
-  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PUSH_REJECTED' | 'PR_UNAVAILABLE';
+  gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PUSH_REJECTED' | 'PR_UNAVAILABLE' | 'PR_NOT_APPROVED';
   /** Set when the merge was delivered as a pull request rather than a push. */
   pullRequestUrl?: string;
   /** How the merge was delivered. */
