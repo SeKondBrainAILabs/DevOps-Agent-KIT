@@ -289,6 +289,11 @@ export interface AppConfig {
    * MCP with kit_get_harness_policy.
    */
   harnessCloudEscalation?: CloudEscalationPolicy;
+  /**
+   * PR approval gate configuration (KC-S1.2.2.3). When true, protected merges
+   * require reviewDecision === 'APPROVED' (default false).
+   */
+  mergeRequirePrApproval: boolean;
 }
 
 // =============================================================================

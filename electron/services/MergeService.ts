@@ -282,12 +282,112 @@ export class MergeService extends BaseService {
             `Call kit_request_review to open one so the change can be reviewed, then merge. ` +
             `Or override with "Merge without CI check" if this is deliberate.`,
         };
+      }
     }
-  }
 
-  // KIT-PR-P10 - check for PR approval required by config setting
-  // Check if PR approval is required and reviewDecision is not APPROVED
-  // This must come after PR_MISSING check but before CI checks
+    // KIT-PR-P10 - check for PR approval required by config setting
+    // Check if PR approval is required and reviewDecision is not APPROVED
+    // This must come after PR_MISSING check but before CI checks
+    const configService = this.configService;
+    if (configService && typeof configService.getMergeRequirePrApproval === 'function') {
+      const requirePrApproval = configService.getMergeRequirePrApproval();
+      
+      if (requirePrApproval) {
+        // Fetch reviewDecision using gh CLI
+        const reviewDecisionResult = await runGh(['pr', 'view', sourceBranch, '--json', 'reviewDecision']);
+        
+        if (reviewDecisionResult.ok && reviewDecisionResult.stdout.trim()) {
+          try {
+            const reviewData = JSON.parse(reviewDecisionResult.stdout);
+            const reviewDecision = reviewData.reviewDecision;
+            
+            // If reviewDecision is missing or not APPROVED, block the merge
+            if (!reviewDecision || reviewDecision.toUpperCase() !== 'APPROVED') {
+              return {
+                ok: false,
+                reason: 'PR_NOT_APPROVED',
+                message:
+                  `Refused merge into '${targetBranch}': PR not approved. ` +
+                  `Get the pull request approved (reviewDecision === "APPROVED") and try again. ` +
+                  `The current review decision is "${reviewDecision || 'none'}".`,
+              };
+            }
+          } catch (parseError) {
+            // If parsing fails, treat as not approved
+            console.warn(`[MergeService] Failed to parse reviewDecision: ${parseError}`);
+            return {
+              ok: false,
+              reason: 'PR_NOT_APPROVED',
+              message:
+                `Refused merge into '${targetBranch}': PR not approved. ` +
+                `Get the pull request approved (reviewDecision === "APPROVED") and try again. ` +
+                `The review decision is not available or invalid.`,
+            };
+          }
+        } else {
+          // If there's no review decision (e.g., PR doesn't exist or gh command failed),
+          // treat as not approved
+          return {
+            ok: false,
+            reason: 'PR_NOT_APPROVED',
+            message:
+              `Refused merge into '${targetBranch}': PR not approved. ` +
+              `Get the pull request approved (reviewDecision === "APPROVED") and try again. ` +
+              `The review decision is not available.`,
+          };
+        }
+      }
+    }
+    const configService = this.configService;
+    if (configService && typeof configService.getMergeRequirePrApproval === 'function') {
+      const requirePrApproval = configService.getMergeRequirePrApproval();
+      
+      if (requirePrApproval) {
+        // Fetch reviewDecision using gh CLI
+        const reviewDecisionResult = await runGh(['pr', 'view', sourceBranch, '--json', 'reviewDecision']);
+        
+        if (reviewDecisionResult.ok && reviewDecisionResult.stdout.trim()) {
+          try {
+            const reviewData = JSON.parse(reviewDecisionResult.stdout);
+            const reviewDecision = reviewData.reviewDecision;
+            
+            // If reviewDecision is missing or not APPROVED, block the merge
+            if (!reviewDecision || reviewDecision.toUpperCase() !== 'APPROVED') {
+              return {
+                ok: false,
+                reason: 'PR_NOT_APPROVED',
+                message:
+                  `Refused merge into '${targetBranch}': PR not approved. ` +
+                  `Get the pull request approved (reviewDecision === "APPROVED") and try again. ` +
+                  `The current review decision is "${reviewDecision || 'none'}".`,
+              };
+            }
+          } catch (parseError) {
+            // If parsing fails, treat as not approved
+            console.warn(`[MergeService] Failed to parse reviewDecision: ${parseError}`);
+            return {
+              ok: false,
+              reason: 'PR_NOT_APPROVED',
+              message:
+                `Refused merge into '${targetBranch}': PR not approved. ` +
+                `Get the pull request approved (reviewDecision === "APPROVED") and try again. ` +
+                `The review decision is not available or invalid.`,
+            };
+          }
+        } else {
+          // If there's no review decision (e.g., PR doesn't exist or gh command failed),
+          // treat as not approved
+          return {
+            ok: false,
+            reason: 'PR_NOT_APPROVED',
+            message:
+              `Refused merge into '${targetBranch}': PR not approved. ` +
+              `Get the pull request approved (reviewDecision === "APPROVED") and try again. ` +
+              `The review decision is not available.`,
+          };
+        }
+      }
+    }
   const configService = this.configService;
   if (configService && typeof configService.getMergeRequirePrApproval === 'function') {
     const requirePrApproval = configService.getMergeRequirePrApproval();
