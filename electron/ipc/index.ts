@@ -572,7 +572,7 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
       // Convert to the expected format for the summarizer
       const checkRows = Array.isArray(parsed) ? parsed : [];
       
-      // Import the summarizer function
+      // Import the summarizer function from the shared location
       const { summarizePrChecks } = await import('../../shared/pr-checks-summary');
       
       const summary = summarizePrChecks(checkRows);

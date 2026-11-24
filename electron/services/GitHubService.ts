@@ -42,6 +42,19 @@ export interface EnsurePrSession {
   worktreePath: string;
 }
 
+/**
+ * PR Checks Summary Interface
+ */
+export interface PrChecksSummary {
+  state: 'passing' | 'failing' | 'pending' | 'none';
+  counts: {
+    passing: number;
+    failing: number;
+    pending: number;
+    total: number;
+  };
+}
+
 export type EnsurePrStatus =
   | 'created'
   | 'updated'
