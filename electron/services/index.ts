@@ -242,6 +242,8 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   merge.setMergeConflictService(mergeConflict);
   merge.setRebaseWatcher(rebaseWatcher);
   merge.setAgentInstanceService(agentInstance);
+  // KC-S1.2.2.3 — the optional PR approval gate reads merge.require_pr_approval.
+  merge.setConfigService(config);
   merge.setLockService(lock);
   merge.setDebugLog(debugLog);
   // Audit all worktree removals to the persistent debug log (with caller stack)

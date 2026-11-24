@@ -2032,7 +2032,7 @@ const api = {
       conflictingFiles?: string[];
       stashRecovered?: boolean;
       stashConflictFiles?: string[];
-      gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN';
+      gateReason?: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PUSH_REJECTED' | 'PR_UNAVAILABLE' | 'PR_NOT_APPROVED';
       gateDetails?: unknown;
     }>> =>
       ipcRenderer.invoke(IPC.MERGE_EXECUTE, repoPath, sourceBranch, targetBranch, options),

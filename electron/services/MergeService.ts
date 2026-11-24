@@ -68,6 +68,8 @@ export class MergeService extends BaseService {
   private githubService: any = null;
   private lockService: any = null;
   private activityService: any = null;
+  /** KC-S1.2.2.3 — supplies `merge.require_pr_approval` to the gate. */
+  private configService: any = null;
   private debugLog: { warn: (source: string, message: string, details?: unknown) => void } | null = null;
 
   setDebugLog(debugLog: { warn: (source: string, message: string, details?: unknown) => void }): void {
@@ -88,6 +90,15 @@ export class MergeService extends BaseService {
 
   setGitHubService(service: any): void {
     this.githubService = service;
+  }
+
+  /**
+   * KC-S1.2.2.3 — the optional PR approval gate reads
+   * `merge.require_pr_approval` through this service. Set via the same setter
+   * pattern as the other dependencies; absent means the gate stays off.
+   */
+  setConfigService(service: any): void {
+    this.configService = service;
   }
 
   setActivityService(service: any): void {
@@ -187,7 +198,7 @@ export class MergeService extends BaseService {
     worktreePath: string,
     sourceBranch: string,
     targetBranch: string
-  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING'; details?: unknown }> {
+  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PR_NOT_APPROVED'; details?: unknown }> {
     // (b) — cheap, no subprocess: scan commit messages between source and
     // target. Do this first so a WIP tip fails fast before we spend the
     // gh-CLI round-trip.
@@ -273,6 +284,37 @@ export class MergeService extends BaseService {
             `Refused merge into '${targetBranch}': no open pull request for '${sourceBranch}'.\n\n` +
             `Call kit_request_review to open one so the change can be reviewed, then merge. ` +
             `Or override with "Merge without CI check" if this is deliberate.`,
+        };
+      }
+    }
+
+    // (a0) — optional PR approval gate (KC-S1.2.2.3). Off by default. When the
+    // team turns on `merge.require_pr_approval`, a protected merge must prove a
+    // human approved the change, not only that CI passed. Checked before CI so
+    // an unapproved PR is refused for the right reason. Fail closed: a missing
+    // or unreadable reviewDecision is treated as not approved.
+    if (this.configService?.getMergeRequirePrApproval?.() === true) {
+      let reviewDecision: string | null = null;
+      try {
+        const reviewState = await runGh(['pr', 'view', sourceBranch, '--json', 'reviewDecision']);
+        if (reviewState.ok && reviewState.stdout.trim()) {
+          const parsed = JSON.parse(reviewState.stdout) as { reviewDecision?: unknown };
+          reviewDecision = typeof parsed?.reviewDecision === 'string' ? parsed.reviewDecision : null;
+        }
+      } catch {
+        // Unparseable output → treat as not approved (fail closed).
+        reviewDecision = null;
+      }
+      if (reviewDecision !== 'APPROVED') {
+        return {
+          ok: false,
+          reason: 'PR_NOT_APPROVED',
+          message:
+            `Refused merge into '${targetBranch}': the pull request for '${sourceBranch}' is not ` +
+            `approved (reviewDecision: ${reviewDecision ?? 'none'}).\n\n` +
+            `Get a reviewer to approve it on GitHub (reviewDecision must be APPROVED), then merge. ` +
+            `Or override with "Merge without CI check" if this is deliberate.`,
+          details: { reviewDecision },
         };
       }
     }
