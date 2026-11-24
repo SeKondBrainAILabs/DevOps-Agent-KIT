@@ -290,11 +290,16 @@ export interface AppConfig {
    */
   harnessCloudEscalation?: CloudEscalationPolicy;
   /**
-   * Optional PR approval gate for protected merges (story KC-S1.2.2.3).
-   * When true, protected targets require `reviewDecision === 'APPROVED'`.
-   * Defaults to false.
+   * Optional settings for merge behavior (KC-S1.2.2.3).
    */
-  mergeRequirePrApproval: boolean;
+  merge: {
+    /**
+     * Optional PR approval gate for protected merges (story KC-S1.2.2.3).
+     * When true, protected targets require `reviewDecision === 'APPROVED'`.
+     * Defaults to false.
+     */
+    require_pr_approval: boolean;
+  };
 }
 
 // =============================================================================

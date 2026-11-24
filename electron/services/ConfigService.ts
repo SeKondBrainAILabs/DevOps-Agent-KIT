@@ -38,7 +38,9 @@ const defaultConfig: AppConfig = {
   // L4: default landing view — 'last-visited' so existing users see no surprise.
   defaultLandingView: 'last-visited',
   // KC-S1.2.2.3: PR approval gate defaults to false (opt-in).
-  mergeRequirePrApproval: false,
+  merge: {
+    require_pr_approval: false,
+  },
 };
 
 const defaultBranchSettings: BranchManagementSettings = {
@@ -220,7 +222,7 @@ export class ConfigService extends BaseService {
    * Defaults to false.
    */
   getMergeRequirePrApproval(): boolean {
-    return this.store.get('config').mergeRequirePrApproval ?? false;
+    return this.store.get('config').merge?.require_pr_approval ?? false;
   }
 
   /**
@@ -228,7 +230,9 @@ export class ConfigService extends BaseService {
    */
   setMergeRequirePrApproval(value: boolean): void {
     const config = this.store.get('config');
-    config.mergeRequirePrApproval = value;
+    config.merge = {
+      require_pr_approval: value,
+    };
     this.store.set('config', config);
   }
 
