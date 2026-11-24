@@ -260,6 +260,16 @@ const mockApi = {
     onEnd: (jest.fn() as MockFn).mockReturnValue(() => {}),
     onStream: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
+  pr: {
+    list: createMockFn({ success: true, data: [] }),
+    canApprove: createMockFn({ success: true, data: { allowed: true } }),
+    review: createMockFn({ success: true }),
+    checks: createMockFn({ success: true, data: { state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } } }),
+  },
+  merge: {
+    preview: createMockFn({ success: true, data: { sourceBranch: '', targetBranch: '', canMerge: false, hasConflicts: false, conflictingFiles: [], filesChanged: [], commitCount: 0, aheadBy: 0, behindBy: 0 } }),
+    execute: createMockFn({ success: true }),
+  },
 };
 
 // Set up window.api mock
@@ -283,6 +293,17 @@ Object.defineProperty(navigator, 'clipboard', {
 beforeEach(() => {
   jest.clearAllMocks();
 });
+
+// Mock react-markdown and other ESM-only dependencies
+jest.mock('react-markdown', () => {
+  const React = require('react');
+  return {
+    __esModule: true,
+    default: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+  };
+});
+
+jest.mock('remark-gfm', () => ({}));
 
 // Export mocks for test use
 export { mockApi, mockIpcRenderer };

@@ -1385,6 +1385,8 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
   const [error, setError] = useState<string | null>(null);
   const [changesBody, setChangesBody] = useState('');
   const [showChanges, setShowChanges] = useState(false);
+  const [ciStatus, setCiStatus] = useState<import('../../../shared/pr-checks-summary').PrChecksSummary | null>(null);
+  const [ciLoading, setCiLoading] = useState(false);
 
   const openPr = prs.find((p) => String(p.state).toUpperCase() === 'OPEN');
   // A review request is a claim made once, when the agent finished. It does not
@@ -1410,11 +1412,31 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
     }
   }, [worktree, session.branchName]);
 
+  // Load CI status when component mounts or when worktree/branch changes
+  const loadCiStatus = React.useCallback(async () => {
+    if (!worktree || !session.branchName) return;
+    
+    setCiLoading(true);
+    try {
+      const r = await window.api?.pr?.checks?.(worktree, session.branchName);
+      if (r?.success && r.data) {
+        setCiStatus(r.data);
+      } else {
+        setCiStatus({ state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } });
+      }
+    } catch (err) {
+      setCiStatus({ state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } });
+    } finally {
+      setCiLoading(false);
+    }
+  }, [worktree, session.branchName]);
+
   useEffect(() => {
     // Fetched on open and on explicit refresh only. Never on a timer: at agent
     // fan-out, twenty sessions polling `gh` is a rate-limit incident.
     void loadPrs();
-  }, [loadPrs]);
+    void loadCiStatus();
+  }, [loadPrs, loadCiStatus]);
 
   const runReview = async (action: 'approve' | 'request-changes', body?: string): Promise<void> => {
     if (!openPr || !worktree) return;
@@ -1492,6 +1514,52 @@ function ReviewTab({ session }: { session: SessionReport }): React.ReactElement 
 
   return (
     <div className="h-full overflow-y-auto p-6 space-y-5">
+      {/* CI Status Badge */}
+      {ciStatus && (
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            {ciLoading ? (
+              <span className="text-xs text-text-secondary">Loading CI status...</span>
+            ) : ciStatus.state !== 'none' ? (
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                  ciStatus.state === 'passing' ? 'bg-green-100 text-green-800' :
+                  ciStatus.state === 'failing' ? 'bg-red-100 text-red-800' :
+                  'bg-amber-100 text-amber-800'
+                }`}>
+                  {ciStatus.state === 'passing' ? 'CI passing' :
+                   ciStatus.state === 'failing' ? 'CI failing' :
+                   'CI pending'}
+                </span>
+                <span className="text-xs text-text-secondary">
+                  ({ciStatus.counts.passing}/{ciStatus.counts.total} passed)
+                </span>
+              </div>
+            ) : null}
+          </div>
+          <button
+            onClick={loadCiStatus}
+            disabled={ciLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors bg-surface-secondary text-text-primary hover:bg-surface-tertiary disabled:opacity-50"
+          >
+            {ciLoading ? (
+              <>
+                <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 23 23" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Refresh
+              </>
+            ) : (
+              <>
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Refresh CI
+              </>
+            )}
+          </button>
+        </div>
+      )}
       {review ? (
         <>
           <div className="flex items-start justify-between gap-4">

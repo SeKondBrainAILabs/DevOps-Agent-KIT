@@ -42,6 +42,19 @@ export interface EnsurePrSession {
   worktreePath: string;
 }
 
+/**
+ * PR Checks Summary Interface
+ */
+export interface PrChecksSummary {
+  state: 'passing' | 'failing' | 'pending' | 'none';
+  counts: {
+    passing: number;
+    failing: number;
+    pending: number;
+    total: number;
+  };
+}
+
 export type EnsurePrStatus =
   | 'created'
   | 'updated'
@@ -427,4 +440,40 @@ export async function reviewPullRequest(
   }
 
   return { ok: false, message: r.stderr.trim() || 'The review could not be submitted.' };
+}
+
+/**
+ * Get pull request checks from GitHub CLI
+ */
+export async function getPullRequestChecks(
+  deps: PrReviewDeps,
+  worktreePath: string,
+  branchName: string
+): Promise<PrChecksSummary> {
+  try {
+    const checks = await deps.gh(
+      ['pr', 'checks', branchName, '--json', 'name,state,bucket'],
+      worktreePath
+    );
+    
+    if (!checks.ok || !checks.stdout.trim()) {
+      return { state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } };
+    }
+    
+    let parsed: any;
+    try {
+      parsed = JSON.parse(checks.stdout);
+    } catch {
+      return { state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } };
+    }
+    
+    // Convert to the expected format for the summarizer
+    const checkRows = Array.isArray(parsed) ? parsed : [];
+    
+    // Import the summarizer function (using dynamic import to avoid circular dependency issues)
+    const { summarizePrChecks } = await import('../../shared/pr-checks-summary');
+    return summarizePrChecks(checkRows);
+  } catch (err) {
+    return { state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } };
+  }
 }

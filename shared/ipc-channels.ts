@@ -401,6 +401,7 @@ export const IPC = {
   PR_LIST: 'pr:list',
   PR_CAN_APPROVE: 'pr:can-approve',
   PR_REVIEW: 'pr:review',
+  PR_CHECKS: 'pr:checks',
 
   // ==========================================================================
   // COMMIT ANALYSIS CHANNELS
