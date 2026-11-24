@@ -549,6 +549,40 @@ export function registerIpcHandlers(services: Services, mainWindow: BrowserWindo
     }
   );
 
+  // KIT-PR-P11 — fetch PR checks for CI status on review tab
+  ipcMain.handle(IPC.PR_CHECKS, async (_e: unknown, worktreePath: string, branchName: string) => {
+    try {
+      const gh = createGhRunner();
+      const checks = await gh(
+        ['pr', 'checks', branchName, '--json', 'name,state,bucket'],
+        worktreePath
+      );
+      
+      if (!checks.ok || !checks.stdout.trim()) {
+        return { success: true, data: { state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } } };
+      }
+      
+      let parsed: any;
+      try {
+        parsed = JSON.parse(checks.stdout);
+      } catch (e) {
+        return { success: true, data: { state: 'none', counts: { passing: 0, failing: 0, pending: 0, total: 0 } } };
+      }
+      
+      // Convert to the expected format for the summarizer
+      const checkRows = Array.isArray(parsed) ? parsed : [];
+      
+      // Import the summarizer function
+      const { summarizePrChecks } = await import('../../shared/pr-checks-summary');
+      
+      const summary = summarizePrChecks(checkRows);
+      
+      return { success: true, data: summary };
+    } catch (err) {
+      return { success: false, error: { code: 'PR_CHECKS_FAILED', message: String(err) } };
+    }
+  });
+
   ipcMain.handle(IPC.INSTANCE_SET_PINNED, async (_e: unknown, sessionId: string, pinned: boolean) => {
     return services.agentInstance.setSessionPinned(sessionId, pinned);
   });
