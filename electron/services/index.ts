@@ -244,6 +244,7 @@ export async function initializeServices(mainWindow: BrowserWindow): Promise<Ser
   merge.setAgentInstanceService(agentInstance);
   merge.setLockService(lock);
   merge.setDebugLog(debugLog);
+  merge.setConfigService(config);
   // Audit all worktree removals to the persistent debug log (with caller stack)
   git.setDebugLog(debugLog);
 

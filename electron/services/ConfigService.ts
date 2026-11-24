@@ -37,6 +37,8 @@ const defaultConfig: AppConfig = {
   telemetryOptIn: false,
   // L4: default landing view — 'last-visited' so existing users see no surprise.
   defaultLandingView: 'last-visited',
+  // KC-S1.2.2.3: PR approval gate defaults to false (opt-in).
+  mergeRequirePrApproval: false,
 };
 
 const defaultBranchSettings: BranchManagementSettings = {
@@ -206,6 +208,28 @@ export class ConfigService extends BaseService {
   getRepoConfig(repoPath: string): RepoWorkspaceConfig | null {
     const settings = this.store.get('repoSettings');
     return settings?.[repoPath] ?? null;
+  }
+
+  // ==========================================================================
+  // PR APPROVAL GATE (KC-S1.2.2.3)
+  // ==========================================================================
+
+  /**
+   * Get the optional PR approval gate setting.
+   * When true, protected merges require reviewDecision === 'APPROVED'.
+   * Defaults to false.
+   */
+  getMergeRequirePrApproval(): boolean {
+    return this.store.get('config').mergeRequirePrApproval ?? false;
+  }
+
+  /**
+   * Set the optional PR approval gate setting.
+   */
+  setMergeRequirePrApproval(value: boolean): void {
+    const config = this.store.get('config');
+    config.mergeRequirePrApproval = value;
+    this.store.set('config', config);
   }
 
   // ==========================================================================

@@ -69,6 +69,7 @@ export class MergeService extends BaseService {
   private lockService: any = null;
   private activityService: any = null;
   private debugLog: { warn: (source: string, message: string, details?: unknown) => void } | null = null;
+  private configService: any = null;
 
   setDebugLog(debugLog: { warn: (source: string, message: string, details?: unknown) => void }): void {
     this.debugLog = debugLog;
@@ -92,6 +93,10 @@ export class MergeService extends BaseService {
 
   setActivityService(service: any): void {
     this.activityService = service;
+  }
+
+  setConfigService(service: any): void {
+    this.configService = service;
   }
 
   /**
@@ -183,11 +188,11 @@ export class MergeService extends BaseService {
    * as an explicit "Merge without CI check" affordance. The default path
    * refuses so agent-driven merges cannot ship a red or mid-write state.
    */
-  private async checkMergeGate(
+    private async checkMergeGate(
     worktreePath: string,
     sourceBranch: string,
     targetBranch: string
-  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING'; details?: unknown }> {
+  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PR_NOT_APPROVED'; details?: unknown }> {
     // (b) — cheap, no subprocess: scan commit messages between source and
     // target. Do this first so a WIP tip fails fast before we spend the
     // gh-CLI round-trip.
@@ -273,6 +278,43 @@ export class MergeService extends BaseService {
             `Refused merge into '${targetBranch}': no open pull request for '${sourceBranch}'.\n\n` +
             `Call kit_request_review to open one so the change can be reviewed, then merge. ` +
             `Or override with "Merge without CI check" if this is deliberate.`,
+        };
+      }
+    }
+
+    // KC-S1.2.2.3: Optional PR approval gate.
+    // Only runs when the config setting is ON. Check reviewDecision via gh pr view.
+    const requirePrApproval = this.configService?.getMergeRequirePrApproval?.() ?? false;
+    if (requirePrApproval) {
+      const prReview = await runGh(['pr', 'view', sourceBranch, '--json', 'reviewDecision']);
+      const prReviewFailure = classifyGhFailure(prReview);
+      if (prReviewFailure === 'not_installed' || prReviewFailure === 'not_authenticated') {
+        return {
+          ok: false,
+          reason: 'PR_NOT_APPROVED',
+          message:
+            `Refused merge into '${targetBranch}': gh CLI is not available or not authenticated. ` +
+            `KIT needs it to verify the PR has been approved. ` +
+            `Install/authorize gh CLI or use "Merge without CI check" if you've verified manually.`,
+        };
+      }
+      let reviewDecision: string | null = null;
+      if (prReview.ok && prReview.stdout.trim()) {
+        try {
+          reviewDecision = String(JSON.parse(prReview.stdout)?.reviewDecision ?? null);
+        } catch {
+          reviewDecision = null;
+        }
+      }
+      if (reviewDecision !== 'APPROVED') {
+        return {
+          ok: false,
+          reason: 'PR_NOT_APPROVED',
+          message:
+            `Refused merge into '${targetBranch}': the pull request for '${sourceBranch}' ` +
+            `has not been approved (reviewDecision: ${reviewDecision ?? 'missing'}). ` +
+            `Request approval and merge only when reviewDecision === 'APPROVED', ` +
+            `or use "Merge without CI check" if this is deliberate.`,
         };
       }
     }
