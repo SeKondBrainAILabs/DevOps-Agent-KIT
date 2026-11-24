@@ -225,4 +225,78 @@ describe('ReviewTab CI - component behavior', () => {
       jest.useRealTimers();
     }
   });
+
+  it('renders the passing badge in green', async () => {
+    window.api.pr.checks.mockResolvedValueOnce({
+      success: true,
+      data: {
+        state: 'passing' as const,
+        counts: { passing: 3, failing: 0, pending: 0, total: 3 },
+      },
+    });
+
+    render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
+
+    const badge = await screen.findByText(/CI passing/i);
+    expect(badge.className).toMatch(/bg-green-100/);
+    expect(badge.className).toMatch(/text-green-800/);
+  });
+
+  it('renders the failing badge in red', async () => {
+    window.api.pr.checks.mockResolvedValueOnce({
+      success: true,
+      data: {
+        state: 'failing' as const,
+        counts: { passing: 2, failing: 1, pending: 0, total: 3 },
+      },
+    });
+
+    render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
+
+    const badge = await screen.findByText(/CI failing/i);
+    expect(badge.className).toMatch(/bg-red-100/);
+    expect(badge.className).toMatch(/text-red-800/);
+  });
+
+  it('renders the pending badge in amber', async () => {
+    window.api.pr.checks.mockResolvedValueOnce({
+      success: true,
+      data: {
+        state: 'pending' as const,
+        counts: { passing: 1, failing: 0, pending: 2, total: 3 },
+      },
+    });
+
+    render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
+
+    const badge = await screen.findByText(/CI pending/i);
+    expect(badge.className).toMatch(/bg-amber-100/);
+    expect(badge.className).toMatch(/text-amber-800/);
+  });
+
+  it('omits the coloured CI badge entirely when state is none', async () => {
+    window.api.pr.checks.mockResolvedValueOnce({
+      success: true,
+      data: {
+        state: 'none' as const,
+        counts: { passing: 0, failing: 0, pending: 0, total: 0 },
+      },
+    });
+
+    render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
+
+    await waitFor(() => {
+      expect(window.api.pr.checks).toHaveBeenCalled();
+    });
+
+    // No badge element carrying any of the three state colours is rendered.
+    const coloured = document.querySelector(
+      '.bg-green-100, .bg-red-100, .bg-amber-100'
+    );
+    expect(coloured).toBeNull();
+  });
 });

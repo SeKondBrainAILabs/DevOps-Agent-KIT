@@ -10,8 +10,11 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { summarizePrChecks } from '../../../renderer/lib/summary/pr-checks-summary';
 import type { PrChecksSummary } from '../../../electron/services/GitHubService';
+import { IPC } from '../../../shared/ipc-channels';
 
 describe('summarizePrChecks', () => {
   it('returns none when input is empty', () => {
@@ -166,5 +169,35 @@ describe('summarizePrChecks', () => {
 
     expect(result.state).toBe('passing');
     expect(result.counts).toEqual({ passing: 1, failing: 0, pending: 0, total: 1 });
+  });
+});
+
+/**
+ * AC2: A pr.checks IPC channel and preload method exist and the app builds.
+ *
+ * The channel constant must be exported with the agreed wire value, the preload
+ * must expose window.api.pr.checks and route it through that channel, and the
+ * main process must register a handler on the same channel. These are the three
+ * places the plan calls out; missing any one breaks the build or the runtime.
+ */
+describe('pr.checks IPC channel and preload method', () => {
+  const repoRoot = join(__dirname, '..', '..', '..');
+
+  it('exposes the pr:checks channel constant', () => {
+    expect(IPC.PR_CHECKS).toBe('pr:checks');
+  });
+
+  it('exposes window.api.pr.checks in the preload that invokes the channel', () => {
+    const preload = readFileSync(join(repoRoot, 'electron', 'preload.ts'), 'utf8');
+
+    expect(preload).toMatch(/pr:\s*{/);
+    expect(preload).toMatch(/checks:\s*\(/);
+    expect(preload).toMatch(/ipcRenderer\.invoke\(IPC\.PR_CHECKS/);
+  });
+
+  it('registers a main-process handler on the pr:checks channel', () => {
+    const ipcIndex = readFileSync(join(repoRoot, 'electron', 'ipc', 'index.ts'), 'utf8');
+
+    expect(ipcIndex).toMatch(/ipcMain\.handle\(IPC\.PR_CHECKS/);
   });
 });
