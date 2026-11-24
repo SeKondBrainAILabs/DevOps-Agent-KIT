@@ -10,7 +10,58 @@
  */
 
 import { describe, test, expect, beforeEach } from '@jest/globals';
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { driftLevel, type DriftLevel } from '../../../shared/git-sync-drift';
+
+// SessionDetailView imports react-markdown / remark-gfm / react-window, whose
+// ESM builds jest cannot transform. Stub them so the real component renders.
+jest.mock('react-markdown', () => ({ __esModule: true, default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div> }));
+jest.mock('remark-gfm', () => ({ __esModule: true, default: () => {} }));
+jest.mock('react-window', () => ({ FixedSizeList: () => <div /> }));
+
+import { SessionDetailView } from '../../../renderer/components/features/SessionDetailView';
+import { mockApi } from '../setup';
+
+// jsdom normalises hex colours to rgb() when read back from inline styles.
+const COLOR = {
+  green: 'rgb(34, 197, 94)',
+  yellow: 'rgb(234, 179, 8)',
+  orange: 'rgb(249, 115, 22)',
+  red: 'rgb(239, 68, 68)',
+} as const;
+
+const LABEL = {
+  green: 'Drift: Up to date',
+  yellow: 'Drift: Light drift',
+  orange: 'Drift: Moderate drift',
+  red: 'Drift: Severe drift',
+} as const;
+
+function makeSession(overrides: Record<string, unknown> = {}) {
+  return {
+    sessionId: 'sess-drift-1',
+    agentId: 'agent-1',
+    agentType: 'claude',
+    task: 'Do the thing',
+    branchName: 'feat/drift',
+    baseBranch: 'main',
+    repoPath: '/repo/root',
+    worktreePath: '/repo/worktree',
+    status: 'active',
+    created: '2026-01-01T00:00:00.000Z',
+    updated: '2026-01-01T00:00:00.000Z',
+    commitCount: 0,
+    ...overrides,
+  } as never;
+}
+
+function renderHeader(session = makeSession()) {
+  return render(<SessionDetailView session={session} onBack={() => {}} />);
+}
 
 describe('SessionDetailView drift integration', () => {
   beforeEach(() => {
@@ -145,5 +196,110 @@ describe('SessionDetailView drift integration', () => {
     const commitText = `${behind} commit${behind === 1 ? '' : 's'} behind main`;
     
     expect(commitText).toBe('5 commits behind main');
+  });
+});
+
+/**
+ * AC3/AC4 — these render the real SessionDetailView header and assert the
+ * drift indicator the component produces, not a string rebuilt in the test.
+ */
+describe('SessionDetailView header drift indicator', () => {
+  beforeEach(() => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({
+      success: true,
+      data: { behind: 0, ahead: 0 },
+    } as never);
+  });
+
+  test('behind === 0 shows a green dot and "Up to date"', async () => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: true, data: { behind: 0, ahead: 0 } } as never);
+    renderHeader();
+
+    expect(await screen.findByText('Up to date')).toBeInTheDocument();
+    const dot = screen.getByTitle(LABEL.green);
+    expect(dot.style.backgroundColor).toBe(COLOR.green);
+  });
+
+  test('behind 1-5 shows a yellow dot and "N commits behind <baseBranch>"', async () => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: true, data: { behind: 3, ahead: 0 } } as never);
+    renderHeader();
+
+    expect(await screen.findByText('3 commits behind main')).toBeInTheDocument();
+    const dot = screen.getByTitle(LABEL.yellow);
+    expect(dot.style.backgroundColor).toBe(COLOR.yellow);
+  });
+
+  test('behind 6-20 shows an orange dot and the behind text', async () => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: true, data: { behind: 12, ahead: 0 } } as never);
+    renderHeader();
+
+    expect(await screen.findByText('12 commits behind main')).toBeInTheDocument();
+    const dot = screen.getByTitle(LABEL.orange);
+    expect(dot.style.backgroundColor).toBe(COLOR.orange);
+  });
+
+  test('behind 21+ shows a red dot and the behind text', async () => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: true, data: { behind: 21, ahead: 0 } } as never);
+    renderHeader();
+
+    expect(await screen.findByText('21 commits behind main')).toBeInTheDocument();
+    const dot = screen.getByTitle(LABEL.red);
+    expect(dot.style.backgroundColor).toBe(COLOR.red);
+  });
+
+  test('uses the session base branch in the text, not a hard-coded "main"', async () => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: true, data: { behind: 4, ahead: 0 } } as never);
+    renderHeader(makeSession({ baseBranch: 'develop' }));
+
+    expect(await screen.findByText('4 commits behind develop')).toBeInTheDocument();
+  });
+
+  test('fetches drift via checkRemote with (worktreePath || repoPath, baseBranch || "main")', async () => {
+    renderHeader();
+
+    await waitFor(() => expect(mockApi.git.checkRemote).toHaveBeenCalledWith('/repo/worktree', 'main'));
+  });
+
+  test('falls back to repoPath and "main" when worktreePath/baseBranch are absent', async () => {
+    renderHeader(makeSession({ worktreePath: undefined, baseBranch: undefined }));
+
+    await waitFor(() => expect(mockApi.git.checkRemote).toHaveBeenCalledWith('/repo/root', 'main'));
+  });
+
+  test('checks drift exactly once on mount (no polling)', async () => {
+    renderHeader();
+
+    await waitFor(() => expect(mockApi.git.checkRemote).toHaveBeenCalledTimes(1));
+    expect(mockApi.git.checkRemote).toHaveBeenCalledTimes(1);
+  });
+
+  test('clicking "Check for Updates" re-runs the drift check', async () => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: true, data: { behind: 2, ahead: 0 } } as never);
+    renderHeader();
+
+    await screen.findByText('2 commits behind main');
+    expect(mockApi.git.checkRemote).toHaveBeenCalledTimes(1);
+
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: true, data: { behind: 0, ahead: 0 } } as never);
+    await userEvent.click(screen.getByTitle('Check for Updates'));
+
+    expect(await screen.findByText('Up to date')).toBeInTheDocument();
+    expect(mockApi.git.checkRemote).toHaveBeenCalledTimes(2);
+  });
+
+  test('renders no drift indicator before a successful check (error result)', async () => {
+    (mockApi.git.checkRemote as jest.Mock).mockResolvedValue({ success: false, error: { code: 'E', message: 'no upstream' } } as never);
+    renderHeader();
+
+    await waitFor(() => expect(mockApi.git.checkRemote).toHaveBeenCalled());
+    expect(screen.queryByText('Up to date')).not.toBeInTheDocument();
+    expect(screen.queryByText(/commits? behind/)).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Check for Updates')).not.toBeInTheDocument();
+  });
+
+  test('preload exposes checkRemote wired to IPC.GIT_CHECK_REMOTE', () => {
+    const preload = readFileSync(resolve(process.cwd(), 'electron/preload.ts'), 'utf8');
+    expect(preload).toMatch(/checkRemote\s*:/);
+    expect(preload).toMatch(/IPC\.GIT_CHECK_REMOTE/);
   });
 });
