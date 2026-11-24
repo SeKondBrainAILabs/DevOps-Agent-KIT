@@ -195,7 +195,7 @@ export class MergeService extends BaseService {
     worktreePath: string,
     sourceBranch: string,
     targetBranch: string
-  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING'; details?: unknown }> {
+  ): Promise<{ ok: true } | { ok: false; message: string; reason: 'CI_RED' | 'CI_PENDING' | 'WIP_COMMITS' | 'GH_UNAVAILABLE' | 'CI_UNKNOWN' | 'PR_MISSING' | 'PR_NOT_APPROVED'; details?: unknown }> {
     // (b) — cheap, no subprocess: scan commit messages between source and
     // target. Do this first so a WIP tip fails fast before we spend the
     // gh-CLI round-trip.
@@ -287,6 +287,7 @@ export class MergeService extends BaseService {
 
   // KIT-PR-P10 - check for PR approval required by config setting
   // Check if PR approval is required and reviewDecision is not APPROVED
+  // This must come after PR_MISSING check but before CI checks
   const configService = this.configService;
   if (configService && typeof configService.getMergeRequirePrApproval === 'function') {
     const requirePrApproval = configService.getMergeRequirePrApproval();
