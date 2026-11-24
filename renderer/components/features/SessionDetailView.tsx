@@ -11,6 +11,7 @@ import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentInstance, ContractType, Contract, ActivityLogEntry, DiscoveredFeature } from '../../../shared/types';
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
 import { formatDateTime } from '../../../shared/format-datetime';
+import { driftLevel, driftLevelColor, driftLevelLabel, type DriftLevel } from '../../../shared/git-sync-drift';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
@@ -154,6 +155,10 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
   const [rebaseRepairBusy, setRebaseRepairBusy] = useState(false);
   const [rebaseRepairResult, setRebaseRepairResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Drift indicator state — how far behind the base branch
+  const [driftBehind, setDriftBehind] = useState<number | null>(null);
+  const [driftError, setDriftError] = useState<string | null>(null);
+  const [driftChecked, setDriftChecked] = useState(false);
   const showConflictDialog = useConflictStore((state) => state.showDialog);
 
   useEffect(() => {
@@ -425,6 +430,36 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
       setSyncResult({ success: false, message: 'Failed to change base branch' });
     }
   };
+
+  // Check drift: how far behind the base branch
+  const checkDrift = async () => {
+    const repoPath = session.worktreePath || session.repoPath;
+    const baseBranch = session.baseBranch || 'main';
+    if (!repoPath) {
+      setDriftError('No repository path configured');
+      setDriftChecked(true);
+      return;
+    }
+    setDriftError(null);
+    try {
+      const result = await window.api?.git?.checkRemote?.(repoPath, baseBranch);
+      if (result?.success && result.data) {
+        setDriftBehind(result.data.behind ?? null);
+      } else {
+        setDriftError(result?.error?.message || 'Unable to check remote');
+      }
+    } catch (err) {
+      setDriftError(err instanceof Error ? err.message : 'Check failed');
+    } finally {
+      setDriftChecked(true);
+    }
+  };
+
+  // Check drift on mount (once)
+  useEffect(() => {
+    checkDrift();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const statusColors = {
     active: 'text-green-500',
@@ -727,6 +762,30 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                 </svg>
                 {syncing ? 'Syncing...' : 'Sync (rebase)'}
               </button>
+              {/* Drift indicator — shows how far behind the base branch */}
+              {driftChecked && driftBehind !== null && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full"
+                    style={{
+                      backgroundColor: driftLevelColor(driftLevel(driftBehind)),
+                    }}
+                    title={`Drift: ${driftLevelLabel(driftLevel(driftBehind))}`}
+                  />
+                  <span className="text-text-secondary">
+                    {driftBehind === 0
+                      ? 'Up to date'
+                      : `${driftBehind} commit${driftBehind === 1 ? '' : 's'} behind ${session.baseBranch || 'main'}`}
+                  </span>
+                  <button
+                    onClick={checkDrift}
+                    className="ml-1 text-xs text-text-secondary hover:text-text-primary transition-colors"
+                    title="Check for Updates"
+                  >
+                    ⟳
+                  </button>
+                </div>
+              )}
               {/* v2.7.2 / 2.7.3 — Push button always visible so the feature
                   is discoverable. Disabled when count is 0 (nothing to push).
                   Shows count in brackets when there is work to send. */}
