@@ -11,6 +11,7 @@ import type { SessionReport } from '../../../shared/agent-protocol';
 import type { AgentInstance, ContractType, Contract, ActivityLogEntry, DiscoveredFeature } from '../../../shared/types';
 import { computeFeatureFileStats, getFeatureRelativePath, getFileTooltip } from '../../../shared/feature-utils';
 import { formatDateTime } from '../../../shared/format-datetime';
+import { driftLevel, driftLabel } from '../../../shared/git-sync-drift';
 import { useAgentStore } from '../../store/agentStore';
 import { useContractStore } from '../../store/contractStore';
 import { useConflictStore } from '../../store/conflictStore';
@@ -154,6 +155,9 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
   const [aiHealth, setAiHealth] = useState<{ online: boolean; configured: boolean; error?: string } | null>(null);
   const [rebaseRepairBusy, setRebaseRepairBusy] = useState(false);
   const [rebaseRepairResult, setRebaseRepairResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [driftBehind, setDriftBehind] = useState<number | null>(null);
+  const [driftError, setDriftError] = useState<string | null>(null);
+  const [driftChecked, setDriftChecked] = useState(false);
   const showConflictDialog = useConflictStore((state) => state.showDialog);
 
   useEffect(() => {
@@ -166,6 +170,13 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     const interval = setInterval(check, 60_000);
     return () => clearInterval(interval);
   }, []);
+
+  // Check drift status on mount
+  useEffect(() => {
+    if (session) {
+      checkDrift();
+    }
+  }, [session]);
 
   // Load instance data to get the prompt
   useEffect(() => {
@@ -212,6 +223,34 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
       setShowDeleteConfirm(true);
       // Auto-hide confirm after 3 seconds
       setTimeout(() => setShowDeleteConfirm(false), 3000);
+    }
+  };
+
+  const checkDrift = async () => {
+    if (!session) return;
+    
+    setDriftError(null);
+    setDriftChecked(false);
+    
+    try {
+      const repoPath = session.worktreePath || session.repoPath;
+      const baseBranch = session.baseBranch || 'main';
+      
+      if (!repoPath) {
+        setDriftError('No repository path available');
+        return;
+      }
+      
+      const result = await window.api.git.checkRemote(repoPath, baseBranch);
+      
+      if (result.success && result.data) {
+        setDriftBehind(result.data.behind);
+        setDriftChecked(true);
+      } else {
+        setDriftError(result.error || 'Failed to check drift');
+      }
+    } catch (error) {
+      setDriftError('Failed to check drift');
     }
   };
 
@@ -711,6 +750,37 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
                   </div>
                 </div>
               )}
+              {/* Drift Indicator */}
+              <div className="flex items-center gap-2 ml-2">
+                {driftError ? (
+                  <span className="text-xs text-red-500">Error checking drift</span>
+                ) : driftChecked ? (
+                  <>
+                    <div className="flex items-center gap-1">
+                      <div 
+                        className={`w-2 h-2 rounded-full ${
+                          driftLevel(driftBehind) === 'green' ? 'bg-green-500' :
+                          driftLevel(driftBehind) === 'yellow' ? 'bg-yellow-500' :
+                          driftLevel(driftBehind) === 'orange' ? 'bg-orange-500' : 'bg-red-500'
+                        }`}
+                        title={`${driftBehind} commits behind ${session.baseBranch || 'main'}`}
+                      />
+                      <span className="text-xs text-text-primary">
+                        {driftBehind === 0 ? 'Up to date' : `${driftBehind} ${driftBehind === 1 ? 'commit' : 'commits'} behind ${session.baseBranch || 'main'}`}
+                      </span>
+                    </div>
+                    <button
+                      onClick={checkDrift}
+                      className="text-xs text-text-secondary hover:text-text-primary ml-2"
+                      title="Check for updates to drift status"
+                    >
+                      Check for Updates
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-xs text-text-secondary">Checking...</span>
+                )}
+              </div>
               <button
                 onClick={handleSync}
                 disabled={syncing}
