@@ -7,13 +7,14 @@
  * AC4: The review card shows the CI state.
  *
  * These tests verify the CI badge behavior in the ReviewTab component.
- * The tests fail today because the CI implementation does not exist.
+ * The ReviewTab only mounts once the Review tab is selected, so every test
+ * below switches to that tab before asserting on the CI controls.
  */
 
 import '@testing-library/jest-dom';
 import React from 'react';
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
-import { render, waitFor, screen } from '@testing-library/react';
+import { render, waitFor, screen, fireEvent, act } from '@testing-library/react';
 
 // Import the SessionDetailView component which contains ReviewTab
 // This import may fail due to dependencies, which is expected
@@ -34,6 +35,10 @@ describe('ReviewTab CI - component behavior', () => {
       summary: 'Test summary',
       prStatus: 'available' as const,
     },
+  };
+
+  const openReviewTab = (): void => {
+    fireEvent.click(screen.getByRole('button', { name: /^Review/ }));
   };
 
   beforeEach(() => {
@@ -61,9 +66,10 @@ describe('ReviewTab CI - component behavior', () => {
     });
 
     render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
 
     await waitFor(() => {
-      expect(window.api.pr.checks).toHaveBeenCalled();
+      expect(window.api.pr.checks).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -77,6 +83,7 @@ describe('ReviewTab CI - component behavior', () => {
     });
 
     render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
 
     await waitFor(() => {
       expect(screen.getByText(/CI passing/i)).toBeInTheDocument();
@@ -93,6 +100,7 @@ describe('ReviewTab CI - component behavior', () => {
     });
 
     render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
 
     await waitFor(() => {
       expect(screen.getByText(/CI failing/i)).toBeInTheDocument();
@@ -109,6 +117,7 @@ describe('ReviewTab CI - component behavior', () => {
     });
 
     render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
 
     await waitFor(() => {
       expect(screen.getByText(/CI pending/i)).toBeInTheDocument();
@@ -125,12 +134,14 @@ describe('ReviewTab CI - component behavior', () => {
     });
 
     render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
 
     await waitFor(() => {
-      expect(screen.queryByText(/CI passing/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/CI failing/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/CI pending/i)).not.toBeInTheDocument();
+      expect(window.api.pr.checks).toHaveBeenCalled();
     });
+    expect(screen.queryByText(/CI passing/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CI failing/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CI pending/i)).not.toBeInTheDocument();
   });
 
   it('has Refresh button for explicit refresh', async () => {
@@ -143,9 +154,75 @@ describe('ReviewTab CI - component behavior', () => {
     });
 
     render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /refresh ci/i })).toBeInTheDocument();
     });
+  });
+
+  it('fetches checks again on each Refresh click', async () => {
+    window.api.pr.checks.mockResolvedValue({
+      success: true,
+      data: {
+        state: 'passing' as const,
+        counts: { passing: 3, failing: 0, pending: 0, total: 3 },
+      },
+    });
+
+    render(<SessionDetailView session={mockSession as any} />);
+    openReviewTab();
+
+    await waitFor(() => {
+      expect(window.api.pr.checks).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh ci/i }));
+    await waitFor(() => {
+      expect(window.api.pr.checks).toHaveBeenCalledTimes(2);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh ci/i }));
+    await waitFor(() => {
+      expect(window.api.pr.checks).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  it('does not re-fetch checks on a timer over ten minutes', async () => {
+    jest.useFakeTimers();
+    try {
+      window.api.pr.checks.mockResolvedValue({
+        success: true,
+        data: {
+          state: 'passing' as const,
+          counts: { passing: 3, failing: 0, pending: 0, total: 3 },
+        },
+      });
+
+      render(<SessionDetailView session={mockSession as any} />);
+      openReviewTab();
+
+      // Let the mount-time fetch settle before advancing timers.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const checksMock = window.api.pr.checks as unknown as {
+        mock: { calls: unknown[][] };
+      };
+      const afterMount = checksMock.mock.calls.length;
+      expect(afterMount).toBe(1);
+
+      // Ten minutes of wall-clock time must not trigger a single extra call.
+      await act(async () => {
+        jest.advanceTimersByTime(10 * 60 * 1000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(checksMock.mock.calls.length).toBe(afterMount);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
