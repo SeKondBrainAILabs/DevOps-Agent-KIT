@@ -252,7 +252,7 @@ export function SessionDetailView({ session, onBack, onDelete, onRestart }: Sess
     let cancelled = false;
     const refresh = async () => {
       try {
-        const r = await window.api?.git?.getStatus?.(session.sessionId);
+        const r = await window.api?.git?.status?.(session.sessionId);
         if (cancelled || !r?.success) return;
         setUnpushedCount(r.data?.ahead ?? 0);
       } catch { /* silent — button just shows 0 */ }
