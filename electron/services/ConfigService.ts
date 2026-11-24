@@ -38,7 +38,10 @@ const defaultConfig: AppConfig = {
   // L4: default landing view — 'last-visited' so existing users see no surprise.
   defaultLandingView: 'last-visited',
   // KC-S1.2.2.3: optional PR approval gate — off by default so enabling it
-  // cannot block an existing team's in-flight merges.
+  // cannot block an existing team's in-flight merges. Stored under the
+  // `merge` namespace so the setting is addressed as `merge.require_pr_approval`.
+  merge: { require_pr_approval: false },
+  // Typed mirror of `merge.require_pr_approval`, kept in sync by the accessors.
   mergeRequirePrApproval: false,
 };
 
@@ -113,14 +116,34 @@ export class ConfigService extends BaseService {
   /**
    * The `merge.require_pr_approval` setting (KC-S1.2.2.3), off unless set.
    * When on, a protected merge additionally requires reviewDecision APPROVED.
+   *
+   * Read from the `merge` namespace (`merge.require_pr_approval`); falls back
+   * to the typed `mergeRequirePrApproval` mirror for configs written before the
+   * namespace existed.
    */
   getMergeRequirePrApproval(): boolean {
-    const stored = this.get('mergeRequirePrApproval');
-    return stored.success ? stored.data === true : false;
+    try {
+      const config = this.store.get('config');
+      const nested = config?.merge?.require_pr_approval;
+      if (typeof nested === 'boolean') return nested;
+      return config?.mergeRequirePrApproval === true;
+    } catch {
+      return false;
+    }
   }
 
   setMergeRequirePrApproval(required: boolean): IpcResult<void> {
-    return this.set('mergeRequirePrApproval', required === true);
+    try {
+      const config = this.store.get('config');
+      const value = required === true;
+      config.merge = { ...(config.merge ?? { require_pr_approval: false }), require_pr_approval: value };
+      // Keep the typed mirror in sync for readers of the flat field.
+      config.mergeRequirePrApproval = value;
+      this.store.set('config', config);
+      return this.success(undefined);
+    } catch {
+      return this.error('CONFIG_SET_FAILED', 'Failed to set config');
+    }
   }
 
   getAll(): IpcResult<AppConfig> {

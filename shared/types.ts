@@ -290,6 +290,11 @@ export interface AppConfig {
    */
   harnessCloudEscalation?: CloudEscalationPolicy;
   /**
+   * Merge settings namespace (KC-S1.2.2.3). Holds the `merge.*` configuration
+   * keys, e.g. `merge.require_pr_approval`.
+   */
+  merge?: MergeSettings;
+  /**
    * Optional PR approval gate (KC-S1.2.2.3). The setting key is
    * `merge.require_pr_approval` (snake_case, under `merge`); this field is its
    * typed representation. When `true`, a protected merge additionally requires
@@ -297,6 +302,18 @@ export interface AppConfig {
    * until a team opts in, so an existing in-flight merge is never blocked.
    */
   mergeRequirePrApproval: boolean;
+}
+
+/**
+ * Merge settings (KC-S1.2.2.3), stored under the `merge` key in AppConfig so
+ * the setting is addressed as `merge.require_pr_approval`.
+ */
+export interface MergeSettings {
+  /**
+   * When `true`, a protected merge additionally requires
+   * `reviewDecision === 'APPROVED'` from `gh pr view`. Default `false`.
+   */
+  require_pr_approval: boolean;
 }
 
 // =============================================================================
