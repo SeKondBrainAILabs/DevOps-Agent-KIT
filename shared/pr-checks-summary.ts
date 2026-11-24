@@ -9,13 +9,13 @@
  * {passing, failing, pending, total}.
  */
 
-interface PrCheckRow {
+export interface PrCheckRow {
   name: string;
   state: string;
   bucket: string;
 }
 
-interface PrChecksSummary {
+export interface PrChecksSummary {
   state: 'passing' | 'failing' | 'pending' | 'none';
   counts: {
     passing: number;
@@ -31,7 +31,7 @@ interface PrChecksSummary {
  * @param checks - Array of PR check objects with name, state, and bucket
  * @returns Summary object with state and counts
  */
-function summarizePrChecks(checks: PrCheckRow[]): PrChecksSummary {
+export function summarizePrChecks(checks: PrCheckRow[]): PrChecksSummary {
   if (checks.length === 0) {
     return {
       state: 'none',
