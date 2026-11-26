@@ -52,12 +52,14 @@ jest.mock('chokidar', () => ({
 const mockReadFile = jest.fn() as jest.Mock;
 const mockWriteFile = jest.fn().mockResolvedValue(undefined as never) as jest.Mock;
 const mockMkdir = jest.fn().mockResolvedValue(undefined as never) as jest.Mock;
+const mockRealpath = jest.fn() as jest.Mock;
 
 jest.mock('fs', () => ({
   promises: {
     readFile: mockReadFile,
     writeFile: mockWriteFile,
     mkdir: mockMkdir,
+    realpath: mockRealpath,
   },
 }));
 
@@ -493,11 +495,68 @@ describe('KanvasHeartbeatWriter', () => {
 // RebaseMonitor
 // ═════════════════════════════════════════════════════════════════════
 
+/** A checkout the fake git knows about, keyed by the cwd git is run in. */
+interface FakeCheckout {
+  /** What `git rev-parse --git-common-dir` prints ('.git' or an absolute path). */
+  commonDir?: string;
+  commonDirError?: Error;
+  fetchError?: Error;
+  /** `git rev-list --left-right --count` output: "ahead\tbehind". */
+  aheadBehind?: string;
+  revListError?: Error;
+  branch?: string;
+}
+
+/**
+ * Answer git by command rather than by call order: polls from several
+ * sessions interleave, so positional mocks would test the scheduling, not
+ * the behaviour.
+ */
+function fakeGit(checkouts: Record<string, FakeCheckout>): void {
+  mockExecFileAsync.mockImplementation((async (_bin: string, args: string[], opts: { cwd: string }) => {
+    const c = checkouts[opts.cwd];
+    if (!c) throw new Error(`fatal: not a git repository: ${opts.cwd}`);
+    const out = (stdout: string) => ({ stdout, stderr: '' });
+    if (args.includes('fetch')) {
+      if (c.fetchError) throw c.fetchError;
+      return out('');
+    }
+    if (args[0] === 'rev-parse' && args[1] === '--git-common-dir') {
+      if (c.commonDirError) throw c.commonDirError;
+      return out(`${c.commonDir ?? '.git'}\n`);
+    }
+    if (args[0] === 'rev-list') {
+      if (c.revListError) throw c.revListError;
+      return out(c.aheadBehind ?? '0\t0\n');
+    }
+    if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) return out(`${c.branch ?? 'main'}\n`);
+    throw new Error(`unexpected git ${args.join(' ')}`);
+  }) as never);
+}
+
 describe('RebaseMonitor', () => {
   let emitFn: jest.Mock;
 
+  /** Let every pending poll run to completion (each poll awaits several git calls). */
+  const settle = async () => {
+    for (let i = 0; i < 25; i++) await jest.advanceTimersByTimeAsync(0);
+  };
+  const fetchCalls = () =>
+    mockExecFileAsync.mock.calls.filter((call) => (call[1] as string[]).includes('fetch'));
+  const statusesFor = (sessionId: string) =>
+    emitFn.mock.calls
+      .map((call) => call[0] as WorkerEvent & { sessionId?: string })
+      .filter((e) => e.type === 'rebase-remote-status' && e.sessionId === sessionId);
+  const errorsFor = (sessionId: string) =>
+    emitFn.mock.calls
+      .map((call) => call[0] as WorkerEvent & { message?: string })
+      .filter((e) => e.type === 'error' && (e.message ?? '').includes(sessionId));
+
   beforeEach(() => {
     jest.clearAllMocks();
+    mockExecFileAsync.mockReset();
+    mockRealpath.mockReset();
+    mockRealpath.mockImplementation((async (p: string) => p) as never);
     jest.useFakeTimers();
     emitFn = jest.fn();
   });
@@ -507,7 +566,7 @@ describe('RebaseMonitor', () => {
   });
 
   it('should start polling and track the session', () => {
-    mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' } as never);
+    fakeGit({ '/repo': {} });
 
     const monitor = new RebaseMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo', 'main', 'origin', 60000);
@@ -515,7 +574,7 @@ describe('RebaseMonitor', () => {
   });
 
   it('should stop polling', () => {
-    mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' } as never);
+    fakeGit({ '/repo': {} });
 
     const monitor = new RebaseMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo', 'main', 'origin', 60000);
@@ -524,17 +583,11 @@ describe('RebaseMonitor', () => {
   });
 
   it('should emit rebase-remote-status after successful poll', async () => {
-    mockExecFileAsync
-      .mockResolvedValueOnce({ stdout: '', stderr: '' } as never) // git fetch
-      .mockResolvedValueOnce({ stdout: '2\t5\n', stderr: '' } as never) // rev-list (ahead\tbehind)
-      .mockResolvedValueOnce({ stdout: 'feature-branch\n', stderr: '' } as never); // rev-parse
+    fakeGit({ '/repo': { aheadBehind: '2\t5\n', branch: 'feature-branch' } });
 
     const monitor = new RebaseMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo', 'main', 'origin', 60000);
-
-    // Let the immediate poll resolve
-    await jest.advanceTimersByTimeAsync(0);
-    await jest.advanceTimersByTimeAsync(0);
+    await settle();
 
     expect(emitFn).toHaveBeenCalledWith({
       type: 'rebase-remote-status',
@@ -547,21 +600,20 @@ describe('RebaseMonitor', () => {
   });
 
   it('should emit error on git fetch failure', async () => {
-    mockExecFileAsync.mockRejectedValueOnce(new Error('Network error') as never);
+    fakeGit({ '/repo': { fetchError: new Error('Network error') } });
 
     const monitor = new RebaseMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo', 'main', 'origin', 60000);
-
-    await jest.advanceTimersByTimeAsync(0);
-    await jest.advanceTimersByTimeAsync(0);
+    await settle();
 
     expect(emitFn).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', source: 'RebaseMonitor' })
     );
+    expect(statusesFor('sess-1')).toHaveLength(0);
   });
 
   it('should stopAll monitors', () => {
-    mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' } as never);
+    fakeGit({ '/repo1': {}, '/repo2': {} });
 
     const monitor = new RebaseMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo1', 'main', 'origin', 60000);
@@ -572,7 +624,7 @@ describe('RebaseMonitor', () => {
   });
 
   it('should stop previous monitor on re-start for same session', () => {
-    mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' } as never);
+    fakeGit({ '/repo1': {}, '/repo2': {} });
 
     const monitor = new RebaseMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo1', 'main', 'origin', 60000);
@@ -582,16 +634,11 @@ describe('RebaseMonitor', () => {
   });
 
   it('should handle graceful rev-list failure', async () => {
-    mockExecFileAsync
-      .mockResolvedValueOnce({ stdout: '', stderr: '' } as never) // git fetch OK
-      .mockRejectedValueOnce(new Error('no upstream') as never) // rev-list fails
-      .mockResolvedValueOnce({ stdout: 'main\n', stderr: '' } as never); // rev-parse OK
+    fakeGit({ '/repo': { revListError: new Error('no upstream') } });
 
     const monitor = new RebaseMonitor(emitFn as EmitFn);
     monitor.start('sess-1', '/repo', 'main', 'origin', 60000);
-
-    await jest.advanceTimersByTimeAsync(0);
-    await jest.advanceTimersByTimeAsync(0);
+    await settle();
 
     // Should still emit with behind=0, ahead=0
     expect(emitFn).toHaveBeenCalledWith(
@@ -601,5 +648,162 @@ describe('RebaseMonitor', () => {
         ahead: 0,
       })
     );
+  });
+
+  describe('one fetch per repository', () => {
+    // Three worktrees of one repository: each reports the shared common dir.
+    const oneRepoThreeWorktrees: Record<string, FakeCheckout> = {
+      '/repo': { commonDir: '.git', aheadBehind: '0\t3\n', branch: 'main' },
+      '/wt/a': { commonDir: '/repo/.git', aheadBehind: '1\t3\n', branch: 'feature-a' },
+      '/wt/b': { commonDir: '/repo/.git', aheadBehind: '2\t3\n', branch: 'feature-b' },
+    };
+
+    it('fetches once for several worktrees of one repository', async () => {
+      fakeGit(oneRepoThreeWorktrees);
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-main', '/repo', 'main', 'origin', 60000);
+      monitor.start('sess-a', '/wt/a', 'main', 'origin', 60000);
+      monitor.start('sess-b', '/wt/b', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls()).toHaveLength(1);
+      // Each session still measures ahead/behind in its own checkout.
+      expect(statusesFor('sess-main')).toEqual([expect.objectContaining({ ahead: 0, behind: 3, localBranch: 'main' })]);
+      expect(statusesFor('sess-a')).toEqual([expect.objectContaining({ ahead: 1, behind: 3, localBranch: 'feature-a' })]);
+      expect(statusesFor('sess-b')).toEqual([expect.objectContaining({ ahead: 2, behind: 3, localBranch: 'feature-b' })]);
+    });
+
+    it('fetches once per poll cycle, not once per session', async () => {
+      fakeGit(oneRepoThreeWorktrees);
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-a', '/wt/a', 'main', 'origin', 60000);
+      monitor.start('sess-b', '/wt/b', 'main', 'origin', 60000);
+      await settle();
+      expect(fetchCalls()).toHaveLength(1);
+
+      await jest.advanceTimersByTimeAsync(60000);
+      await settle();
+      expect(fetchCalls()).toHaveLength(2);
+      expect(statusesFor('sess-a')).toHaveLength(2);
+      expect(statusesFor('sess-b')).toHaveLength(2);
+    });
+
+    it('reuses a fetch that finished within the poll interval', async () => {
+      fakeGit(oneRepoThreeWorktrees);
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-a', '/wt/a', 'main', 'origin', 60000);
+      await settle();
+
+      await jest.advanceTimersByTimeAsync(30000);
+      monitor.start('sess-b', '/wt/b', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls()).toHaveLength(1);
+      expect(statusesFor('sess-b')).toHaveLength(1);
+    });
+
+    it('fetches separately for different repositories', async () => {
+      fakeGit({
+        '/repo1': { commonDir: '.git' },
+        '/repo2': { commonDir: '.git' },
+      });
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-1', '/repo1', 'main', 'origin', 60000);
+      monitor.start('sess-2', '/repo2', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls().map((call) => (call[2] as { cwd: string }).cwd).sort()).toEqual(['/repo1', '/repo2']);
+    });
+
+    it('fetches separately for different remotes of one repository', async () => {
+      fakeGit(oneRepoThreeWorktrees);
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-a', '/wt/a', 'main', 'origin', 60000);
+      monitor.start('sess-b', '/wt/b', 'main', 'upstream', 60000);
+      await settle();
+
+      expect(fetchCalls().map((call) => (call[1] as string[])[3]).sort()).toEqual(['origin', 'upstream']);
+    });
+
+    it('treats a repository reached through a symlink as the same repository', async () => {
+      fakeGit({
+        '/real/repo': { commonDir: '.git' },
+        '/link/repo': { commonDir: '.git' },
+      });
+      mockRealpath.mockImplementation((async (p: string) => p.replace(/^\/link\//, '/real/')) as never);
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-1', '/real/repo', 'main', 'origin', 60000);
+      monitor.start('sess-2', '/link/repo', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls()).toHaveLength(1);
+      expect(statusesFor('sess-1')).toHaveLength(1);
+      expect(statusesFor('sess-2')).toHaveLength(1);
+    });
+
+    it('reports a failed shared fetch to every session on the repository', async () => {
+      fakeGit({
+        '/wt/a': { commonDir: '/repo/.git', fetchError: new Error('Could not resolve host') },
+        '/wt/b': { commonDir: '/repo/.git', fetchError: new Error('Could not resolve host') },
+      });
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-a', '/wt/a', 'main', 'origin', 60000);
+      monitor.start('sess-b', '/wt/b', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls()).toHaveLength(1);
+      expect(errorsFor('sess-a')).toHaveLength(1);
+      expect(errorsFor('sess-b')).toHaveLength(1);
+      expect(statusesFor('sess-a')).toHaveLength(0);
+      expect(statusesFor('sess-b')).toHaveLength(0);
+    });
+
+    it('fetches without triggering git auto-maintenance', async () => {
+      fakeGit({ '/repo': {} });
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-1', '/repo', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls()).toHaveLength(1);
+      expect(fetchCalls()[0][1]).toEqual(['-c', 'maintenance.auto=false', 'fetch', 'origin', '--no-tags', '--quiet']);
+    });
+
+    it('fetches per checkout when the repository cannot be identified', async () => {
+      const unreadable = new Error('fatal: not a git repository');
+      fakeGit({
+        '/wt/a': { commonDirError: unreadable },
+        '/wt/b': { commonDirError: unreadable },
+      });
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-a', '/wt/a', 'main', 'origin', 60000);
+      monitor.start('sess-b', '/wt/b', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls()).toHaveLength(2);
+    });
+
+    it('forgets a repository once its last session stops', async () => {
+      fakeGit(oneRepoThreeWorktrees);
+
+      const monitor = new RebaseMonitor(emitFn as EmitFn);
+      monitor.start('sess-a', '/wt/a', 'main', 'origin', 60000);
+      await settle();
+      monitor.stop('sess-a');
+
+      // A new session right away gets a fresh fetch, not the stopped group's result.
+      monitor.start('sess-b', '/wt/b', 'main', 'origin', 60000);
+      await settle();
+
+      expect(fetchCalls()).toHaveLength(2);
+    });
   });
 });
