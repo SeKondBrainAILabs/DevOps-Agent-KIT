@@ -1,77 +1,61 @@
 /**
- * Kanvas Port Configuration Helper
- * 
- * Resolves KANVAS_PORT and KANVAS_PORT_RANGE environment variables to determine
- * the preferred port and range for Kanvas to use.
- * 
- * @returns An object containing the selected port and range
+ * Port configuration helper for Kanvas.
+ * Reads KANVAS_PORT and KANVAS_PORT_RANGE environment variables and returns
+ * the preferred port and range configuration.
  */
-export function getKanvasPortConfig() {
-  // Default range
-  const DEFAULT_PORT = 5173;
+
+export interface KanvasPortConfig {
+  port: number;
+  range: {
+    start: number;
+    end: number;
+  };
+}
+
+/**
+ * Gets the port configuration for Kanvas based on environment variables.
+ * 
+ * @returns {KanvasPortConfig} Configuration with preferred port and range
+ */
+export function getKanvasPortConfig(): KanvasPortConfig {
+  // Default range: 5173-5183 (inclusive)
   const DEFAULT_RANGE_START = 5173;
   const DEFAULT_RANGE_END = 5183;
   
   // Parse KANVAS_PORT environment variable
   const portStr = process.env.KANVAS_PORT;
-  let port = null;
-  if (portStr !== undefined && portStr.trim() !== '') {
-    const parsed = parseInt(portStr.trim(), 10);
-    if (!isNaN(parsed)) {
-      port = parsed;
-    }
-  }
+  let preferredPort = portStr ? parseInt(portStr.trim(), 10) : undefined;
   
   // Parse KANVAS_PORT_RANGE environment variable
   const rangeStr = process.env.KANVAS_PORT_RANGE;
-  let rangeStart = null;
-  let rangeEnd = null;
+  let rangeStart = DEFAULT_RANGE_START;
+  let rangeEnd = DEFAULT_RANGE_END;
   
-  if (rangeStr !== undefined && rangeStr.trim() !== '') {
+  // Process range if provided
+  if (rangeStr) {
     try {
-      const trimmedRange = rangeStr.trim();
-      const parts = trimmedRange.split('-');
+      // Trim whitespace and validate range format (should be like "5200-5210")
+      const trimmedRangeStr = rangeStr.trim();
+      const match = trimmedRangeStr.match(/^(\d+)-(\d+)$/);
       
-      // Validate format: should be exactly 2 parts (start-end)
-      if (parts.length === 2) {
-        const startStr = parts[0].trim();
-        const endStr = parts[1].trim();
+      if (match) {
+        const start = parseInt(match[1], 10);
+        const end = parseInt(match[2], 10);
         
-        // Check if both parts are numeric
-        const startParsed = parseInt(startStr, 10);
-        const endParsed = parseInt(endStr, 10);
-        
-        if (!isNaN(startParsed) && !isNaN(endParsed)) {
-          // Validate that start <= end
-          if (startParsed <= endParsed) {
-            rangeStart = startParsed;
-            rangeEnd = endParsed;
-          }
+        // Validate range values
+        if (!isNaN(start) && !isNaN(end) && start <= end) {
+          rangeStart = start;
+          rangeEnd = end;
         }
       }
-    } catch (e) {
-      // If parsing fails due to malformed range, fall back to defaults
+    } catch (error) {
+      // If parsing fails, fall back to default range
     }
   }
   
-  // If range is not properly set, use default range
-  if (rangeStart === null || rangeEnd === null) {
-    rangeStart = DEFAULT_RANGE_START;
-    rangeEnd = DEFAULT_RANGE_END;
-  }
-  
-  // Determine the preferred port
-  let preferredPort;
-  
-  // If KANVAS_PORT is set, use it regardless of range
-  if (port !== null) {
-    preferredPort = port;
-  } else if (rangeStart !== null) {
-    // If KANVAS_PORT is not set but range is set, use start of range
+  // If KANVAS_PORT is not set, use start of range as preferred port
+  if (preferredPort === undefined) {
     preferredPort = rangeStart;
-  } else {
-    // Fallback to default port
-    preferredPort = DEFAULT_PORT;
   }
   
   return {
