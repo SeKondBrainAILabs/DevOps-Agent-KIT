@@ -1,6 +1,6 @@
 /**
  * Electron-Vite Configuration
- * SeKondBrain Kanvas
+ * SeKond Brain Kanvas
  *
  * Features:
  * - Dynamic port allocation: Automatically finds a free port on startup
@@ -12,6 +12,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
+import { getKanvasPortConfig } from '@shared/kanvas-port-config';
 
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
@@ -29,15 +30,15 @@ function copyConfigPlugin() {
   };
 }
 
-// Preferred port - will try this first, then find next available
-const PREFERRED_PORT = 5173;
-
 export default defineConfig(async () => {
-  // Find an available port starting from PREFERRED_PORT
-  const availablePort = await detectPort(PREFERRED_PORT);
+  // Get the configured port and range from environment variables
+  const { port: preferredPort, range } = getKanvasPortConfig();
+  
+  // Find an available port starting from preferredPort
+  const availablePort = await detectPort(preferredPort);
 
-  if (availablePort !== PREFERRED_PORT) {
-    console.log(`[Kanvas] Port ${PREFERRED_PORT} is busy, using port ${availablePort}`);
+  if (availablePort !== preferredPort) {
+    console.log(`[Kanvas] Port ${preferredPort} is busy, using port ${availablePort}`);
   } else {
     console.log(`[Kanvas] Using port ${availablePort}`);
   }
