@@ -118,7 +118,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [isBumping, setIsBumping] = useState(false);
 
   // Organization configuration state
-  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: 'feature-folders' | 'flat' } | null>(null);
+  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: 'feature-folders' | 'flat'; setupCompleted: boolean; setupCompletedAt?: string } | null>(null);
   const [orgError, setOrgError] = useState<string>('');
   const [isSavingOrg, setIsSavingOrg] = useState(false);
 
@@ -222,7 +222,14 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     // Load organization config when repo path changes
     window.api.contractRegistry?.getOrganizationConfig?.(selectedRepoPath).then((result) => {
       if (result?.success && result.data) {
-        setOrgConfig(result.data);
+        // Make sure we only keep the expected structure fields
+        const cleanData = {
+          enabled: result.data.enabled,
+          structure: result.data.structure,
+          setupCompleted: result.data.setupCompleted,
+          setupCompletedAt: result.data.setupCompletedAt
+        };
+        setOrgConfig(cleanData);
         setOrgError('');
       } else {
         setOrgConfig(null);
@@ -278,7 +285,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   };
 
   // Handle organization structure change with warning if switching from feature-folders to flat
-  const handleStructureChange = async (newStructure: 'feature-folders' | 'flat') => {
+  const handleStructureChange = async (newStructure: 'feature-folders' | 'flat' | 'custom') => {
     if (orgConfig?.structure === 'feature-folders' && newStructure === 'flat') {
       // Show warning before switching from feature-folders to flat
       const confirmed = window.confirm(
@@ -1525,8 +1532,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
             value={orgConfig.structure}
             onChange={(e) => {
               const newStructure = e.target.value as 'feature-folders' | 'flat';
-              // Update state immediately for dropdown, but don't save yet
-              setOrgConfig({...orgConfig!, structure: newStructure});
+              setOrgConfig({...orgConfig, structure: newStructure});
             }}
             className="select"
           >
@@ -1541,8 +1547,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
               // Save the current configured value 
               const structureToSave = orgConfig.structure;
               if (structureToSave === 'feature-folders' || structureToSave === 'flat') {
-                // Handle potential warnings before saving
-                handleStructureChange(structureToSave);
+                handleSaveOrganizationConfig(structureToSave);
               }
             }
           }}
