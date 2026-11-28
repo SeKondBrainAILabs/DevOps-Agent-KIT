@@ -162,6 +162,9 @@ describe('SettingsModal Code Organization saves (AC3)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     useAgentStore.setState({ reportedSessions: new Map(), selectedSessionId: null });
+    // Switching feature-folders -> flat must pass the AC4 warning before it is
+    // persisted, so accept the confirmation here to exercise the save path.
+    (window.confirm as jest.Mock<any, any>) = jest.fn().mockReturnValue(true);
   });
 
   it('saves', async () => {
@@ -185,7 +188,7 @@ describe('SettingsModal Code Organization saves (AC3)', () => {
     const dropdown = screen.getByRole('combobox');
     await userEvent.selectOptions(dropdown, 'flat');
 
-    // Click save button
+    // Click save button - the user accepts the warning, so the change persists
     const saveButton = screen.getByRole('button', { name: /save/i });
     await userEvent.click(saveButton);
 
