@@ -1,7 +1,7 @@
 # Infrastructure Contract
 
 **Last Updated:** 2024-12-02  
-**Version:** 1.0.0  
+**Version:** 1.0.1  
 **Status:** Initial Template
 
 ---
@@ -23,6 +23,7 @@ This contract documents **all infrastructure configuration, environment variable
 | Date | Version | Agent/Author | Changes | Impact |
 |------|---------|--------------|---------|--------|
 | 2024-12-02 | 1.0.0 | DevOps Agent | Initial template creation | N/A - Template only |
+| 2026-11-28 | 1.0.1 | DevOps Agent | Added KANVAS_PORT and KANVAS_PORT_RANGE environment variables | Infrastructure |
 
 ---
 
@@ -64,6 +65,8 @@ This contract documents **all infrastructure configuration, environment variable
 | `APP_URL` | string | YES | - | Application base URL | `https://app.example.com` | Email links, redirects |
 | `APP_PORT` | integer | YES | `3000` | Server port | `3000`, `8080` | Server startup |
 | `APP_HOST` | string | NO | `0.0.0.0` | Server host | `0.0.0.0`, `localhost` | Server binding |
+| `KANVAS_PORT` | integer | NO | `5173` | Kanvas preferred port | `5173`, `6000` | electron.vite.config.ts |
+| `KANVAS_PORT_RANGE` | string | NO | `5173-5183` | Kanvas port range | `5173-5183`, `5200-5210` | electron.vite.config.ts |
 
 **Added:** 2024-01-15  
 **Last Modified:** 2024-01-15
