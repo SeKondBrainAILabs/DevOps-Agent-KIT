@@ -44,7 +44,7 @@ interface McpStatus {
   startedAt: string | null;
 }
 
-type Tab = 'general' | 'credentials' | 'maintenance' | 'mcp' | 'debug';
+type Tab = 'general' | 'credentials' | 'maintenance' | 'mcp' | 'debug' | 'code';
 
 export function SettingsModal({ onClose }: SettingsModalProps): React.ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>('general');
@@ -116,6 +116,11 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [versionError, setVersionError] = useState<string>('');
   const [versionSettings, setVersionSettings] = useState<RepoVersionSettings>({ autoVersionBump: true });
   const [isBumping, setIsBumping] = useState(false);
+
+  // Code organization state
+  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: string } | null>(null);
+  const [orgStructure, setOrgStructure] = useState<string>('feature-folders');
+  const [orgLoading, setOrgLoading] = useState(false);
 
   // Auto-update state
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
@@ -213,6 +218,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     });
   }, [selectedRepoPath]);
 
+  // Fetch org config when selectedRepoPath changes (for code tab)
+  useEffect(() => {
+    if (activeTab === 'code' && selectedRepoPath) {
+      handleLoadOrgConfig(selectedRepoPath);
+    }
+  }, [selectedRepoPath, activeTab]);
+
   const handleBump = async (component: 'major' | 'minor' | 'patch') => {
     if (!selectedRepoPath || isBumping) return;
     setIsBumping(true);
@@ -237,6 +249,52 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     setVersionSettings(newSettings);
     if (selectedRepoPath) {
       await window.api.version.setSettings(selectedRepoPath, newSettings);
+    }
+  };
+
+  // Code organization handlers
+  const handleLoadOrgConfig = async (repoPath: string): Promise<void> => {
+    setOrgLoading(true);
+    try {
+      const result = await window.api.contractRegistry?.getOrganizationConfig?.(repoPath);
+      if (result?.success && result.data) {
+        setOrgConfig(result.data);
+        setOrgStructure(result.data.structure || 'feature-folders');
+      }
+    } catch {
+      setOrgConfig(null);
+      setOrgStructure('feature-folders');
+    } finally {
+      setOrgLoading(false);
+    }
+  };
+
+  const handleStructureChange = (newStructure: string): void => {
+    setOrgStructure(newStructure);
+  };
+
+  const handleSaveOrganizationConfig = async (): Promise<void> => {
+    if (!selectedRepoPath || !orgConfig) return;
+
+    // Check if switching from feature-folders to flat
+    if (orgConfig.structure === 'feature-folders' && orgStructure === 'flat') {
+      const confirmed = window.confirm(
+        'Change Code Organization: Switching to flat organization may affect existing project layouts. Continue?'
+      );
+      if (!confirmed) {
+        // Revert to original value
+        setOrgStructure(orgConfig.structure);
+        return;
+      }
+    }
+
+    // Save the new structure
+    const result = await window.api.contractRegistry?.setOrganizationConfig?.(selectedRepoPath, { structure: orgStructure });
+    if (result?.success && result.data) {
+      setOrgConfig(result.data);
+      setMessage({ type: 'success', text: 'Code organization preference saved' });
+    } else {
+      setMessage({ type: 'error', text: result?.error?.message || 'Failed to save organization config' });
     }
   };
 
@@ -490,6 +548,22 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
             }`}
           >
             Debug
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('code');
+              // Load org config when switching to code tab
+              if (selectedRepoPath) {
+                handleLoadOrgConfig(selectedRepoPath);
+              }
+            }}
+            className={`px-3 py-1.5 text-sm font-medium transition-colors rounded-full ${
+              activeTab === 'code'
+                ? 'bg-black text-white'
+                : 'text-[rgba(0,0,0,0.45)] hover:bg-[rgba(0,0,0,0.04)]'
+            }`}
+          >
+            Code
           </button>
         </div>
 
@@ -1537,6 +1611,68 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                   className="btn-secondary w-full"
                 >
                   {isClearingLogs ? 'Clearing...' : 'Clear All Logs'}
+                </button>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'code' && (
+            <>
+              {/* Code Organization */}
+              <div className="bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] p-3 space-y-3">
+                <div className="text-xs text-gray-500 uppercase tracking-wide">Code Organization</div>
+
+                {uniqueRepos.size === 0 ? (
+                  <div className="text-sm text-gray-400">No repos connected</div>
+                ) : orgLoading ? (
+                  <div className="text-sm text-gray-400">Loading...</div>
+                ) : (
+                  <>
+                    {/* Repo selector (only if multiple repos) */}
+                    {uniqueRepos.size > 1 && (
+                      <select
+                        value={selectedRepoPath}
+                        onChange={(e) => {
+                          setSelectedRepoPath(e.target.value);
+                          handleLoadOrgConfig(e.target.value);
+                        }}
+                        className="select text-sm w-full"
+                      >
+                        {Array.from(uniqueRepos.entries()).map(([repoPath, name]) => (
+                          <option key={repoPath} value={repoPath}>{name}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {/* Current preference row */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-400">Current preference</span>
+                      <span className="text-sm font-medium text-gray-200">
+                        {orgStructure === 'feature-folders' ? 'Feature-based' : 'Flat'}
+                      </span>
+                    </div>
+
+                    {/* Structure dropdown */}
+                    <div>
+                      <label className="label">Structure</label>
+                      <select
+                        value={orgStructure}
+                        onChange={(e) => handleStructureChange(e.target.value)}
+                        className="select"
+                      >
+                        <option value="feature-folders">Feature-based</option>
+                        <option value="flat">Flat</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
+                <button
+                  onClick={handleSaveOrganizationConfig}
+                  className="btn-primary w-full"
+                  disabled={!selectedRepoPath || !orgConfig}
+                >
+                  Save Settings
                 </button>
               </div>
             </>

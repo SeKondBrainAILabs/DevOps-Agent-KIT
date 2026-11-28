@@ -279,6 +279,21 @@ Object.defineProperty(navigator, 'clipboard', {
   configurable: true,
 });
 
+// Mock window.confirm and window.alert (not implemented by jsdom)
+// Default to returning true so that confirm dialogs don't block tests
+// Tests can override this by setting mockReturnValue(false) as needed
+Object.defineProperty(window, 'confirm', {
+  value: jest.fn().mockReturnValue(true),
+  writable: true,
+  configurable: true,
+});
+
+Object.defineProperty(window, 'alert', {
+  value: jest.fn(),
+  writable: true,
+  configurable: true,
+});
+
 // Reset mocks before each test
 beforeEach(() => {
   jest.clearAllMocks();
