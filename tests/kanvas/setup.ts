@@ -103,6 +103,7 @@ const mockApi = {
     updateBaseBranch: createMockFn({ success: true }),
     getRecentRepos: createMockFn({ success: true, data: [] }),
     removeRecentRepo: createMockFn({ success: true }),
+    clearAll: jest.fn() as MockFn,
     onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
   app: {
@@ -129,6 +130,31 @@ const mockApi = {
     restart: createMockFn({ success: true }),
     onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
+  recentRepos: {
+    list: createMockFn({ success: true, data: [] }),
+    add: createMockFn({ success: true }),
+    remove: createMockFn({ success: true }),
+  },
+  config: {
+    get: jest.fn() as MockFn,
+    set: jest.fn() as MockFn,
+    getAll: jest.fn() as MockFn,
+  },
+  credential: {
+    has: jest.fn() as MockFn,
+    set: jest.fn() as MockFn,
+  },
+  version: {
+    getRepoVersion: jest.fn() as MockFn,
+    getSettings: jest.fn() as MockFn,
+    bump: jest.fn() as MockFn,
+    setSettings: jest.fn() as MockFn,
+  },
+  recovery: {
+    scanAll: jest.fn() as MockFn,
+    recoverSession: jest.fn() as MockFn,
+    deleteOrphaned: jest.fn() as MockFn,
+  },
   mcp: {
     status: createMockFn({
       success: true,
@@ -140,15 +166,25 @@ const mockApi = {
       },
     }),
     onServerStarted: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    setAgentSessionPolicy: jest.fn() as MockFn,
+    getAgentSessionCount: jest.fn() as MockFn,
   },
-  recentRepos: {
-    list: createMockFn({ success: true, data: [] }),
-    add: createMockFn({ success: true }),
-    remove: createMockFn({ success: true }),
+  debugLog: {
+    getStats: jest.fn() as MockFn,
+    export: jest.fn() as MockFn,
+    openFolder: jest.fn() as MockFn,
+    clear: jest.fn() as MockFn,
   },
-  config: {
-    get: jest.fn() as MockFn,
-    set: jest.fn() as MockFn,
+  update: {
+    getStatus: jest.fn() as MockFn,
+    onAvailable: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onNotAvailable: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onProgress: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onDownloaded: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onError: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    install: jest.fn() as MockFn,
+    download: jest.fn() as MockFn,
+    check: jest.fn() as MockFn,
   },
   repoWorkspace: {
     getWorktreeMode: createMockFn({ success: true, data: 'worktree' }),
@@ -259,6 +295,10 @@ const mockApi = {
   ai: {
     onEnd: (jest.fn() as MockFn).mockReturnValue(() => {}),
     onStream: (jest.fn() as MockFn).mockReturnValue(() => {}),
+  },
+  contractRegistry: {
+    getOrganizationConfig: jest.fn() as MockFn,
+    setOrganizationConfig: jest.fn() as MockFn,
   },
 };
 
