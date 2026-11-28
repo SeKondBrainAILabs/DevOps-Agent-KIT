@@ -5,6 +5,7 @@
  * Features:
  * - Dynamic port allocation: Automatically finds a free port on startup
  * - Falls back to ports 5173-5183 range if preferred port is busy
+ * - KANVAS_PORT environment variable controls preferred port
  */
 
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
