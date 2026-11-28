@@ -89,6 +89,14 @@ function installOrganizationConfigApi(initialStructure: 'feature-folders' | 'fla
   return api;
 }
 
+// Helper to read the element that displays the current preference value.
+// The section renders the current preference in a row labelled "Current
+// preference"; the same words also appear as an <option> inside the dropdown,
+// so a page-wide text query is ambiguous. Scope to the labelled row instead.
+function getCurrentPreferenceRow(): HTMLElement {
+  return screen.getByText('Current preference').parentElement as HTMLElement;
+}
+
 describe('SettingsModal Code Organization section (AC1)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -113,7 +121,7 @@ describe('SettingsModal Code Organization section (AC1)', () => {
     }, { timeout: 5000 });
 
     // Check that current preference is shown
-    expect(screen.getByText('Feature-based')).toBeInTheDocument();
+    expect(getCurrentPreferenceRow()).toHaveTextContent('Feature-based');
 
     // Check that there's a control to change it (dropdown)
     const dropdown = screen.getByRole('combobox');
@@ -141,7 +149,7 @@ describe('SettingsModal Code Organization current preference (AC2)', () => {
 
     // Wait for the section to load and show Feature-based
     await waitFor(() => {
-      expect(screen.getByText('Feature-based')).toBeInTheDocument();
+      expect(getCurrentPreferenceRow()).toHaveTextContent('Feature-based');
     }, { timeout: 5000 });
 
     // Verify the dropdown shows feature-folders as selected
@@ -251,7 +259,7 @@ describe('SettingsModal Code Organization warns (AC4)', () => {
     }, { timeout: 5000 });
 
     // Store reference to the current preference display element
-    const currentPreferenceText = screen.getByText('Feature-based');
+    const currentPreferenceText = getCurrentPreferenceRow();
 
     // Change dropdown from feature-folders to flat
     const dropdown = screen.getByRole('combobox');
