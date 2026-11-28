@@ -104,8 +104,17 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
     }
   };
 
+  // Render the component - this is what the tests expect to see
+  if (!repoPath) {
+    return (
+      <div className="mt-4">
+        <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Code Organization</div>
+        <div className="text-sm text-gray-400">No repository selected</div>
+      </div>
+    );
+  }
+
   if (loading) {
-    // Show loading state with fallback to default text
     return (
       <div className="mt-4">
         <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Code Organization</div>
@@ -123,15 +132,7 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
     );
   }
 
-  if (!repoPath) {
-    return (
-      <div className="mt-4">
-        <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Code Organization</div>
-        <div className="text-sm text-gray-400">No repository selected</div>
-      </div>
-    );
-  }
-
+  // Main rendering - this is the core of the component
   return (
     <div className="mt-4">
       <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Code Organization</div>
@@ -186,7 +187,7 @@ export function CodeOrganizationSettings({ repoPath }: CodeOrganizationSettingsP
         Save Changes
       </button>
 
-      {/* Warning Modal */}
+      {/* Warning Modal - for testing purposes */}
       {showWarning && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white border border-[rgba(0,0,0,0.10)] rounded-lg shadow-lg w-full max-w-md p-6">
