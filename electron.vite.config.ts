@@ -5,6 +5,7 @@
  * Features:
  * - Dynamic port allocation: Automatically finds a free port on startup
  * - Falls back to ports 5173-5183 range if preferred port is busy
+ * - KANVAS_PORT environment variable controls preferred port
  */
 
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
@@ -12,6 +13,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
+import { resolveKanvasPort } from './shared/kanvas-port-config';
 
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
@@ -29,8 +31,8 @@ function copyConfigPlugin() {
   };
 }
 
-// Preferred port - will try this first, then find next available
-const PREFERRED_PORT = 5173;
+// Resolve the port using the shared helper
+const { port: PREFERRED_PORT } = resolveKanvasPort();
 
 export default defineConfig(async () => {
   // Find an available port starting from PREFERRED_PORT
