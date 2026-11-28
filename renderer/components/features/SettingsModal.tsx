@@ -121,6 +121,21 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
+  // Code organization state (KC-S1.2.2.2)
+  type OrgStructure = 'feature-folders' | 'flat' | 'custom';
+  const [orgConfig, setOrgConfig] = useState<{
+    enabled: boolean;
+    structure: OrgStructure;
+    setupCompleted: boolean;
+    setupCompletedAt?: string;
+  } | null>(null);
+  // The structure currently selected in the radio group. It only differs from
+  // the saved value once the user confirms a change.
+  const [orgStructure, setOrgStructure] = useState<OrgStructure>('flat');
+  // A structure awaiting confirmation (feature-folders -> flat warning).
+  const [pendingOrgStructure, setPendingOrgStructure] = useState<OrgStructure | null>(null);
+  const [isSavingOrg, setIsSavingOrg] = useState(false);
+
   // Derive unique repos from reported sessions
   const reportedSessions = useAgentStore((s) => s.reportedSessions);
   const selectedSessionId = useAgentStore((s) => s.selectedSessionId);
@@ -212,6 +227,86 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
       }
     });
   }, [selectedRepoPath]);
+
+  // Fetch the repository's code organization config when the repo changes
+  useEffect(() => {
+    if (!selectedRepoPath) {
+      setOrgConfig(null);
+      return;
+    }
+    let cancelled = false;
+    window.api?.contractRegistry?.getOrganizationConfig?.(selectedRepoPath).then((result) => {
+      if (cancelled) return;
+      if (result?.success && result.data) {
+        setOrgConfig(result.data);
+        setOrgStructure(result.data.structure);
+        setPendingOrgStructure(null);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [selectedRepoPath]);
+
+  const orgStructureLabels: Record<OrgStructure, string> = {
+    'feature-folders': 'Feature-based',
+    'flat': 'Flat',
+    'custom': 'Custom',
+  };
+
+  const handleOrgStructureSelect = (structure: OrgStructure) => {
+    // Switching away from feature-folders to flat reorganizes existing code, so
+    // warn before committing the change. Nothing is saved until the user
+    // confirms (or presses Save).
+    if (structure === 'flat' && orgConfig?.structure === 'feature-folders') {
+      setPendingOrgStructure('flat');
+      return;
+    }
+    setPendingOrgStructure(null);
+    setOrgStructure(structure);
+  };
+
+  const handleConfirmOrgWarning = () => {
+    setOrgStructure('flat');
+    setPendingOrgStructure(null);
+  };
+
+  const handleCancelOrgWarning = () => {
+    // Decline the switch: keep the saved feature-folders selection.
+    setPendingOrgStructure(null);
+    setOrgStructure(orgConfig?.structure ?? 'feature-folders');
+  };
+
+  const handleSaveOrganizationConfig = async () => {
+    if (!selectedRepoPath || isSavingOrg) return;
+    // A pending change counts as confirmed when the user presses Save.
+    const structure = pendingOrgStructure ?? orgStructure;
+    setIsSavingOrg(true);
+    setMessage(null);
+    try {
+      const result = await window.api?.contractRegistry?.setOrganizationConfig?.(selectedRepoPath, {
+        enabled: orgConfig?.enabled ?? structure === 'feature-folders',
+        structure,
+        setupCompleted: orgConfig?.setupCompleted ?? true,
+        setupCompletedAt: orgConfig?.setupCompletedAt ?? new Date().toISOString(),
+      });
+      if (result?.success) {
+        setOrgConfig((prev) => ({
+          enabled: prev?.enabled ?? structure === 'feature-folders',
+          structure,
+          setupCompleted: prev?.setupCompleted ?? true,
+          setupCompletedAt: prev?.setupCompletedAt,
+        }));
+        setOrgStructure(structure);
+        setPendingOrgStructure(null);
+        setMessage({ type: 'success', text: 'Code organization saved' });
+      } else {
+        setMessage({ type: 'error', text: result?.error?.message || 'Failed to save code organization' });
+      }
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to save code organization' });
+    } finally {
+      setIsSavingOrg(false);
+    }
+  };
 
   const handleBump = async (component: 'major' | 'minor' | 'patch') => {
     if (!selectedRepoPath || isBumping) return;
@@ -665,6 +760,75 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* Code Organization (KC-S1.2.2.2) */}
+              <div className="bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] p-3 mb-4 space-y-3">
+                <div className="text-xs text-gray-500 uppercase tracking-wide">Code Organization</div>
+
+                {!selectedRepoPath ? (
+                  <div className="text-sm text-gray-400">No repo connected</div>
+                ) : !orgConfig ? (
+                  <div className="text-sm text-gray-400">Loading...</div>
+                ) : (
+                  <>
+                    <div className="text-sm text-text-secondary">
+                      Current: {orgStructureLabels[orgConfig.structure]}
+                    </div>
+
+                    <div className="space-y-1.5" role="radiogroup" aria-label="Code organization structure">
+                      {(['feature-folders', 'flat', 'custom'] as OrgStructure[]).map((value) => (
+                        <label key={value} className="flex items-center gap-2 cursor-pointer text-sm text-text-primary">
+                          <input
+                            type="radio"
+                            name="code-organization"
+                            value={value}
+                            checked={orgStructure === value}
+                            onChange={() => handleOrgStructureSelect(value)}
+                            className="w-4 h-4"
+                          />
+                          <span>{orgStructureLabels[value]}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    {pendingOrgStructure === 'flat' && (
+                      <div className="p-3 rounded-[10px] bg-yellow-500/10 border border-yellow-500/30 text-sm text-yellow-700 space-y-2">
+                        <div className="font-medium">Warning: switch to Flat?</div>
+                        <p className="text-xs">
+                          Switching from feature-based to flat changes how new code is organized.
+                          Existing feature folders are not moved.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={handleConfirmOrgWarning}
+                            className="btn-primary px-3 py-1 text-xs"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelOrgWarning}
+                            className="btn-secondary px-3 py-1 text-xs"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={handleSaveOrganizationConfig}
+                      disabled={isSavingOrg}
+                      aria-label="Save code organization"
+                      className="btn-primary w-full"
+                    >
+                      {isSavingOrg ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                )}
               </div>
 
               {/* Theme */}
