@@ -93,6 +93,8 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     agentsMayCloseUiSessions: boolean;
   } | null>(null);
   const [policySaving, setPolicySaving] = useState(false);
+  const [organizationStructure, setOrganizationStructure] = useState<'feature-folders' | 'flat' | 'custom'>('feature-folders');
+  const [organizationConfig, setOrganizationConfig] = useState<{ enabled: boolean; structure: 'feature-folders' | 'flat' | 'custom' } | null>(null);
 
   const saveSessionPolicy = async (patch: {
     enabled?: boolean; maxConcurrentGlobal?: number; maxConcurrentPerRepo?: number;
@@ -151,6 +153,14 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
 
     window.api.app.getVersion().then((version) => {
       setAppVersion(version);
+    });
+
+    // Load organization config
+    window.api.contractRegistry?.getOrganizationConfig?.().then((result) => {
+      if (result?.success && result.data) {
+        setOrganizationConfig(result.data);
+        setOrganizationStructure(result.data.structure);
+      }
     });
 
     // Load current update status
@@ -250,6 +260,21 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
       await window.api.config.set('defaultAgentType', config.defaultAgentType);
       await window.api.config.set('autoWatch', config.autoWatch);
       await window.api.config.set('autoPush', config.autoPush);
+      
+      // Handle organization structure change with warning for flat structure
+      if (organizationConfig && organizationStructure === 'flat' && organizationConfig.structure === 'feature-folders') {
+        // Show warning or confirmation for flat structure change
+        if (!window.confirm('Switching to Flat organization will restructure your files. Are you sure you want to proceed?')) {
+          // Cancelled, don't save
+          setIsSaving(false);
+          return;
+        }
+      }
+      
+      // Save organization structure
+      if (organizationConfig) {
+        await window.api.contractRegistry.setOrganizationConfig({ structure: organizationStructure });
+      }
       setMessage({ type: 'success', text: 'Settings saved successfully' });
     } catch {
       setMessage({ type: 'error', text: 'Failed to save settings' });
@@ -721,6 +746,43 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                   />
                   <span className="text-gray-300">Auto-push after commits</span>
                 </label>
+              </div>
+
+              {/* Code Organization */}
+              <div className="bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] p-3 mb-4">
+                <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Code Organization</div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="organization"
+                      checked={organizationStructure === 'feature-folders'}
+                      onChange={() => setOrganizationStructure('feature-folders')}
+                      className="w-4 h-4 rounded-full border-border bg-surface-tertiary"
+                    />
+                    <span className="text-gray-300">Feature-based</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="organization"
+                      checked={organizationStructure === 'flat'}
+                      onChange={() => setOrganizationStructure('flat')}
+                      className="w-4 h-4 rounded-full border-border bg-surface-tertiary"
+                    />
+                    <span className="text-gray-300">Flat</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="organization"
+                      checked={organizationStructure === 'custom'}
+                      onChange={() => setOrganizationStructure('custom')}
+                      className="w-4 h-4 rounded-full border-border bg-surface-tertiary"
+                    />
+                    <span className="text-gray-300">Custom</span>
+                  </label>
+                </div>
               </div>
 
               <button
