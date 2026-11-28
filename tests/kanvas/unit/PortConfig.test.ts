@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 
 // Helper function under test - we'll import it after creating the file
 import { resolveKanvasPort } from '../../../shared/kanvas-port-config';
@@ -127,5 +127,40 @@ describe('resolveKanvasPort', () => {
       expect(result.rangeStart).toBe(5200);
       expect(result.rangeEnd).toBe(5210);
     });
+  });
+});
+
+describe('AC4 - electron.vite.config.ts resolves its port through the helper', () => {
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    jest.resetModules();
+    originalEnv = { ...process.env };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('uses the port from resolveKanvasPort for the renderer dev server', async () => {
+    // The real electron.vite.config.ts pulls in electron-vite/vite/esbuild,
+    // which cannot run under jsdom. Mock only those heavy build-time modules so
+    // the production config module itself is imported and executed for real.
+    jest.doMock('electron-vite', () => ({
+      defineConfig: (config: unknown) => config,
+      externalizeDepsPlugin: () => ({}),
+    }));
+    jest.doMock('@vitejs/plugin-react', () => ({ __esModule: true, default: () => ({}) }));
+    // detect-port returns the requested port unchanged when it is free, so the
+    // resolved server port reflects the port the config asked for.
+    jest.doMock('detect-port', () => ({ __esModule: true, default: async (port: number) => port }));
+
+    process.env.KANVAS_PORT = '6000';
+    delete process.env.KANVAS_PORT_RANGE;
+
+    const configModule = await import('../../../electron.vite.config');
+    const config = (await (configModule.default as () => Promise<any>)()) as any;
+
+    expect(config.renderer.server.port).toBe(6000);
   });
 });
