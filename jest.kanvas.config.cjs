@@ -69,6 +69,8 @@ module.exports = {
     '^@/(.*)$': '<rootDir>/renderer/$1',
     '^@electron/(.*)$': '<rootDir>/electron/$1',
     '^@shared/(.*)$': '<rootDir>/shared/$1',
+    // Handle .js imports to .ts files (for ESM module resolution)
+    '(.*)\\.js$': '$1',
   },
   setupFilesAfterEnv: [
     '<rootDir>/tests/kanvas/setup.ts',
