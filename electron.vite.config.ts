@@ -35,9 +35,7 @@ function copyConfigPlugin() {
   };
 }
 
-// Preferred port - will try this first, then find next available
-// This will be overridden by getPortConfig()
-const PREFERRED_PORT = 5173;
+
 
 export default defineConfig(async () => {
   // Get port configuration from environment variables

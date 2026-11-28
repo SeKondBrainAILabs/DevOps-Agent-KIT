@@ -3,10 +3,12 @@
  * 
  * Resolves KANVAS_PORT and KANVAS_PORT_RANGE environment variables
  * to determine the port Kanvas should bind to.
- */
-
-/**
- * Gets the port configuration based on environment variables.
+ * 
+ * Port resolution logic:
+ * - KANVAS_PORT is the preferred port Kanvas binds to
+ * - If KANVAS_PORT is set and KANVAS_PORT_RANGE is unset, the preferred port is used directly
+ * - If KANVAS_PORT_RANGE is set, the port is constrained to that range
+ * - If neither is set, defaults to 5173 (with range 5173-5183)
  * 
  * @returns PortConfig object with port and range
  */
