@@ -149,6 +149,12 @@ const mockApi = {
   config: {
     get: jest.fn() as MockFn,
     set: jest.fn() as MockFn,
+    getAll: jest.fn() as MockFn,
+  },
+  credential: {
+    get: jest.fn() as MockFn,
+    set: jest.fn() as MockFn,
+    has: createMockFn({ success: true, data: false }),
   },
   repoWorkspace: {
     getWorktreeMode: createMockFn({ success: true, data: 'worktree' }),
@@ -259,6 +265,19 @@ const mockApi = {
   ai: {
     onEnd: (jest.fn() as MockFn).mockReturnValue(() => {}),
     onStream: (jest.fn() as MockFn).mockReturnValue(() => {}),
+  },
+  contractRegistry: {
+    getOrganizationConfig: jest.fn() as MockFn,
+    setOrganizationConfig: jest.fn() as MockFn,
+    needsFirstRunSetup: createMockFn({ success: true, data: false }),
+    getRepoSummary: createMockFn({ success: true, data: {} }),
+    getFeatureContracts: createMockFn({ success: true, data: null }),
+    updateFeature: createMockFn({ success: true }),
+    listFeatures: createMockFn({ success: true, data: [] }),
+    recordBreakingChange: createMockFn({ success: true }),
+    initialize: createMockFn({ success: true }),
+    onRegistryUpdated: (jest.fn() as MockFn).mockReturnValue(() => {}),
+    onBreakingChangeDetected: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
 };
 
