@@ -21,10 +21,25 @@ describe('SettingsModal - Code Organization', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    // Reset store state
+    // Reset store state. A reported session with a repoPath is required so the
+    // Settings modal selects a repo and fetches the organization config; without
+    // it the Code Organization section never loads and Save stays disabled.
     _storeState = {
-      reportedSessions: new Map(),
-      selectedSessionId: null,
+      reportedSessions: new Map([
+        [
+          'session-1',
+          {
+            sessionId: 'session-1',
+            agentId: 'agent-1',
+            agentType: 'claude',
+            task: 'test task',
+            branchName: 'feature/test',
+            baseBranch: 'main',
+            repoPath: '/test/repo',
+          },
+        ],
+      ]),
+      selectedSessionId: 'session-1',
     };
     
     // Mock config.getAll
@@ -111,7 +126,8 @@ describe('SettingsModal - Code Organization', () => {
     expect(featureFoldersRadio).toBeChecked();
 
     // The current preference display should show "Feature-based"
-    expect(screen.getByText(/Feature-based/i)).toBeInTheDocument();
+    const currentPreference = screen.getByText(/Current:/i);
+    expect(currentPreference).toHaveTextContent(/Feature-based/i);
   });
 
   it('AC3: saves calls setOrganizationConfig with new structure when preference is changed and saved', async () => {
@@ -187,5 +203,10 @@ describe('SettingsModal - Code Organization', () => {
     // The radio button should still be on feature-folders
     const featureFoldersRadio = screen.getByRole('radio', { name: /feature-based/i });
     expect(featureFoldersRadio).toBeChecked();
+
+    // The shown current value should still read Feature-based, not Flat
+    const currentPreference = screen.getByText(/Current:/i);
+    expect(currentPreference).toHaveTextContent(/Feature-based/i);
+    expect(currentPreference).not.toHaveTextContent(/Flat/i);
   });
 });
