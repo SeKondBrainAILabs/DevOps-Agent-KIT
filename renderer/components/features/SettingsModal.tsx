@@ -118,8 +118,8 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [isBumping, setIsBumping] = useState(false);
 
   // Code organization state
-  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: string } | null>(null);
-  const [orgStructure, setOrgStructure] = useState<string>('feature-folders');
+  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: 'feature-folders' | 'flat' | 'custom'; setupCompleted?: boolean; setupCompletedAt?: string } | null>(null);
+  const [orgStructure, setOrgStructure] = useState<'feature-folders' | 'flat' | 'custom'>('feature-folders');
   const [orgLoading, setOrgLoading] = useState(false);
 
   // Auto-update state
@@ -269,7 +269,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     }
   };
 
-  const handleStructureChange = (newStructure: string): void => {
+  const handleStructureChange = (newStructure: 'feature-folders' | 'flat' | 'custom'): void => {
     setOrgStructure(newStructure);
   };
 
@@ -288,10 +288,11 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
       }
     }
 
-    // Save the new structure
-    const result = await window.api.contractRegistry?.setOrganizationConfig?.(selectedRepoPath, { structure: orgStructure });
-    if (result?.success && result.data) {
-      setOrgConfig(result.data);
+    // Save the new structure (only structure is required for updating)
+    const result = await window.api.contractRegistry?.setOrganizationConfig?.(selectedRepoPath, { structure: orgStructure } as any);
+    if (result?.success) {
+      // Refresh the config after saving
+      await handleLoadOrgConfig(selectedRepoPath);
       setMessage({ type: 'success', text: 'Code organization preference saved' });
     } else {
       setMessage({ type: 'error', text: result?.error?.message || 'Failed to save organization config' });
@@ -1657,7 +1658,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                       <label className="label">Structure</label>
                       <select
                         value={orgStructure}
-                        onChange={(e) => handleStructureChange(e.target.value)}
+                        onChange={(e) => handleStructureChange(e.target.value as 'feature-folders' | 'flat' | 'custom')}
                         className="select"
                       >
                         <option value="feature-folders">Feature-based</option>
