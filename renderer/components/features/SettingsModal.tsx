@@ -117,6 +117,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [versionSettings, setVersionSettings] = useState<RepoVersionSettings>({ autoVersionBump: true });
   const [isBumping, setIsBumping] = useState(false);
 
+  // Code Organization state
+  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: 'feature-folders' | 'flat' | 'custom'; setupCompleted?: boolean } | null>(null);
+  const [selectedOrgStructure, setSelectedOrgStructure] = useState<'feature-folders' | 'flat' | 'custom'>('feature-folders');
+  const [isSavingOrgConfig, setIsSavingOrgConfig] = useState(false);
+  const [showWarning, setShowWarning] = useState(false);
+  const [pendingStructure, setPendingStructure] = useState<'feature-folders' | 'flat' | 'custom' | null>(null);
+
   // Auto-update state
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -213,6 +220,17 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     });
   }, [selectedRepoPath]);
 
+  // Fetch organization config when general tab is active
+  useEffect(() => {
+    if (activeTab !== 'general') return;
+    window.api.contractRegistry.getOrganizationConfig().then((result) => {
+      if (result.success && result.data) {
+        setOrgConfig(result.data);
+        setSelectedOrgStructure(result.data.structure);
+      }
+    });
+  }, [activeTab]);
+
   const handleBump = async (component: 'major' | 'minor' | 'patch') => {
     if (!selectedRepoPath || isBumping) return;
     setIsBumping(true);
@@ -256,6 +274,54 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleSaveOrganizationConfig = async () => {
+    if (!orgConfig) return;
+    setIsSavingOrgConfig(true);
+    setMessage(null);
+
+    try {
+      const result = await window.api.contractRegistry.setOrganizationConfig({
+        enabled: orgConfig.enabled,
+        structure: selectedOrgStructure,
+      });
+      if (result.success) {
+        setOrgConfig({ ...orgConfig, structure: selectedOrgStructure });
+        setShowWarning(false);
+        setPendingStructure(null);
+        setMessage({ type: 'success', text: 'Code organization preference saved' });
+      } else {
+        setMessage({ type: 'error', text: result.error?.message || 'Failed to save code organization preference' });
+      }
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to save code organization preference' });
+    } finally {
+      setIsSavingOrgConfig(false);
+    }
+  };
+
+  const handleOrgStructureChange = (structure: 'feature-folders' | 'flat' | 'custom') => {
+    // Always select the structure immediately
+    setSelectedOrgStructure(structure);
+    // Show warning when switching from feature-folders to flat
+    if (orgConfig?.structure === 'feature-folders' && structure === 'flat') {
+      setShowWarning(true);
+      setPendingStructure(structure);
+    } else {
+      setShowWarning(false);
+      setPendingStructure(null);
+    }
+  };
+
+  const handleConfirmWarning = (confirm: boolean) => {
+    if (!confirm) {
+      // User declined - revert to original structure
+      setSelectedOrgStructure(orgConfig?.structure || 'feature-folders');
+    }
+    // If confirmed, keep the current selection (already set)
+    setShowWarning(false);
+    setPendingStructure(null);
   };
 
   const handleSaveCredentials = async () => {
@@ -744,6 +810,84 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 Replay Onboarding Guide
               </button>
             </>
+          )}
+
+          {/* Code Organization - rendered outside config condition */}
+          {activeTab === 'general' && (
+            <div className="bg-surface-secondary rounded-[14px] border border-[rgba(0,0,0,0.10)] p-3">
+              <div className="text-xs text-gray-500 uppercase tracking-wide mb-3">Code Organization</div>
+              
+                <div className="space-y-3">
+                  <div className="text-sm text-gray-300">
+                    Current: <span className="font-medium">{orgConfig?.structure === 'feature-folders' ? 'Feature-based' : orgConfig?.structure === 'flat' ? 'Flat' : orgConfig ? 'Custom' : 'Loading...'}</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="orgStructure"
+                        value="feature-folders"
+                        checked={selectedOrgStructure === 'feature-folders'}
+                        onChange={() => handleOrgStructureChange('feature-folders')}
+                        className="w-4 h-4 border-border bg-surface-tertiary accent-accent"
+                      />
+                      <span className="text-sm text-gray-300">Feature-based</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="orgStructure"
+                        value="flat"
+                        checked={selectedOrgStructure === 'flat'}
+                        onChange={() => handleOrgStructureChange('flat')}
+                        className="w-4 h-4 border-border bg-surface-tertiary accent-accent"
+                      />
+                      <span className="text-sm text-gray-300">Flat</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="orgStructure"
+                        value="custom"
+                        checked={selectedOrgStructure === 'custom'}
+                        onChange={() => handleOrgStructureChange('custom')}
+                        className="w-4 h-4 border-border bg-surface-tertiary accent-accent"
+                      />
+                      <span className="text-sm text-gray-300">Custom</span>
+                    </label>
+                  </div>
+
+                  {showWarning && (
+                    <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-xs text-yellow-300 space-y-2">
+                      <div>Warning: Switching to Flat structure will reorganize your repository without feature folders.</div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleConfirmWarning(false)}
+                          className="px-3 py-1 bg-yellow-600 hover:bg-yellow-700 text-white rounded text-sm"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => handleConfirmWarning(true)}
+                          className="px-3 py-1 bg-yellow-500 hover:bg-yellow-600 text-white rounded text-sm"
+                        >
+                          Continue
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                <button
+                  onClick={handleSaveOrganizationConfig}
+                  disabled={isSavingOrgConfig || !orgConfig || selectedOrgStructure === orgConfig?.structure}
+                  className="btn-primary w-full"
+                  aria-label="Save Code Organization"
+                >
+                  {isSavingOrgConfig ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
           )}
 
           {activeTab === 'credentials' && (
