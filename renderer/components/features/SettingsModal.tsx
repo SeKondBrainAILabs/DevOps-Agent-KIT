@@ -8,6 +8,7 @@ import type { AppConfig, AgentType, RepoVersionInfo, RepoVersionSettings, AppUpd
 import { useAgentStore } from '../../store/agentStore';
 import { formatDateTimeShort } from '../../../shared/format-datetime';
 import { HarnessSettings } from './coding/HarnessSettings';
+import { CodeOrganizationSettings } from './CodeOrganizationSettings';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -593,93 +594,96 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                   </>
                 )}
 
-                {/* Kanvas Dashboard version + update section */}
-                <div className="pt-1 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">
-                      KIT for DevOps v{appVersion || '...'}
-                    </span>
-
-                    {/* Update actions */}
-                    {updateInfo?.downloaded ? (
-                      <button
-                        onClick={() => window.api.update?.install?.()}
-                        className="px-2 py-0.5 text-xs rounded bg-green-600 hover:bg-green-700 text-white transition-colors"
-                      >
-                        Restart to Update
-                      </button>
-                    ) : updateInfo?.downloading ? (
-                      <span className="text-xs text-accent">
-                        Downloading... {updateInfo.progress ? `${Math.round(updateInfo.progress.percent)}%` : ''}
+                  {/* Kanvas Dashboard version + update section */}
+                  <div className="pt-1 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-500">
+                        KIT for DevOps v{appVersion || '...'}
                       </span>
-                    ) : updateInfo?.updateAvailable ? (
-                      <button
-                        onClick={async () => {
-                          try { await window.api.update?.download?.(); } catch {}
-                        }}
-                        className="px-2 py-0.5 text-xs rounded bg-accent hover:bg-accent/80 text-white transition-colors"
-                      >
-                        Download v{updateInfo.latestVersion}
-                      </button>
-                    ) : (
-                      <button
-                        onClick={async () => {
-                          setIsCheckingUpdate(true);
-                          setMessage(null);
-                          try {
-                            const result = await window.api.update?.check?.();
-                            if (result?.success && result.data) {
-                              setUpdateInfo(result.data);
-                              if (!result.data.updateAvailable) {
-                                setMessage({ type: 'success', text: 'You are on the latest version' });
+
+                      {/* Update actions */}
+                      {updateInfo?.downloaded ? (
+                        <button
+                          onClick={() => window.api.update?.install?.()}
+                          className="px-2 py-0.5 text-xs rounded bg-green-600 hover:bg-green-700 text-white transition-colors"
+                        >
+                          Restart to Update
+                        </button>
+                      ) : updateInfo?.downloading ? (
+                        <span className="text-xs text-accent">
+                          Downloading... {updateInfo.progress ? `${Math.round(updateInfo.progress.percent)}%` : ''}
+                        </span>
+                      ) : updateInfo?.updateAvailable ? (
+                        <button
+                          onClick={async () => {
+                            try { await window.api.update?.download?.(); } catch {}
+                          }}
+                          className="px-2 py-0.5 text-xs rounded bg-accent hover:bg-accent/80 text-white transition-colors"
+                        >
+                          Download v{updateInfo.latestVersion}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={async () => {
+                            setIsCheckingUpdate(true);
+                            setMessage(null);
+                            try {
+                              const result = await window.api.update?.check?.();
+                              if (result?.success && result.data) {
+                                setUpdateInfo(result.data);
+                                if (!result.data.updateAvailable) {
+                                  setMessage({ type: 'success', text: 'You are on the latest version' });
+                                }
                               }
+                            } catch {
+                              setMessage({ type: 'error', text: 'Update check failed' });
+                            } finally {
+                              setIsCheckingUpdate(false);
                             }
-                          } catch {
-                            setMessage({ type: 'error', text: 'Update check failed' });
-                          } finally {
-                            setIsCheckingUpdate(false);
-                          }
-                        }}
-                        disabled={isCheckingUpdate}
-                        className="px-2 py-0.5 text-xs rounded-full bg-surface-secondary hover:bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-text-secondary transition-colors disabled:opacity-50"
-                      >
-                        {isCheckingUpdate ? 'Checking...' : 'Check for Updates'}
-                      </button>
+                          }}
+                          disabled={isCheckingUpdate}
+                          className="px-2 py-0.5 text-xs rounded-full bg-surface-secondary hover:bg-surface-tertiary border border-[rgba(0,0,0,0.10)] text-text-secondary transition-colors disabled:opacity-50"
+                        >
+                          {isCheckingUpdate ? 'Checking...' : 'Check for Updates'}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Update error */}
+                    {updateInfo?.error && (
+                      <div className="text-xs text-red-400">
+                        Update error: {updateInfo.error}
+                      </div>
+                    )}
+
+                    {/* Download progress bar */}
+                    {updateInfo?.downloading && updateInfo.progress && (
+                      <div className="w-full bg-surface-secondary rounded-full h-1.5">
+                        <div
+                          className="bg-accent h-1.5 rounded-full transition-all"
+                          style={{ width: `${updateInfo.progress.percent}%` }}
+                        />
+                      </div>
                     )}
                   </div>
-
-                  {/* Update error */}
-                  {updateInfo?.error && (
-                    <div className="text-xs text-red-400">
-                      Update error: {updateInfo.error}
-                    </div>
-                  )}
-
-                  {/* Download progress bar */}
-                  {updateInfo?.downloading && updateInfo.progress && (
-                    <div className="w-full bg-surface-secondary rounded-full h-1.5">
-                      <div
-                        className="bg-accent h-1.5 rounded-full transition-all"
-                        style={{ width: `${updateInfo.progress.percent}%` }}
-                      />
-                    </div>
-                  )}
                 </div>
-              </div>
 
-              {/* Theme */}
-              <div>
-                <label className="label">Theme</label>
-                <select
-                  value={config.theme}
-                  onChange={(e) => setConfig({ ...config, theme: e.target.value as AppConfig['theme'] })}
-                  className="select"
-                >
-                  <option value="dark">Dark</option>
-                  <option value="light">Light</option>
-                  <option value="system">System</option>
-                </select>
-              </div>
+                {/* Code Organization Settings */}
+                <CodeOrganizationSettings repoPath={selectedRepoPath} />
+
+                {/* Theme */}
+                <div>
+                  <label className="label">Theme</label>
+                  <select
+                    value={config.theme}
+                    onChange={(e) => setConfig({ ...config, theme: e.target.value as AppConfig['theme'] })}
+                    className="select"
+                  >
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                    <option value="system">System</option>
+                  </select>
+                </div>
 
               {/* Default agent */}
               <div>
