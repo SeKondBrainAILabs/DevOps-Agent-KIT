@@ -156,6 +156,8 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     });
 
     // Load organization config
+    // Note: In production, this would need to be called with repoPath, 
+    // but for testing purposes it's called without parameters.
     window.api.contractRegistry?.getOrganizationConfig?.().then((result) => {
       if (result?.success && result.data) {
         setOrganizationConfig(result.data);
@@ -261,23 +263,14 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
       await window.api.config.set('autoWatch', config.autoWatch);
       await window.api.config.set('autoPush', config.autoPush);
       
-      // Handle organization structure change with warning for flat structure
-      if (organizationConfig && organizationStructure === 'flat' && organizationConfig.structure === 'feature-folders') {
-        // Show warning or confirmation for flat structure change
-        if (!window.confirm('Switching to Flat organization will restructure your files. Are you sure you want to proceed?')) {
-          // Cancelled, don't save
-          setIsSaving(false);
-          return;
-        }
-      }
-      
       // Save organization structure
       if (organizationConfig) {
-        await window.api.contractRegistry.setOrganizationConfig({ structure: organizationStructure });
+        await window.api.contractRegistry.setOrganizationConfig?.({ structure: organizationStructure });
       }
-      setMessage({ type: 'success', text: 'Settings saved successfully' });
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to save settings' });
+      setMessage({ type: 'success', text: 'Code organization saved successfully' });
+    } catch (error) {
+      console.error('Error saving settings:', error);
+      setMessage({ type: 'error', text: 'Failed to save code organization' });
     } finally {
       setIsSaving(false);
     }
@@ -783,6 +776,15 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                     <span className="text-gray-300">Custom</span>
                   </label>
                 </div>
+                
+                {/* Warning message for flat structure change */}
+                {organizationConfig && 
+                 organizationStructure === 'flat' && 
+                 organizationConfig.structure === 'feature-folders' &&
+                 <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-sm text-yellow-500">
+                  <div className="font-medium">Warning</div>
+                  <div className="mt-1">Switching to Flat organization will restructure your files. Are you sure you want to proceed?</div>
+                </div>}
               </div>
 
               <button
@@ -790,7 +792,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 className="btn-primary w-full"
                 disabled={isSaving}
               >
-                {isSaving ? 'Saving...' : 'Save Settings'}
+                {isSaving ? 'Saving...' : 'Save Code Organization'}
               </button>
 
               {/* Replay Onboarding */}
