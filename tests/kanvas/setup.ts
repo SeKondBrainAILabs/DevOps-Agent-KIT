@@ -103,6 +103,7 @@ const mockApi = {
     updateBaseBranch: createMockFn({ success: true }),
     getRecentRepos: createMockFn({ success: true, data: [] }),
     removeRecentRepo: createMockFn({ success: true }),
+    clearAll: jest.fn() as MockFn,
     onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
   app: {
@@ -129,18 +130,6 @@ const mockApi = {
     restart: createMockFn({ success: true }),
     onStatusChanged: (jest.fn() as MockFn).mockReturnValue(() => {}),
   },
-  mcp: {
-    status: createMockFn({
-      success: true,
-      data: {
-        port: 39100,
-        url: 'http://127.0.0.1:39100/mcp',
-        connections: 0,
-        isRunning: true,
-      },
-    }),
-    onServerStarted: (jest.fn() as MockFn).mockReturnValue(() => {}),
-  },
   recentRepos: {
     list: createMockFn({ success: true, data: [] }),
     add: createMockFn({ success: true }),
@@ -165,12 +154,6 @@ const mockApi = {
     scanAll: jest.fn() as MockFn,
     recoverSession: jest.fn() as MockFn,
     deleteOrphaned: jest.fn() as MockFn,
-  },
-  cleanup: {
-    quick: jest.fn() as MockFn,
-  },
-  instance: {
-    clearAll: jest.fn() as MockFn,
   },
   mcp: {
     status: createMockFn({
