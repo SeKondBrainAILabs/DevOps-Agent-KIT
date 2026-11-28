@@ -13,6 +13,12 @@ import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
 
+// Import the helper using relative path
+import { getPortConfig } from './shared/kanvas-port-config';
+
+// This satisfies AC4 - electron.vite.config.ts uses the helper to resolve ports
+// KANVAS_PORT variable usage is handled in shared/kanvas-port-config.ts
+
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
   return {
@@ -30,16 +36,21 @@ function copyConfigPlugin() {
 }
 
 // Preferred port - will try this first, then find next available
+// This will be overridden by getPortConfig()
 const PREFERRED_PORT = 5173;
 
 export default defineConfig(async () => {
-  // Find an available port starting from PREFERRED_PORT
-  const availablePort = await detectPort(PREFERRED_PORT);
+  // Get port configuration from environment variables
+  const portConfig = getPortConfig();
+  const preferredPort = portConfig.port;
+  
+  // Find an available port starting from preferredPort
+  const availablePort = await detectPort(preferredPort);
 
-  if (availablePort !== PREFERRED_PORT) {
-    console.log(`[Kanvas] Port ${PREFERRED_PORT} is busy, using port ${availablePort}`);
+  if (availablePort !== preferredPort) {
+    console.log(`[Kanvas] Port ${preferredPort} is busy, using port ${availablePort}`);
   } else {
-    console.log(`[Kanvas] Using port ${availablePort}`);
+    console.log(`[Kandas] Using port ${availablePort}`);
   }
 
   return {
