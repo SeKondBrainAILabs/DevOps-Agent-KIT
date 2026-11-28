@@ -12,6 +12,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
+import { getKanvasPortConfig } from './shared/kanvas-port-config';
 
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
@@ -29,17 +30,17 @@ function copyConfigPlugin() {
   };
 }
 
-// Preferred port - will try this first, then find next available
-const PREFERRED_PORT = 5173;
+// Get port configuration from environment variables (KANVAS_PORT, KANVAS_PORT_RANGE)
+const { port: preferredPort, range } = getKanvasPortConfig();
 
 export default defineConfig(async () => {
-  // Find an available port starting from PREFERRED_PORT
-  const availablePort = await detectPort(PREFERRED_PORT);
+  // Find an available port starting from preferredPort (resolved from KANVAS_PORT or range start)
+  const availablePort = await detectPort(preferredPort);
 
-  if (availablePort !== PREFERRED_PORT) {
-    console.log(`[Kanvas] Port ${PREFERRED_PORT} is busy, using port ${availablePort}`);
+  if (availablePort !== preferredPort) {
+    console.log(`[Kanvas] Port ${preferredPort} is busy, using port ${availablePort}`);
   } else {
-    console.log(`[Kanvas] Using port ${availablePort}`);
+    console.log(`[Kanvas] Using port ${availablePort} (KANVAS_PORT=${process.env.KANVAS_PORT ?? 'unset'}, KANVAS_PORT_RANGE=${process.env.KANVAS_PORT_RANGE ?? 'unset'})`);
   }
 
   return {
