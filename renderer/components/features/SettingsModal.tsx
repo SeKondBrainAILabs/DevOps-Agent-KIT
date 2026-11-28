@@ -118,7 +118,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   const [isBumping, setIsBumping] = useState(false);
 
   // Code organization state
-  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: 'feature-folders' | 'flat' | 'custom'; setupCompleted?: boolean; setupCompletedAt?: string } | null>(null);
+  const [orgConfig, setOrgConfig] = useState<{ enabled: boolean; structure: 'feature-folders' | 'flat' | 'custom'; setupCompleted?: boolean; setupCompletedAt?: string }>({ enabled: false, structure: 'feature-folders' });
   const [orgStructure, setOrgStructure] = useState<'feature-folders' | 'flat' | 'custom'>('feature-folders');
   const [orgLoading, setOrgLoading] = useState(false);
 
@@ -274,7 +274,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   };
 
   const handleSaveOrganizationConfig = async (): Promise<void> => {
-    if (!selectedRepoPath || !orgConfig) return;
+    if (!selectedRepoPath) return;
 
     // Check if switching from feature-folders to flat
     if (orgConfig.structure === 'feature-folders' && orgStructure === 'flat') {
@@ -1671,9 +1671,9 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
                 <button
                   onClick={handleSaveOrganizationConfig}
                   className="btn-primary w-full"
-                  disabled={!selectedRepoPath || !orgConfig}
+                  disabled={!selectedRepoPath || orgLoading}
                 >
-                  Save Settings
+                  {orgLoading ? 'Saving...' : 'Save Settings'}
                 </button>
               </div>
             </>
