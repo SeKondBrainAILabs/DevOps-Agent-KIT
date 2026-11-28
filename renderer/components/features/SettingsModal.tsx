@@ -220,16 +220,16 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
     });
   }, [selectedRepoPath]);
 
-  // Fetch organization config when general tab is active
+  // Fetch organization config when general tab is active or repo changes
   useEffect(() => {
-    if (activeTab !== 'general') return;
-    window.api.contractRegistry.getOrganizationConfig().then((result) => {
+    if (activeTab !== 'general' || !selectedRepoPath) return;
+    window.api.contractRegistry.getOrganizationConfig(selectedRepoPath).then((result) => {
       if (result.success && result.data) {
         setOrgConfig(result.data);
         setSelectedOrgStructure(result.data.structure);
       }
     });
-  }, [activeTab]);
+  }, [activeTab, selectedRepoPath]);
 
   const handleBump = async (component: 'major' | 'minor' | 'patch') => {
     if (!selectedRepoPath || isBumping) return;
@@ -277,14 +277,15 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.ReactEleme
   };
 
   const handleSaveOrganizationConfig = async () => {
-    if (!orgConfig) return;
+    if (!orgConfig || !selectedRepoPath) return;
     setIsSavingOrgConfig(true);
     setMessage(null);
 
     try {
-      const result = await window.api.contractRegistry.setOrganizationConfig({
+      const result = await window.api.contractRegistry.setOrganizationConfig(selectedRepoPath, {
         enabled: orgConfig.enabled,
         structure: selectedOrgStructure,
+        setupCompleted: orgConfig.setupCompleted ?? true,
       });
       if (result.success) {
         setOrgConfig({ ...orgConfig, structure: selectedOrgStructure });
