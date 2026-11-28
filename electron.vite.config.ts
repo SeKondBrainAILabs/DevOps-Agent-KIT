@@ -12,7 +12,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import detectPort from 'detect-port';
 import { cpSync, existsSync, mkdirSync } from 'fs';
-import { getKanvasPortConfig } from '@shared/kanvas-port-config';
+import { getKanvasPortConfig } from './shared/kanvas-port-config';
 
 // Plugin to copy config files to dist during build
 function copyConfigPlugin() {
@@ -31,7 +31,7 @@ function copyConfigPlugin() {
 }
 
 export default defineConfig(async () => {
-  // Get the configured port and range from environment variables
+  // Get the configured port and range from environment variables KANVAS_PORT and KANVAS_PORT_RANGE
   const { port: preferredPort, range } = getKanvasPortConfig();
   
   // Find an available port starting from preferredPort
